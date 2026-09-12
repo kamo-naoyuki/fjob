@@ -104,6 +104,10 @@ func run(args []string) int {
 		printUsage()
 		return 1
 	}
+	if args[0] == "--version" || args[0] == "version" {
+		printVersion()
+		return 0
+	}
 
 	switch args[0] {
 	case "check":
@@ -135,6 +139,7 @@ func run(args []string) int {
 
 func printUsage() {
 	fmt.Println("jobq: lightweight local job queue")
+	fmt.Println("  jobq version")
 	fmt.Println("")
 	fmt.Println("Usage:")
 	fmt.Println("  jobq check [--basedir DIR] [--queue-name NAME] [--server]")

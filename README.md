@@ -11,6 +11,20 @@ It keeps job output and results so failed jobs can be inspected and run again.
 go build -o jobq ./cmd/jobq
 ```
 
+Check the version:
+
+```sh
+jobq version
+jobq --version
+```
+
+Prebuilt binaries for Linux and macOS are available from the GitHub Releases
+page. Go is only required when building from source or using `go install`.
+
+```sh
+go install github.com/kamo-naoyuki/jobq/cmd/jobq@latest
+```
+
 ## Quick start
 
 ```sh
