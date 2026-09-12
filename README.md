@@ -21,6 +21,20 @@ jobq --version
 Prebuilt binaries for Linux and macOS are available from the GitHub Releases
 page. Go is only required when building from source or using `go install`.
 
+Download a binary for your platform from
+[GitHub Releases](https://github.com/kamo-naoyuki/jobq/releases), make it
+executable, and put it somewhere on your `PATH`:
+
+```sh
+chmod +x jobq-linux-amd64
+install -m 755 jobq-linux-amd64 ~/.local/bin/jobq
+```
+
+Available binaries are `jobq-linux-amd64`, `jobq-linux-arm64`,
+`jobq-darwin-amd64`, and `jobq-darwin-arm64`.
+
+With Go installed, you can install directly instead:
+
 ```sh
 go install github.com/kamo-naoyuki/jobq/cmd/jobq@latest
 ```
