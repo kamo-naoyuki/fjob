@@ -1,0 +1,14 @@
+# Go build artifacts and local jobq state
+/jobq
+/.jobq-state/
+/.example-state*/
+/*.test
+/coverage.out
+/coverage.html
+
+# Go workspace files
+/go.work
+/go.work.sum
+
+# NFS temporary files
+.nfs*

@@ -1,0 +1,81 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+func prepareRunSelection(baseDir, queueName, selection string) (int, error) {
+	paths, err := resolvePaths(baseDir, queueName)
+	if err != nil {
+		return 0, err
+	}
+	release, err := acquireStateLock(paths.stateLockFile)
+	if err != nil {
+		return 0, fmt.Errorf("failed to lock queue: %w", err)
+	}
+	defer release()
+	running, err := isRunning(paths.lockFile)
+	if err != nil {
+		return 0, fmt.Errorf("failed to check queue: %w", err)
+	}
+	if running {
+		return 0, fmt.Errorf("queue '%s' is running; selection is not allowed", queueName)
+	}
+
+	meta, err := loadMeta(paths.metaFile)
+	if err != nil || meta.LastRunID == "" {
+		return 0, fmt.Errorf("queue '%s' has no previous run", queueName)
+	}
+	runDir := filepath.Join(paths.runsDir, meta.LastRunID)
+	summary, err := loadRunSummary(filepath.Join(runDir, "summary.json"))
+	if err != nil {
+		return 0, fmt.Errorf("failed to load run summary: %w", err)
+	}
+	results := make(map[string]int)
+	for _, result := range summary.Results {
+		results[result.ID] = result.ExitCode
+	}
+
+	data, err := os.ReadFile(filepath.Join(runDir, "commands.json"))
+	if err != nil {
+		return 0, fmt.Errorf("failed to load command snapshot: %w", err)
+	}
+	var snapshot Queue
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return 0, fmt.Errorf("failed to parse command snapshot: %w", err)
+	}
+	selected := make([]QueuedCommand, 0)
+	for _, job := range queueToJobs(snapshot.Commands) {
+		exitCode, finished := results[job.ID]
+		include := false
+		switch selection {
+		case "failed":
+			include = finished && exitCode != 0
+		case "success":
+			include = finished && exitCode == 0
+		case "unfinished":
+			include = !finished
+		case "nonsuccess":
+			include = !finished || exitCode != 0
+		default:
+			return 0, fmt.Errorf("unknown run selection: %s", selection)
+		}
+		if include {
+			selected = append(selected, QueuedCommand{
+				Command: job.Command, Backend: job.Backend, SbatchOptions: job.SbatchOptions,
+			})
+		}
+	}
+	if len(selected) == 0 {
+		return 0, fmt.Errorf("last run has no jobs matching --%s", selection)
+	}
+	snapshot.Commands = selected
+	if err := writeJSON(paths.queueFile, snapshot); err != nil {
+		return 0, fmt.Errorf("failed to prepare selected jobs: %w", err)
+	}
+	fmt.Printf("selected jobs=%d queue=%s filter=%s\n", len(selected), queueName, selection)
+	return len(selected), nil
+}
