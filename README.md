@@ -6,7 +6,6 @@ Lightweight local job queue runner.
 
 This is the Go implementation focused on core job management:
 
-- queue commands with `add`
 - submit commands directly to queue files with `submit`
 - execute queued commands with `run`
 - support sync and no-sync modes
@@ -99,23 +98,23 @@ jobq show --queue-name build --job-id JOB_ID
 
 `show` reads saved run files directly and does not contact the server.
 
-### Add a command
+### Submit a command
 
 ```sh
-jobq add [--basedir DIR] [--queue-name NAME] <command ...>
+jobq submit [--basedir DIR] [--queue-name NAME] [--backend BACKEND] [--sbatch-option OPTION] <command ...>
 ```
 
 Example:
 
 ```sh
-jobq add --queue-name g1 echo hello
-jobq add --queue-name g1 sh -c "sleep 2; echo done"
+jobq submit --queue-name g1 echo hello
+jobq submit --queue-name g1 sh -c "sleep 2; echo done"
 ```
 
 Behavior:
 
-- If the same `queue_name` is currently running, `add` fails.
-- If the previous run for `queue_name` is already finished, calling `add` starts a new session and clears previous run history for that queue.
+- If the same `queue_name` is currently running, `submit` fails.
+- If the previous run for `queue_name` is already finished, calling `submit` starts a new session and clears previous run history for that queue.
 
 ### Run queued commands
 
@@ -146,9 +145,9 @@ value can be written as `--sbatch-option="-p short"`.
 Behavior:
 
 - Run uses a snapshot of the queue taken at run start.
-- `add` during run is rejected.
+- `submit` during run is rejected.
 - If the queue is empty, run fails.
-- Run history is kept after completion and is removed when the next `add` starts a new session.
+- Run history is kept after completion and is removed when the next `submit` starts a new session.
 
 ## Storage directory
 

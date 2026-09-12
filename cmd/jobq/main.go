@@ -106,8 +106,6 @@ func run(args []string) int {
 	}
 
 	switch args[0] {
-	case "add":
-		return cmdAdd(args[1:])
 	case "check":
 		return cmdCheck(args[1:])
 	case "cancel":
@@ -139,7 +137,6 @@ func printUsage() {
 	fmt.Println("jobq: lightweight local job queue")
 	fmt.Println("")
 	fmt.Println("Usage:")
-	fmt.Println("  jobq add [--basedir DIR] [--queue-name NAME] <command ...>")
 	fmt.Println("  jobq check [--basedir DIR] [--queue-name NAME] [--server]")
 	fmt.Println("  jobq cancel [--basedir DIR] [--queue-name NAME]")
 	fmt.Println("  jobq clear [--basedir DIR] [--queue-name NAME]")
@@ -148,93 +145,6 @@ func printUsage() {
 	fmt.Println("  jobq submit [--basedir DIR] [--queue-name NAME] [--backend BACKEND] [--sbatch-option OPTION] <command ...>")
 	fmt.Println("  jobq run [--basedir DIR] [--queue-name NAME] [--local-concurrency N] [--slurm-max-active N] [--async]")
 	fmt.Println("  jobq server <status|list|shutdown> [--basedir DIR] [--masterdir DIR]")
-}
-
-func cmdAdd(args []string) int {
-	fs := flag.NewFlagSet("add", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	basedir := fs.String("basedir", "", "state directory")
-	queueNameOption := fs.String("queue-name", "", "queue name")
-	if err := fs.Parse(args); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to parse add args: %v\n", err)
-		return 1
-	}
-	left := fs.Args()
-	if len(left) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: jobq add [--basedir DIR] [--queue-name NAME] <command ...>")
-		return 1
-	}
-
-	queueName := resolveQueueName(*queueNameOption)
-	command := left
-	paths, err := resolvePaths(*basedir, queueName)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve paths: %v\n", err)
-		return 1
-	}
-
-	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create group directory: %v\n", err)
-		return 1
-	}
-	releaseStateLock, err := acquireStateLock(paths.stateLockFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to lock group state: %v\n", err)
-		return 1
-	}
-	defer releaseStateLock()
-
-	running, err := isRunning(paths.lockFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to check running lock: %v\n", err)
-		return 1
-	}
-	if running {
-		fmt.Fprintf(os.Stderr, "queue '%s' is running; add is not allowed\n", queueName)
-		return 1
-	}
-
-	meta, err := loadMeta(paths.metaFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load metadata: %v\n", err)
-		return 1
-	}
-	if meta.Phase == "running" {
-		meta.Phase = "finished"
-		meta.UpdatedAt = nowRFC3339()
-		if err := writeJSON(paths.metaFile, meta); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to update metadata: %v\n", err)
-			return 1
-		}
-	}
-	if meta.Phase == "finished" {
-		if err := cleanupHistory(paths.queueDir); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to cleanup previous history: %v\n", err)
-			return 1
-		}
-		meta = defaultMeta()
-	}
-
-	q, err := loadQueue(paths.queueFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load queue: %v\n", err)
-		return 1
-	}
-	q.Commands = append(q.Commands, QueuedCommand{Command: command})
-	if err := writeJSON(paths.queueFile, q); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to write queue: %v\n", err)
-		return 1
-	}
-
-	meta.Phase = "collecting"
-	meta.UpdatedAt = nowRFC3339()
-	if err := writeJSON(paths.metaFile, meta); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to update metadata: %v\n", err)
-		return 1
-	}
-
-	fmt.Printf("%s\n", green(fmt.Sprintf("added queue=%s command=%s", queueName, strings.Join(command, " "))))
-	return 0
 }
 
 func cmdCheck(args []string) int {

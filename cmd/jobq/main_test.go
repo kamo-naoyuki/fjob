@@ -52,7 +52,7 @@ func TestSplitShellWords(t *testing.T) {
 }
 
 func TestSplitShellWordsRejectsUnterminatedInput(t *testing.T) {
-	for _, input := range []string{`"unterminated`, `trailing\\`} {
+	for _, input := range []string{`"unterminated`, `trailing\`} {
 		if _, err := splitShellWords(input); err == nil {
 			t.Errorf("splitShellWords(%q) returned nil error", input)
 		}
