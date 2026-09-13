@@ -6,7 +6,7 @@ PATH="${script_dir}:${PATH}"
 export PATH
 export JOBQ_BASEDIR=${JOBQ_BASEDIR:-"${script_dir}/.jobq-state"}
 export JOBQ_QUEUE_NAME=${JOBQ_QUEUE_NAME:-${1:-demo}}
-slurm_partition=${JOBQ_SLURM_PARTITION:-cpu}
+slurm_options=${JOBQ_SLURM_OPTIONS:--p\ cpu}
 async=${JOBQ_ASYNC:-false}
 
 if ! command -v jobq >/dev/null 2>&1; then
@@ -19,7 +19,7 @@ jobq check
 
 # Mix local and Slurm jobs in one queue. Slurm options are attached per job.
 jobq submit sh -c 'sleep 1; echo local job'
-jobq submit --backend slurm --sbatch-option "-p ${slurm_partition} --cpus-per-task=2" sh -c 'sleep 2; echo Slurm job'
+jobq submit --backend slurm --sbatch-option "${slurm_options} --cpus-per-task=2" sh -c 'sleep 2; echo Slurm job'
 jobq submit sh -c 'echo failing local job; exit 1'
 
 # Run with separate local and Slurm concurrency limits.

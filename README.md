@@ -65,7 +65,7 @@ The included `example.sh` also supports:
 
 | Variable | Purpose |
 | --- | --- |
-| `JOBQ_SLURM_PARTITION` | Slurm partition used by the example; defaults to `cpu`. |
+| `JOBQ_SLURM_OPTIONS` | Common Slurm options used by the example; defaults to `-p cpu`. |
 | `JOBQ_ASYNC` | Set to `true` to run the example asynchronously; defaults to `false`. |
 
 ## Slurm
