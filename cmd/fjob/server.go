@@ -30,6 +30,7 @@ type serverRequest struct {
 	Backend          string   `json:"backend,omitempty"`
 	SbatchOptions    []string `json:"sbatch_options,omitempty"`
 	JobName          string   `json:"job_name,omitempty"`
+	DependsOn        []string `json:"depends_on,omitempty"`
 }
 
 type serverResponse struct {
@@ -194,6 +195,8 @@ func cmdSubmit(args []string) int {
 	cliValue(fs, &sbatchOptions, "sbatch-option")
 	jobName := cliString(fs, "job-name", "")
 	cliStringVar(fs, jobName, "name", "")
+	var dependsOn stringSliceFlag
+	cliValue(fs, &dependsOn, "depends-on")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -212,7 +215,7 @@ func cmdSubmit(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	message, err := enqueueCommand(baseDir, queueName, left, *backend, sbatchOptions, *jobName)
+	message, err := enqueueCommand(baseDir, queueName, left, *backend, sbatchOptions, *jobName, dependsOn)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -281,7 +284,7 @@ func cmdRun(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	fmt.Printf("%s\n  Base directory: %s\n  Queue: %s\n", green("Run started:"), baseDir, queueName)
+	fmt.Printf("%s\n  Base directory: %s\n  Queue: %s\n", cyan("Run started:"), baseDir, queueName)
 	request := serverRequest{
 		Op: "run", QueueName: queueName, LocalConcurrency: *localConcurrency, SlurmMaxActive: *slurmMaxActive, Retry: *retry, Async: *async,
 		Backend: *backend, SbatchOptions: sbatchOptions,
@@ -438,7 +441,7 @@ func (server *fjobServer) handle(baseDir string, conn net.Conn) {
 	case "ping":
 		response = serverResponse{OK: true, PID: os.Getpid()}
 	case "submit":
-		message, err := enqueueCommand(baseDir, request.QueueName, request.Command, request.Backend, request.SbatchOptions, request.JobName)
+		message, err := enqueueCommand(baseDir, request.QueueName, request.Command, request.Backend, request.SbatchOptions, request.JobName, request.DependsOn)
 		response = serverResponse{OK: err == nil, Message: message}
 		if err != nil {
 			response.Message = err.Error()
@@ -736,7 +739,7 @@ func finishCancelMessage(message string, paths pathSet, queueName, runID string,
 	return message, nil
 }
 
-func enqueueCommand(baseDir, queueName string, command []string, backend string, sbatchOptions []string, jobName string) (string, error) {
+func enqueueCommand(baseDir, queueName string, command []string, backend string, sbatchOptions []string, jobName string, dependsOn []string) (string, error) {
 	if queueName == "" || len(command) == 0 {
 		return "", errors.New("queue name and command are required")
 	}
@@ -781,7 +784,7 @@ func enqueueCommand(baseDir, queueName string, command []string, backend string,
 		queue.DefaultSbatchOptions = append([]string(nil), sbatchOptions...)
 	}
 	queue.Commands = append(queue.Commands, QueuedCommand{
-		Command: command, Backend: backend, SbatchOptions: sbatchOptions, Name: jobName,
+		Command: command, Backend: backend, SbatchOptions: sbatchOptions, Name: jobName, DependsOn: dependsOn,
 	})
 	if err := writeJSON(paths.queueFile, queue); err != nil {
 		return "", err

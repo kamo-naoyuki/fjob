@@ -26,7 +26,6 @@ Download a binary for your platform from
 executable, and put it somewhere on your `PATH`:
 
 ```sh
-chmod +x fjob-linux-amd64
 install -m 755 fjob-linux-amd64 ~/.local/bin/fjob
 ```
 
@@ -75,6 +74,21 @@ fjob run --queue-name build
 completion. The queue name can be supplied with `--queue-name`,
 `FJOB_QUEUE_NAME`, or omitted. When omitted, if only one queue exists in the state directory, it will be automatically selected; if multiple queues exist, you will be prompted to specify one.
 Use `--job-name NAME` (or its `--name NAME` alias) to label a submitted job.
+Use `--depends-on NAME` to make a job wait for a named prerequisite. Repeat the
+option to specify multiple prerequisites:
+
+```sh
+fjob submit --job-name prepare ./prepare.sh
+fjob submit --job-name train --depends-on prepare ./train.sh
+fjob run
+```
+
+Jobs without dependencies run in parallel. Dependencies must refer to named
+jobs in the same queue; unknown jobs and dependency cycles are rejected before
+the run starts. If a prerequisite fails, dependent jobs are recorded as
+`blocked` and are not executed. Retries rerun only failed jobs, not jobs that
+already succeeded. `run --failed` likewise reruns failed job bodies without
+rerunning successful prerequisites.
 
 ## Directory, queue, and run
 

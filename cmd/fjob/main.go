@@ -34,6 +34,7 @@ type QueuedCommand struct {
 	Backend       string   `json:"backend,omitempty"`
 	SbatchOptions []string `json:"sbatch_options,omitempty"`
 	Name          string   `json:"name,omitempty"`
+	DependsOn     []string `json:"depends_on,omitempty"`
 }
 
 func (queue *Queue) UnmarshalJSON(data []byte) error {
@@ -81,6 +82,7 @@ type JobSpec struct {
 	Backend       string   `json:"backend,omitempty"`
 	SbatchOptions []string `json:"sbatch_options,omitempty"`
 	Name          string   `json:"name,omitempty"`
+	DependsOn     []string `json:"depends_on,omitempty"`
 }
 
 type JobResult struct {
@@ -500,7 +502,7 @@ func queueToJobs(commands []QueuedCommand) []JobSpec {
 		id := hex.EncodeToString(sum[:])[:jobIDLen]
 		jobs = append(jobs, JobSpec{
 			ID: id, Command: queued.Command, Name: queued.Name,
-			Backend: queued.Backend, SbatchOptions: queued.SbatchOptions,
+			Backend: queued.Backend, SbatchOptions: queued.SbatchOptions, DependsOn: queued.DependsOn,
 		})
 	}
 	return jobs

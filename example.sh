@@ -18,9 +18,13 @@ fi
 fjob check
 
 # Mix local and Slurm jobs in one queue. Slurm options are attached per job.
-fjob submit sh -c 'sleep 1; echo local job'
-fjob submit --backend slurm --sbatch-option "${slurm_options} --cpus-per-task=2" sh -c 'sleep 2; echo Slurm job'
-fjob submit sh -c 'echo failing local job; exit 1'
+# The two jobs after prepare can run in parallel with each other.
+fjob submit --job-name prepare sh -c 'sleep 1; echo preparation job'
+fjob submit --job-name slurm-job --depends-on prepare \
+    --backend slurm --sbatch-option "${slurm_options} --cpus-per-task=2" \
+    sh -c 'sleep 2; echo Slurm job'
+fjob submit --job-name failing-job --depends-on prepare \
+    sh -c 'echo failing local job; exit 1'
 
 # Run with separate local and Slurm concurrency limits.
 run_args=(--local-concurrency 2 --slurm-max-active 2 --retry 1)

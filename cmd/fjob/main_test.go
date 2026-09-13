@@ -332,3 +332,40 @@ func TestCompareQueueWithRun(t *testing.T) {
 		t.Fatalf("diff = %#v, want added=1 removed=1 changed=1", diff)
 	}
 }
+
+func TestValidateDependencies(t *testing.T) {
+	valid := []JobSpec{
+		{Name: "job1", Command: []string{"echo", "1"}},
+		{Name: "job2", Command: []string{"echo", "2"}, DependsOn: []string{"job1"}},
+	}
+	if err := validateDependencies(valid); err != nil {
+		t.Fatalf("valid dependencies returned error: %v", err)
+	}
+	cases := []struct {
+		name string
+		jobs []JobSpec
+	}{
+		{
+			name: "unknown dependency",
+			jobs: []JobSpec{{Name: "job2", DependsOn: []string{"missing"}}},
+		},
+		{
+			name: "duplicate name",
+			jobs: []JobSpec{{Name: "same"}, {Name: "same"}},
+		},
+		{
+			name: "cycle",
+			jobs: []JobSpec{
+				{Name: "job1", DependsOn: []string{"job2"}},
+				{Name: "job2", DependsOn: []string{"job1"}},
+			},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if err := validateDependencies(testCase.jobs); err == nil {
+				t.Fatal("validateDependencies returned nil")
+			}
+		})
+	}
+}

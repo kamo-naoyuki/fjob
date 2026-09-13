@@ -57,6 +57,7 @@ func prepareRunSelection(baseDir, queueName, selection string) (int, error) {
 		return 0, fmt.Errorf("failed to parse command snapshot: %w", err)
 	}
 	selected := make([]QueuedCommand, 0)
+	selectedNames := make(map[string]bool)
 	for _, job := range queueToJobs(snapshot.Commands) {
 		exitCode, finished := results[job.ID]
 		include := false
@@ -73,18 +74,30 @@ func prepareRunSelection(baseDir, queueName, selection string) (int, error) {
 			return 0, fmt.Errorf("unknown run selection: %s", selection)
 		}
 		if include {
+			selectedNames[job.Name] = true
 			selected = append(selected, QueuedCommand{
-				Command: job.Command, Backend: job.Backend, SbatchOptions: job.SbatchOptions, Name: job.Name,
+				Command: job.Command, Backend: job.Backend, SbatchOptions: job.SbatchOptions, Name: job.Name, DependsOn: job.DependsOn,
 			})
 		}
 	}
 	if len(selected) == 0 {
 		return 0, fmt.Errorf("last run has no jobs matching --%s", selection)
 	}
+	totalJobs := len(queueToJobs(snapshot.Commands))
+	for index := range selected {
+		dependencies := selected[index].DependsOn[:0]
+		for _, dependency := range selected[index].DependsOn {
+			if selectedNames[dependency] {
+				dependencies = append(dependencies, dependency)
+			}
+		}
+		selected[index].DependsOn = dependencies
+	}
+	selectedCount := len(selected)
 	snapshot.Commands = selected
 	if err := writeJSON(paths.queueFile, snapshot); err != nil {
 		return 0, fmt.Errorf("failed to prepare selected jobs: %w", err)
 	}
-	fmt.Printf("selected jobs=%d/%d queue=%s filter=--%s run=%s\n", len(selected), len(snapshot.Commands), queueName, selection, meta.LastRunID)
+	fmt.Printf("selected jobs=%d/%d queue=%s filter=--%s run=%s\n", selectedCount, totalJobs, queueName, selection, meta.LastRunID)
 	return len(selected), nil
 }

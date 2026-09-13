@@ -125,6 +125,10 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		fmt.Printf("  Added: %d\n  Removed: %d\n  Changed: %d\n", diff.Added, diff.Removed, diff.Changed)
 	}
 	jobSpecs := loadRunJobSpecs(runDir)
+	resultByID := make(map[string]JobResult, len(summary.Results))
+	for _, result := range summary.Results {
+		resultByID[result.ID] = result
+	}
 
 	entries, err := os.ReadDir(runDir)
 	if err != nil {
@@ -132,7 +136,7 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		return 1
 	}
 	fmt.Println("\n" + cyan("Jobs:"))
-	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-12s %-15s %-10s %-30s %-24s %-24s %s", "JOB ID", "NAME", "STATUS", "BACKEND", "SUBMITTED", "FINISHED", "COMMAND")))
+	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-12s %-15s %-20s %-10s %-30s %-24s %-24s %s", "JOB ID", "NAME", "DEPENDS ON", "STATUS", "BACKEND", "SUBMITTED", "FINISHED", "COMMAND")))
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -145,11 +149,23 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		if name == "" {
 			name = "-"
 		}
+		dependsOn := strings.Join(jobSpecs[jobID].DependsOn, ",")
+		if dependsOn == "" {
+			dependsOn = "-"
+		}
 		status, statusOK := readJobStatus(filepath.Join(runDir, jobID, "status"))
+		blocked := false
 		if !statusOK {
 			if slurm, ok := loadSlurmStatus(filepath.Join(runDir, jobID, "status.json")); ok && slurmStatusTerminal(slurm.Phase) {
 				status = slurm.ExitCode
 				statusOK = true
+			}
+		}
+		if !statusOK {
+			if result, ok := resultByID[jobSpecs[jobID].ID]; ok {
+				status = result.ExitCode
+				statusOK = true
+				blocked = strings.HasPrefix(result.Error, "blocked")
 			}
 		}
 		backend, options := jobSpecs[jobID].Backend, jobSpecs[jobID].SbatchOptions
@@ -171,12 +187,14 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		finishedAt := readFinishedAt(runDir, jobID)
 		if statusOK {
 			statusText := green(strconv.Itoa(status))
-			if status != 0 {
+			if blocked {
+				statusText = yellow("blocked")
+			} else if status != 0 {
 				statusText = red(strconv.Itoa(status))
 			}
-			fmt.Printf("%-12s %-15s %-10s %-30s %-24s %-24s %s\n", jobID, name, statusText, backendText, submittedAt, finishedAt, command)
+			fmt.Printf("%-12s %-15s %-20s %-10s %-30s %-24s %-24s %s\n", jobID, name, dependsOn, statusText, backendText, submittedAt, finishedAt, command)
 		} else {
-			fmt.Printf("%-12s %-15s %-10s %-30s %-24s %-24s %s\n", jobID, name, yellow("running"), backendText, submittedAt, finishedAt, command)
+			fmt.Printf("%-12s %-15s %-20s %-10s %-30s %-24s %-24s %s\n", jobID, name, dependsOn, yellow("running"), backendText, submittedAt, finishedAt, command)
 		}
 	}
 	fmt.Printf("\n%s\n", cyan("Output directory: "+runDir))
@@ -239,7 +257,7 @@ func sameJobSpec(left, right JobSpec) bool {
 	if left.ID != right.ID || left.Name != right.Name || left.Backend != right.Backend {
 		return false
 	}
-	if !slicesEqual(left.Command, right.Command) || !slicesEqual(left.SbatchOptions, right.SbatchOptions) {
+	if !slicesEqual(left.Command, right.Command) || !slicesEqual(left.SbatchOptions, right.SbatchOptions) || !slicesEqual(left.DependsOn, right.DependsOn) {
 		return false
 	}
 	return true
@@ -433,6 +451,9 @@ func showJob(paths pathSet, runID, jobID string) int {
 	if name != "" {
 		fmt.Printf("Name: %s\n", name)
 	}
+	if dependencies := jobSpecs[jobID].DependsOn; len(dependencies) > 0 {
+		fmt.Printf("Depends on: %s\n", strings.Join(dependencies, ", "))
+	}
 	fmt.Printf("Submitted: %s\n", readSubmittedAt(runDir, jobID))
 	fmt.Printf("Finished: %s\n", readFinishedAt(runDir, jobID))
 	if status, ok := readJobStatus(filepath.Join(jobDir, "status")); ok {
@@ -449,6 +470,15 @@ func showJob(paths pathSet, runID, jobID string) int {
 			fmt.Printf("%s\n", red(status))
 		} else {
 			fmt.Printf("%s\n", yellow(status))
+		}
+	} else {
+		summary, err := loadRunSummary(filepath.Join(runDir, "summary.json"))
+		if err == nil {
+			for _, result := range summary.Results {
+				if result.ID == jobSpecs[jobID].ID && strings.HasPrefix(result.Error, "blocked") {
+					fmt.Printf("%s\n", yellow("Status: blocked (dependency failed)"))
+				}
+			}
 		}
 	}
 	fmt.Printf("Command: %s\n", readCommand(filepath.Join(jobDir, "command")))

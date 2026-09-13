@@ -33,11 +33,11 @@ func colorMessage(message string) string {
 		switch {
 		case strings.HasPrefix(text, "Run failed:"):
 			lines[i] = red(text) + newline(line)
-		case strings.HasPrefix(text, "Run finished:"), strings.HasPrefix(text, "Run started"):
+		case strings.HasPrefix(text, "Run finished:"):
 			lines[i] = green(text) + newline(line)
 		case strings.HasPrefix(text, "Retrying job:"):
 			lines[i] = yellow(text) + newline(line)
-		case strings.HasPrefix(text, "Inspect"), strings.HasPrefix(text, "Check"), strings.HasPrefix(text, "Cancel"), strings.HasPrefix(text, "Rerun"), strings.HasPrefix(text, "Failed job output"):
+		case strings.HasPrefix(text, "Run started"), strings.HasPrefix(text, "Inspect"), strings.HasPrefix(text, "Check"), strings.HasPrefix(text, "Cancel"), strings.HasPrefix(text, "Rerun"), strings.HasPrefix(text, "Failed job output"):
 			lines[i] = cyan(text) + newline(line)
 		}
 	}

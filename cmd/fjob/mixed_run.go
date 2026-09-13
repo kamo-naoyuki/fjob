@@ -19,6 +19,10 @@ func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActi
 		fmt.Fprintf(os.Stderr, "queue '%s' has no valid commands\n", paths.queueName)
 		return 1
 	}
+	if err := validateDependencies(jobs); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid dependencies: %v\n", err)
+		return 1
+	}
 	runDir := filepath.Join(paths.runsDir, runID)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return 1
@@ -29,15 +33,58 @@ func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActi
 
 	finalResults := make(map[string]JobResult, len(jobs))
 	pending := append([]JobSpec(nil), jobs...)
+	jobsByName := make(map[string]JobSpec, len(jobs))
+	for _, job := range jobs {
+		if job.Name != "" {
+			jobsByName[job.Name] = job
+		}
+	}
 	for attempt := 0; (retry == -1 || attempt <= retry) && len(pending) > 0; attempt++ {
-		attemptResults := executeMixedAttempt(runDir, queue, pending, localConcurrency, slurmMaxActive, requestedBackend, sbatchOptions)
+		pendingByID := make(map[string]bool, len(pending))
+		for _, job := range pending {
+			pendingByID[job.ID] = true
+		}
+		blocked := make([]JobSpec, 0)
+		ready := make([]JobSpec, 0, len(pending))
+		for _, job := range pending {
+			blockedBy := ""
+			readyForRun := true
+			for _, dependency := range job.DependsOn {
+				dependencyJob := jobsByName[dependency]
+				result, done := finalResults[dependencyJob.ID]
+				if !done || (result.ExitCode != 0 && pendingByID[dependencyJob.ID]) {
+					readyForRun = false
+					continue
+				}
+				if result.ExitCode != 0 {
+					blockedBy = dependency
+					break
+				}
+			}
+			if blockedBy != "" {
+				blocked = append(blocked, job)
+			} else if readyForRun {
+				ready = append(ready, job)
+			}
+		}
+		for _, job := range blocked {
+			finalResults[job.ID] = JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: "blocked by failed dependency"}
+		}
+		if len(ready) == 0 {
+			pending = removeFinishedJobs(pending, finalResults)
+			if len(blocked) == 0 {
+				break
+			}
+			continue
+		}
+		attemptResults := executeMixedAttempt(runDir, queue, ready, localConcurrency, slurmMaxActive, requestedBackend, sbatchOptions)
 		for _, result := range attemptResults {
 			finalResults[result.ID] = result
 		}
 		nextPending := make([]JobSpec, 0, len(jobs))
-		for _, job := range jobs {
+		for _, job := range pending {
 			result, ok := finalResults[job.ID]
-			if ok && result.ExitCode != 0 {
+			if !ok || (result.ExitCode != 0 && attempt < retry) {
 				nextPending = append(nextPending, job)
 			}
 		}
@@ -55,6 +102,11 @@ func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActi
 			}
 		}
 	}
+	for _, job := range pending {
+		if _, ok := finalResults[job.ID]; !ok {
+			finalResults[job.ID] = JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: "blocked by failed dependency"}
+		}
+	}
 
 	summary := RunSummary{RunID: runID, StartedAt: nowRFC3339(), FinishedAt: nowRFC3339(), Results: make([]JobResult, 0, len(jobs))}
 	for _, job := range jobs {
@@ -68,6 +120,16 @@ func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActi
 		return 1
 	}
 	return summary.ExitCode
+}
+
+func removeFinishedJobs(jobs []JobSpec, results map[string]JobResult) []JobSpec {
+	remaining := make([]JobSpec, 0, len(jobs))
+	for _, job := range jobs {
+		if _, done := results[job.ID]; !done {
+			remaining = append(remaining, job)
+		}
+	}
+	return remaining
 }
 
 func executeMixedAttempt(runDir string, queue Queue, jobs []JobSpec, localConcurrency, slurmMaxActive int, requestedBackend string, sbatchOptions []string) []JobResult {
