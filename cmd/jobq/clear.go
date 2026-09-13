@@ -10,18 +10,27 @@ import (
 func cmdClear(args []string) int {
 	fs := flag.NewFlagSet("clear", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	basedir := fs.String("basedir", "", "state directory")
-	queueNameOption := fs.String("queue-name", "", "queue name")
+	basedir := cliString(fs, "basedir", "")
+	queueNameOption := cliString(fs, "queue-name", "")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 	if len(fs.Args()) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: jobq clear [--basedir DIR] [--queue-name NAME]")
+		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("clear"))
 		return 1
 	}
 
-	queueName := resolveQueueName(*queueNameOption)
-	paths, err := resolvePaths(*basedir, queueName)
+	baseDir, _, err := resolveBaseDir(*basedir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
+		return 1
+	}
+	queueName, err := resolveQueueName(baseDir, *queueNameOption)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	paths, err := resolvePaths(baseDir, queueName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to resolve paths: %v\n", err)
 		return 1

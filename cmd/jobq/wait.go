@@ -12,15 +12,15 @@ import (
 func cmdWait(args []string) int {
 	fs := flag.NewFlagSet("wait", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	basedir := fs.String("basedir", "", "state directory")
-	queueNameOption := fs.String("queue-name", "", "queue name")
-	runID := fs.String("run-id", "", "run ID")
-	timeout := fs.Duration("timeout", 0, "maximum wait duration; 0 waits indefinitely")
+	basedir := cliString(fs, "basedir", "")
+	queueNameOption := cliString(fs, "queue-name", "")
+	runID := cliString(fs, "run-id", "")
+	timeout := cliDuration(fs, "timeout", 0)
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 	if len(fs.Args()) != 0 || *runID == "" {
-		fmt.Fprintln(os.Stderr, "usage: jobq wait [--basedir DIR] [--queue-name NAME] --run-id ID [--timeout DURATION]")
+		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("wait"))
 		return 1
 	}
 	if *timeout < 0 {
@@ -28,8 +28,17 @@ func cmdWait(args []string) int {
 		return 1
 	}
 
-	queueName := resolveQueueName(*queueNameOption)
-	paths, err := resolvePaths(*basedir, queueName)
+	baseDir, _, err := resolveBaseDir(*basedir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
+		return 1
+	}
+	queueName, err := resolveQueueName(baseDir, *queueNameOption)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	paths, err := resolvePaths(baseDir, queueName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to resolve paths: %v\n", err)
 		return 1

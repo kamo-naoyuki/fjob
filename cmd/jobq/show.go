@@ -14,24 +14,39 @@ import (
 func cmdShow(args []string) int {
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	basedir := fs.String("basedir", "", "state directory")
-	queueNameOption := fs.String("queue-name", "", "queue name")
-	runIDOption := fs.String("run-id", "", "run ID")
-	jobIDOption := fs.String("job-id", "", "job ID")
-	failedOnly := fs.Bool("failed", false, "show failed jobs only")
+	basedir := cliString(fs, "basedir", "")
+	queueNameOption := cliString(fs, "queue-name", "")
+	runIDOption := cliString(fs, "run-id", "")
+	jobIDOption := cliString(fs, "job-id", "")
+	failedOnly := cliBool(fs, "failed", false)
+	showRunsList := cliBool(fs, "runs", false)
+	showLogs := cliBool(fs, "logs", false)
+	showFailedLogs := cliBool(fs, "failed-logs", false)
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 	if len(fs.Args()) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: jobq show [--basedir DIR] [--queue-name NAME] [--run-id ID] [--job-id ID] [--failed]")
+		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("show"))
 		return 1
 	}
 
-	queueName := resolveQueueName(*queueNameOption)
-	paths, err := resolvePaths(*basedir, queueName)
+	baseDir, _, err := resolveBaseDir(*basedir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
+		return 1
+	}
+	queueName, err := resolveQueueName(baseDir, *queueNameOption)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	paths, err := resolvePaths(baseDir, queueName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to resolve paths: %v\n", err)
 		return 1
+	}
+	if *showRunsList {
+		return showRuns(paths)
 	}
 	runID, err := selectRunID(paths, *runIDOption)
 	if err != nil {
@@ -40,6 +55,9 @@ func cmdShow(args []string) int {
 	}
 	if *jobIDOption != "" {
 		return showJob(paths, runID, *jobIDOption)
+	}
+	if *showLogs || *showFailedLogs {
+		return showRunLogs(paths, runID, *showFailedLogs)
 	}
 	return showRun(paths, runID, *failedOnly)
 }
@@ -110,12 +128,19 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		return 1
 	}
 	fmt.Println("\n" + cyan("Jobs:"))
-	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-12s %-10s %-30s %-24s %-24s %s", "JOB ID", "STATUS", "BACKEND", "SUBMITTED", "FINISHED", "COMMAND")))
+	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-12s %-15s %-10s %-30s %-24s %-24s %s", "JOB ID", "NAME", "STATUS", "BACKEND", "SUBMITTED", "FINISHED", "COMMAND")))
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		jobID := entry.Name()
+		name := readJobName(filepath.Join(runDir, jobID))
+		if name == "" {
+			name = jobSpecs[jobID].Name
+		}
+		if name == "" {
+			name = "-"
+		}
 		status, statusOK := readJobStatus(filepath.Join(runDir, jobID, "status"))
 		if !statusOK {
 			if slurm, ok := loadSlurmStatus(filepath.Join(runDir, jobID, "status.json")); ok && slurmStatusTerminal(slurm.Phase) {
@@ -145,13 +170,90 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 			if status != 0 {
 				statusText = red(strconv.Itoa(status))
 			}
-			fmt.Printf("%-12s %-10s %-30s %-24s %-24s %s\n", jobID, statusText, backendText, submittedAt, finishedAt, command)
+			fmt.Printf("%-12s %-15s %-10s %-30s %-24s %-24s %s\n", jobID, name, statusText, backendText, submittedAt, finishedAt, command)
 		} else {
-			fmt.Printf("%-12s %-10s %-30s %-24s %-24s %s\n", jobID, yellow("running"), backendText, submittedAt, finishedAt, command)
+			fmt.Printf("%-12s %-15s %-10s %-30s %-24s %-24s %s\n", jobID, name, yellow("running"), backendText, submittedAt, finishedAt, command)
 		}
 	}
 	fmt.Printf("\n%s\n", cyan("Output directory: "+runDir))
 	fmt.Printf("\nTo clear all saved run logs:\n  jobq clear --basedir %s --queue-name %s\n", paths.baseDir, paths.queueName)
+	return 0
+}
+
+func showRuns(paths pathSet) int {
+	entries, err := os.ReadDir(paths.runsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("Queue: %s\nNo runs found.\n", paths.queueName)
+			return 0
+		}
+		fmt.Fprintf(os.Stderr, "failed to read runs directory: %v\n", err)
+		return 1
+	}
+
+	type runInfo struct {
+		id         string
+		startedAt  string
+		finishedAt string
+		exitCode   int
+		statusText string
+		hasSummary bool
+		modTime    int64
+	}
+
+	var runs []runInfo
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		runID := entry.Name()
+		runDir := filepath.Join(paths.runsDir, runID)
+		info, err := entry.Info()
+		modTime := int64(0)
+		if err == nil {
+			modTime = info.ModTime().UnixNano()
+		}
+
+		r := runInfo{id: runID, modTime: modTime}
+		summaryData, err := os.ReadFile(filepath.Join(runDir, "summary.json"))
+		if err == nil {
+			var summary RunSummary
+			if json.Unmarshal(summaryData, &summary) == nil {
+				r.startedAt = summary.StartedAt
+				r.finishedAt = summary.FinishedAt
+				r.exitCode = summary.ExitCode
+				r.hasSummary = true
+				if summary.ExitCode == 0 {
+					r.statusText = green("0 (success)")
+				} else {
+					r.statusText = red(fmt.Sprintf("%d (failed)", summary.ExitCode))
+				}
+			}
+		}
+		if !r.hasSummary {
+			r.statusText = yellow("running")
+		}
+		runs = append(runs, r)
+	}
+
+	sort.Slice(runs, func(i, j int) bool {
+		return runs[i].modTime > runs[j].modTime
+	})
+
+	fmt.Printf("%s\n%s\n", cyan("Queue: "+paths.queueName), cyan("Runs directory: "+paths.runsDir))
+	fmt.Println("\n" + cyan("Runs:"))
+	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-36s %-15s %-24s %-24s", "RUN ID", "EXIT CODE", "STARTED", "FINISHED")))
+	for _, r := range runs {
+		started := r.startedAt
+		if started == "" {
+			started = "-"
+		}
+		finished := r.finishedAt
+		if finished == "" {
+			finished = "-"
+		}
+		fmt.Printf("%-36s %-15s %-24s %-24s\n", r.id, r.statusText, started, finished)
+	}
 	return 0
 }
 
@@ -246,6 +348,14 @@ func showJob(paths pathSet, runID, jobID string) int {
 		return 1
 	}
 	fmt.Printf("%s\n%s\n%s\n", cyan("Queue: "+paths.queueName), cyan("Run: "+runID), cyan("Job: "+jobID))
+	jobSpecs := loadRunJobSpecs(runDir)
+	name := readJobName(jobDir)
+	if name == "" {
+		name = jobSpecs[jobID].Name
+	}
+	if name != "" {
+		fmt.Printf("Name: %s\n", name)
+	}
 	fmt.Printf("Submitted: %s\n", readSubmittedAt(runDir, jobID))
 	fmt.Printf("Finished: %s\n", readFinishedAt(runDir, jobID))
 	if status, ok := readJobStatus(filepath.Join(jobDir, "status")); ok {
@@ -300,4 +410,82 @@ func readJSONCommand(path string) string {
 		return ""
 	}
 	return strings.Join(job.Command, " ")
+}
+
+func readJobName(jobDir string) string {
+	data, err := os.ReadFile(filepath.Join(jobDir, "name"))
+	if err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	return ""
+}
+
+func showRunLogs(paths pathSet, runID string, failedOnly bool) int {
+	runDir := filepath.Join(paths.runsDir, runID)
+	entries, err := os.ReadDir(runDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to read run directory: %v\n", err)
+		return 1
+	}
+	jobSpecs := loadRunJobSpecs(runDir)
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		jobID := entry.Name()
+		jobDir := filepath.Join(runDir, jobID)
+
+		status, statusOK := readJobStatus(filepath.Join(jobDir, "status"))
+		if !statusOK {
+			if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok && slurmStatusTerminal(slurm.Phase) {
+				status = slurm.ExitCode
+				statusOK = true
+			}
+		}
+
+		if failedOnly && (!statusOK || status == 0) {
+			continue
+		}
+
+		name := readJobName(jobDir)
+		if name == "" {
+			name = jobSpecs[jobID].Name
+		}
+		command := readCommand(filepath.Join(jobDir, "command"))
+		if command == "" {
+			command = readJSONCommand(filepath.Join(jobDir, "command.json"))
+		}
+
+		header := fmt.Sprintf("=== Job: %s", jobID)
+		if name != "" {
+			header += fmt.Sprintf(" (Name: %s)", name)
+		}
+		if statusOK {
+			if status == 0 {
+				header += fmt.Sprintf(" [Status: %d (success)]", status)
+			} else {
+				header += fmt.Sprintf(" [Status: %d (failed)]", status)
+			}
+		} else {
+			header += " [Status: running]"
+		}
+		header += " ==="
+		fmt.Println(cyan(header))
+		fmt.Printf("Command: %s\n", command)
+		fmt.Printf("Output path: %s\n", filepath.Join(jobDir, "output"))
+
+		output, err := os.ReadFile(filepath.Join(jobDir, "output"))
+		if err == nil && len(output) > 0 {
+			fmt.Println("--- Log Output ---")
+			fmt.Print(string(output))
+			if !strings.HasSuffix(string(output), "\n") {
+				fmt.Println()
+			}
+		} else {
+			fmt.Println("(No output log)")
+		}
+		fmt.Println()
+	}
+	return 0
 }

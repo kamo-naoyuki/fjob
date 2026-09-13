@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,7 @@ type QueuedCommand struct {
 	Command       []string `json:"command"`
 	Backend       string   `json:"backend,omitempty"`
 	SbatchOptions []string `json:"sbatch_options,omitempty"`
+	Name          string   `json:"name,omitempty"`
 }
 
 func (queue *Queue) UnmarshalJSON(data []byte) error {
@@ -78,6 +80,7 @@ type JobSpec struct {
 	Command       []string `json:"command"`
 	Backend       string   `json:"backend,omitempty"`
 	SbatchOptions []string `json:"sbatch_options,omitempty"`
+	Name          string   `json:"name,omitempty"`
 }
 
 type JobResult struct {
@@ -127,6 +130,8 @@ func run(args []string) int {
 		return cmdSubmit(args[1:])
 	case "server":
 		return cmdServer(args[1:])
+	case "completion":
+		return cmdCompletion(args[1:])
 	case "__server":
 		return cmdServerProcess(args[1:])
 	case "__worker-run":
@@ -140,34 +145,37 @@ func run(args []string) int {
 
 func printUsage() {
 	fmt.Println("jobq: lightweight local job queue")
-	fmt.Println("  jobq version")
 	fmt.Println("")
 	fmt.Println("Usage:")
-	fmt.Println("  jobq check [--basedir DIR] [--queue-name NAME] [--server]")
-	fmt.Println("  jobq cancel [--basedir DIR] [--queue-name NAME]")
-	fmt.Println("  jobq clear [--basedir DIR] [--queue-name NAME]")
-	fmt.Println("  jobq show [--basedir DIR] [--queue-name NAME] [--run-id ID] [--job-id ID] [--failed]")
-	fmt.Println("  jobq wait [--basedir DIR] [--queue-name NAME] --run-id ID [--timeout DURATION]")
-	fmt.Println("  jobq submit [--basedir DIR] [--queue-name NAME] [--backend BACKEND] [--sbatch-option OPTION] <command ...>")
-	fmt.Println("  jobq run [--basedir DIR] [--queue-name NAME] [--local-concurrency N] [--slurm-max-active N] [--retry N] [--async]")
-	fmt.Println("  jobq server <status|list|shutdown> [--basedir DIR] [--masterdir DIR]")
+	for _, command := range cliCommandSpecs {
+		fmt.Printf("  %s\n", command.Usage)
+	}
 }
 
 func cmdCheck(args []string) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	basedir := fs.String("basedir", "", "state directory")
-	queueNameOption := fs.String("queue-name", "", "queue name")
-	serverRequired := fs.Bool("server", false, "also require a running server")
+	basedir := cliString(fs, "basedir", "")
+	queueNameOption := cliString(fs, "queue-name", "")
+	serverRequired := cliBool(fs, "server", false)
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 	if len(fs.Args()) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: jobq check [--basedir DIR] [--queue-name NAME] [--server]")
+		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("check"))
 		return 1
 	}
-	queueName := resolveQueueName(*queueNameOption)
-	paths, err := resolvePaths(*basedir, queueName)
+	baseDir, _, err := resolveBaseDir(*basedir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
+		return 1
+	}
+	queueName, err := resolveQueueName(baseDir, *queueNameOption)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	paths, err := resolvePaths(baseDir, queueName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to resolve paths: %v\n", err)
 		return 1
@@ -198,10 +206,10 @@ func cmdCheck(args []string) int {
 func cmdWorkerRun(args []string) int {
 	fs := flag.NewFlagSet("__worker-run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	basedir := fs.String("basedir", "", "state directory")
-	backend := fs.String("backend", "", "execution backend")
+	basedir := cliString(fs, "basedir", "")
+	backend := cliString(fs, "backend", "")
 	var sbatchOptions stringSliceFlag
-	fs.Var(&sbatchOptions, "sbatch-option", "option passed to sbatch")
+	cliValue(fs, &sbatchOptions, "sbatch-option")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to parse worker args: %v\n", err)
 		return 1
@@ -422,6 +430,9 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 	if err := os.WriteFile(filepath.Join(jobDir, "command"), []byte(strings.Join(job.Command, " ")+"\n"), 0o644); err != nil {
 		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
+	if job.Name != "" {
+		_ = os.WriteFile(filepath.Join(jobDir, "name"), []byte(job.Name+"\n"), 0o644)
+	}
 	if err := os.WriteFile(filepath.Join(jobDir, "submitted_at"), []byte(nowRFC3339()+"\n"), 0o644); err != nil {
 		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
@@ -488,7 +499,7 @@ func queueToJobs(commands []QueuedCommand) []JobSpec {
 		sum := sha256.Sum256([]byte(idSeed))
 		id := hex.EncodeToString(sum[:])[:jobIDLen]
 		jobs = append(jobs, JobSpec{
-			ID: id, Command: queued.Command,
+			ID: id, Command: queued.Command, Name: queued.Name,
 			Backend: queued.Backend, SbatchOptions: queued.SbatchOptions,
 		})
 	}
@@ -533,6 +544,12 @@ func resolveBaseDir(cliBaseDir string) (string, bool, error) {
 	if v := os.Getenv("JOBQ_BASEDIR"); v != "" {
 		return v, true, nil
 	}
+	if cwd, err := os.Getwd(); err == nil {
+		localState := filepath.Join(cwd, ".jobq-state")
+		if info, err := os.Stat(localState); err == nil && info.IsDir() {
+			return localState, false, nil
+		}
+	}
 	if v := os.Getenv("XDG_STATE_HOME"); v != "" {
 		return filepath.Join(v, "jobq"), false, nil
 	}
@@ -543,14 +560,35 @@ func resolveBaseDir(cliBaseDir string) (string, bool, error) {
 	return filepath.Join(home, ".local", "state", "jobq"), false, nil
 }
 
-func resolveQueueName(cliQueueName string) string {
+func resolveQueueName(baseDir string, cliQueueName string) (string, error) {
 	if cliQueueName != "" {
-		return cliQueueName
+		return cliQueueName, nil
 	}
 	if value := os.Getenv("JOBQ_QUEUE_NAME"); value != "" {
-		return value
+		return value, nil
 	}
-	return defaultQueueName
+	queuesDir := filepath.Join(baseDir, "queues")
+	entries, err := os.ReadDir(queuesDir)
+	if err == nil {
+		var available []string
+		for _, entry := range entries {
+			if entry.IsDir() {
+				available = append(available, entry.Name())
+			}
+		}
+		if len(available) == 1 {
+			return available[0], nil
+		}
+		if len(available) > 1 {
+			sort.Strings(available)
+			var list []string
+			for _, q := range available {
+				list = append(list, "  - "+q)
+			}
+			return "", fmt.Errorf("multiple queues exist, please specify one with --queue-name or JOBQ_QUEUE_NAME:\n%s", strings.Join(list, "\n"))
+		}
+	}
+	return defaultQueueName, nil
 }
 
 func defaultMeta() Meta {
@@ -709,14 +747,12 @@ func processAlive(pid int) bool {
 }
 
 func makeRunID() string {
-	var value [16]byte
+	var value [4]byte
 	if _, err := rand.Read(value[:]); err != nil {
 		panic(fmt.Sprintf("failed to generate run id: %v", err))
 	}
-	value[6] = (value[6] & 0x0f) | 0x40
-	value[8] = (value[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		value[0:4], value[4:6], value[6:8], value[8:10], value[10:16])
+	timestamp := time.Now().UTC().Format("20060102-150405")
+	return fmt.Sprintf("%s-%08x", timestamp, value)
 }
 
 func nowRFC3339() string {

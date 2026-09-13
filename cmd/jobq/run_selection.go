@@ -2,10 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 )
+
+var errNoPreviousRun = errors.New("no previous run")
 
 func prepareRunSelection(baseDir, queueName, selection string) (int, error) {
 	paths, err := resolvePaths(baseDir, queueName)
@@ -26,8 +29,11 @@ func prepareRunSelection(baseDir, queueName, selection string) (int, error) {
 	}
 
 	meta, err := loadMeta(paths.metaFile)
-	if err != nil || meta.LastRunID == "" {
-		return 0, fmt.Errorf("queue '%s' has no previous run", queueName)
+	if err != nil {
+		return 0, fmt.Errorf("failed to load metadata: %w", err)
+	}
+	if meta.LastRunID == "" {
+		return 0, fmt.Errorf("queue '%s' has no previous run: %w", queueName, errNoPreviousRun)
 	}
 	runDir := filepath.Join(paths.runsDir, meta.LastRunID)
 	summary, err := loadRunSummary(filepath.Join(runDir, "summary.json"))
@@ -65,7 +71,7 @@ func prepareRunSelection(baseDir, queueName, selection string) (int, error) {
 		}
 		if include {
 			selected = append(selected, QueuedCommand{
-				Command: job.Command, Backend: job.Backend, SbatchOptions: job.SbatchOptions,
+				Command: job.Command, Backend: job.Backend, SbatchOptions: job.SbatchOptions, Name: job.Name,
 			})
 		}
 	}

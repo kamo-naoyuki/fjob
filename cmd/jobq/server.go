@@ -29,6 +29,7 @@ type serverRequest struct {
 	Async            bool     `json:"async,omitempty"`
 	Backend          string   `json:"backend,omitempty"`
 	SbatchOptions    []string `json:"sbatch_options,omitempty"`
+	JobName          string   `json:"job_name,omitempty"`
 }
 
 type serverResponse struct {
@@ -69,7 +70,7 @@ func serverPIDPath(baseDir string) string {
 
 func cmdServer(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: jobq server <status|list|shutdown> [--basedir DIR] [--masterdir DIR]")
+		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("server"))
 		return 1
 	}
 
@@ -119,7 +120,7 @@ func ensureServer(baseDir string) error {
 func cmdServerStatus(args []string) int {
 	fs := flag.NewFlagSet("server status", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	basedir := fs.String("basedir", "", "state directory")
+	basedir := cliString(fs, "basedir", "")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -140,7 +141,7 @@ func cmdServerStatus(args []string) int {
 func cmdServerList(args []string) int {
 	fs := flag.NewFlagSet("server list", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	masterdir := fs.String("masterdir", "", "server registry directory")
+	masterdir := cliString(fs, "masterdir", "")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -161,7 +162,7 @@ func cmdServerList(args []string) int {
 func cmdServerRequest(args []string, op string) int {
 	fs := flag.NewFlagSet("server request", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	basedir := fs.String("basedir", "", "state directory")
+	basedir := cliString(fs, "basedir", "")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -186,17 +187,19 @@ func cmdServerRequest(args []string, op string) int {
 func cmdSubmit(args []string) int {
 	fs := flag.NewFlagSet("submit", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	basedir := fs.String("basedir", "", "state directory")
-	queueNameOption := fs.String("queue-name", "", "queue name")
-	backend := fs.String("backend", "", "job backend: local or slurm")
+	basedir := cliString(fs, "basedir", "")
+	queueNameOption := cliString(fs, "queue-name", "")
+	backend := cliString(fs, "backend", "")
 	var sbatchOptions stringSliceFlag
-	fs.Var(&sbatchOptions, "sbatch-option", "option passed to sbatch; may be repeated")
+	cliValue(fs, &sbatchOptions, "sbatch-option")
+	jobName := cliString(fs, "job-name", "")
+	cliStringVar(fs, jobName, "name", "")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 	left := fs.Args()
 	if len(left) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: jobq submit [--basedir DIR] [--queue-name NAME] [--backend BACKEND] [--sbatch-option OPTION] <command ...>")
+		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("submit"))
 		return 1
 	}
 	baseDir, _, err := resolveBaseDir(*basedir)
@@ -204,7 +207,12 @@ func cmdSubmit(args []string) int {
 		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
 		return 1
 	}
-	message, err := enqueueCommand(baseDir, resolveQueueName(*queueNameOption), left, *backend, sbatchOptions)
+	queueName, err := resolveQueueName(baseDir, *queueNameOption)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	message, err := enqueueCommand(baseDir, queueName, left, *backend, sbatchOptions, *jobName)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -216,19 +224,19 @@ func cmdSubmit(args []string) int {
 func cmdRun(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	basedir := fs.String("basedir", "", "state directory")
-	queueNameOption := fs.String("queue-name", "", "queue name")
-	localConcurrency := fs.Int("local-concurrency", 8, "local worker concurrency")
-	slurmMaxActive := fs.Int("slurm-max-active", 8, "maximum active Slurm jobs")
-	retry := fs.Int("retry", 0, "retry failed jobs up to N times")
-	failed := fs.Bool("failed", false, "run failed jobs from the latest run")
-	unfinished := fs.Bool("unfinished", false, "run unfinished jobs from the latest run")
-	success := fs.Bool("success", false, "run successful jobs from the latest run")
-	nonsuccess := fs.Bool("nonsuccess", false, "run failed and unfinished jobs from the latest run")
-	async := fs.Bool("async", false, "return after starting the run")
-	backend := fs.String("backend", "", "execution backend override: local or slurm")
+	basedir := cliString(fs, "basedir", "")
+	queueNameOption := cliString(fs, "queue-name", "")
+	localConcurrency := cliInt(fs, "local-concurrency", 8)
+	slurmMaxActive := cliInt(fs, "slurm-max-active", 8)
+	retry := cliInt(fs, "retry", 0)
+	failed := cliBool(fs, "failed", false)
+	unfinished := cliBool(fs, "unfinished", false)
+	success := cliBool(fs, "success", false)
+	nonsuccess := cliBool(fs, "nonsuccess", false)
+	async := cliBool(fs, "async", false)
+	backend := cliString(fs, "backend", "")
 	var sbatchOptions stringSliceFlag
-	fs.Var(&sbatchOptions, "sbatch-option", "option passed to sbatch; may be repeated")
+	cliValue(fs, &sbatchOptions, "sbatch-option")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -244,7 +252,7 @@ func cmdRun(args []string) int {
 		}
 	}
 	if len(left) != 0 || *localConcurrency < 1 || *slurmMaxActive < 1 || *retry < -1 {
-		fmt.Fprintln(os.Stderr, "usage: jobq run [--basedir DIR] [--queue-name NAME] [--local-concurrency N] [--slurm-max-active N] [--retry N] [--failed|--unfinished|--success|--nonsuccess] [--async]")
+		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("run"))
 		return 1
 	}
 	baseDir, _, err := resolveBaseDir(*basedir)
@@ -252,20 +260,30 @@ func cmdRun(args []string) int {
 		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
 		return 1
 	}
+	queueName, err := resolveQueueName(baseDir, *queueNameOption)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	if selection != "" {
-		if _, err := prepareRunSelection(baseDir, resolveQueueName(*queueNameOption), selection); err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			fmt.Fprintf(os.Stderr, "inspect latest run with: jobq show --basedir %s --queue-name %s\n", baseDir, resolveQueueName(*queueNameOption))
-			return 1
+		if _, err := prepareRunSelection(baseDir, queueName, selection); err != nil {
+			if errors.Is(err, errNoPreviousRun) {
+				fmt.Fprintf(os.Stderr, "queue %q has no previous run; ignoring --%s\n", queueName, selection)
+				selection = ""
+			} else {
+				fmt.Fprintf(os.Stderr, "%v\n", err)
+				fmt.Fprintf(os.Stderr, "inspect latest run with: jobq show --basedir %s --queue-name %s\n", baseDir, queueName)
+				return 1
+			}
 		}
 	}
 	if err := ensureServer(baseDir); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	fmt.Printf("%s\n  Base directory: %s\n  Queue: %s\n", green("Run started:"), baseDir, resolveQueueName(*queueNameOption))
+	fmt.Printf("%s\n  Base directory: %s\n  Queue: %s\n", green("Run started:"), baseDir, queueName)
 	request := serverRequest{
-		Op: "run", QueueName: resolveQueueName(*queueNameOption), LocalConcurrency: *localConcurrency, SlurmMaxActive: *slurmMaxActive, Retry: *retry, Async: *async,
+		Op: "run", QueueName: queueName, LocalConcurrency: *localConcurrency, SlurmMaxActive: *slurmMaxActive, Retry: *retry, Async: *async,
 		Backend: *backend, SbatchOptions: sbatchOptions,
 	}
 	var response serverResponse
@@ -289,7 +307,7 @@ func cmdRun(args []string) int {
 func cmdServerProcess(args []string) int {
 	fs := flag.NewFlagSet("__server", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	basedir := fs.String("basedir", "", "state directory")
+	basedir := cliString(fs, "basedir", "")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -420,7 +438,7 @@ func (server *jobqServer) handle(baseDir string, conn net.Conn) {
 	case "ping":
 		response = serverResponse{OK: true, PID: os.Getpid()}
 	case "submit":
-		message, err := enqueueCommand(baseDir, request.QueueName, request.Command, request.Backend, request.SbatchOptions)
+		message, err := enqueueCommand(baseDir, request.QueueName, request.Command, request.Backend, request.SbatchOptions, request.JobName)
 		response = serverResponse{OK: err == nil, Message: message}
 		if err != nil {
 			response.Message = err.Error()
@@ -495,14 +513,14 @@ func runServerSyncWithDisconnect(conn net.Conn, baseDir, queueName string, local
 func cmdCancel(args []string) int {
 	fs := flag.NewFlagSet("cancel", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	basedir := fs.String("basedir", "", "state directory")
-	queueNameOption := fs.String("queue-name", "", "queue name")
-	wait := fs.Bool("wait", false, "wait until cancellation is complete")
+	basedir := cliString(fs, "basedir", "")
+	queueNameOption := cliString(fs, "queue-name", "")
+	wait := cliBool(fs, "wait", false)
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 	if len(fs.Args()) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: jobq cancel [--basedir DIR] [--queue-name NAME] [--wait]")
+		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("cancel"))
 		return 1
 	}
 	baseDir, _, err := resolveBaseDir(*basedir)
@@ -510,11 +528,16 @@ func cmdCancel(args []string) int {
 		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
 		return 1
 	}
+	queueName, err := resolveQueueName(baseDir, *queueNameOption)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	if err := ensureServer(baseDir); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	response, err := sendServerRequest(baseDir, serverRequest{Op: "cancel", QueueName: resolveQueueName(*queueNameOption), Wait: *wait})
+	response, err := sendServerRequest(baseDir, serverRequest{Op: "cancel", QueueName: queueName, Wait: *wait})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to contact server: %v\n", err)
 		return 1
@@ -713,7 +736,7 @@ func finishCancelMessage(message string, paths pathSet, queueName, runID string,
 	return message, nil
 }
 
-func enqueueCommand(baseDir, queueName string, command []string, backend string, sbatchOptions []string) (string, error) {
+func enqueueCommand(baseDir, queueName string, command []string, backend string, sbatchOptions []string, jobName string) (string, error) {
 	if queueName == "" || len(command) == 0 {
 		return "", errors.New("queue name and command are required")
 	}
@@ -758,7 +781,7 @@ func enqueueCommand(baseDir, queueName string, command []string, backend string,
 		queue.DefaultSbatchOptions = append([]string(nil), sbatchOptions...)
 	}
 	queue.Commands = append(queue.Commands, QueuedCommand{
-		Command: command, Backend: backend, SbatchOptions: sbatchOptions,
+		Command: command, Backend: backend, SbatchOptions: sbatchOptions, Name: jobName,
 	})
 	if err := writeJSON(paths.queueFile, queue); err != nil {
 		return "", err
