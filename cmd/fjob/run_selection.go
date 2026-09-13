@@ -36,6 +36,9 @@ func prepareRunSelection(baseDir, queueName, selection string) (int, error) {
 		return 0, fmt.Errorf("queue '%s' has no previous run: %w", queueName, errNoPreviousRun)
 	}
 	runDir := filepath.Join(paths.runsDir, meta.LastRunID)
+	if diff, err := compareQueueWithRun(paths.queueFile, filepath.Join(runDir, "commands.json")); err == nil && diff.HasChanges() {
+		fmt.Printf("Queue differs from previous run %s:\n  Added: %d\n  Removed: %d\n  Changed: %d\n", meta.LastRunID, diff.Added, diff.Removed, diff.Changed)
+	}
 	summary, err := loadRunSummary(filepath.Join(runDir, "summary.json"))
 	if err != nil {
 		return 0, fmt.Errorf("failed to load run summary: %w", err)
@@ -82,6 +85,6 @@ func prepareRunSelection(baseDir, queueName, selection string) (int, error) {
 	if err := writeJSON(paths.queueFile, snapshot); err != nil {
 		return 0, fmt.Errorf("failed to prepare selected jobs: %w", err)
 	}
-	fmt.Printf("selected jobs=%d queue=%s filter=%s\n", len(selected), queueName, selection)
+	fmt.Printf("selected jobs=%d/%d queue=%s filter=--%s run=%s\n", len(selected), len(snapshot.Commands), queueName, selection, meta.LastRunID)
 	return len(selected), nil
 }

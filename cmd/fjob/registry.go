@@ -23,17 +23,17 @@ func resolveMasterDir(cliMasterDir string) (string, error) {
 	if cliMasterDir != "" {
 		return cliMasterDir, nil
 	}
-	if value := os.Getenv("JOBQ_MASTERDIR"); value != "" {
+	if value := os.Getenv("FJOB_MASTERDIR"); value != "" {
 		return value, nil
 	}
 	if value := os.Getenv("XDG_STATE_HOME"); value != "" {
-		return filepath.Join(value, "jobq", "master"), nil
+		return filepath.Join(value, "fjob", "master"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".local", "state", "jobq", "master"), nil
+	return filepath.Join(home, ".local", "state", "fjob", "master"), nil
 }
 
 func serverRecordPath(masterDir, baseDir string) string {

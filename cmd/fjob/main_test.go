@@ -11,7 +11,7 @@ import (
 )
 
 func TestResolveQueueNamePriority(t *testing.T) {
-	const envName = "JOBQ_QUEUE_NAME"
+	const envName = "FJOB_QUEUE_NAME"
 	old, existed := os.LookupEnv(envName)
 	t.Cleanup(func() {
 		if existed {
@@ -64,7 +64,7 @@ func TestResolveQueueNamePriority(t *testing.T) {
 }
 
 func TestResolveBaseDirPriority(t *testing.T) {
-	const envName = "JOBQ_BASEDIR"
+	const envName = "FJOB_BASEDIR"
 	old, existed := os.LookupEnv(envName)
 	t.Cleanup(func() {
 		if existed {
@@ -89,14 +89,14 @@ func TestResolveBaseDirPriority(t *testing.T) {
 		_ = os.Chdir(cwd)
 	})
 
-	// 1. Fallback to default (home directory, etc.) if .jobq-state does not exist in current dir
+	// 1. Fallback to default (home directory, etc.) if .fjob-state does not exist in current dir
 	_, _, err = resolveBaseDir("")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// 2. Prefer .jobq-state in current dir if it exists
-	localState := filepath.Join(tempDir, ".jobq-state")
+	// 2. Prefer .fjob-state in current dir if it exists
+	localState := filepath.Join(tempDir, ".fjob-state")
 	if err := os.Mkdir(localState, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestResolveBaseDirPriority(t *testing.T) {
 		t.Fatalf("current dir priority: got %q, want %q", got, localState)
 	}
 
-	// 3. JOBQ_BASEDIR environment variable priority
+	// 3. FJOB_BASEDIR environment variable priority
 	if err := os.Setenv(envName, "/env/basedir"); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestAppendCompletionBlockIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count := strings.Count(string(data), "# jobq completion (bash)"); count != 1 {
+	if count := strings.Count(string(data), "# fjob completion (bash)"); count != 1 {
 		t.Fatalf("completion marker count = %d, want 1", count)
 	}
 }
@@ -258,10 +258,10 @@ func TestInstallCompletionForBash(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(data)
-	if strings.Count(content, "# jobq completion (bash)") != 1 {
+	if strings.Count(content, "# fjob completion (bash)") != 1 {
 		t.Fatal("Bash completion block was installed more than once")
 	}
-	if !strings.Contains(content, `eval "$(jobq completion bash)"`) {
+	if !strings.Contains(content, `eval "$(fjob completion bash)"`) {
 		t.Fatal("Bash completion command is missing")
 	}
 }
@@ -277,18 +277,18 @@ func TestInstallCompletionForZsh(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	completion, err := os.ReadFile(filepath.Join(home, ".zfunc", "_jobq"))
+	completion, err := os.ReadFile(filepath.Join(home, ".zfunc", "_fjob"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(completion), "#compdef jobq") {
+	if !strings.Contains(string(completion), "#compdef fjob") {
 		t.Fatal("Zsh completion header is missing")
 	}
 	rc, err := os.ReadFile(filepath.Join(home, ".zshrc"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(rc), "# jobq completion (zsh)") != 1 {
+	if strings.Count(string(rc), "# fjob completion (zsh)") != 1 {
 		t.Fatal("Zsh completion block was installed more than once")
 	}
 }
@@ -302,5 +302,33 @@ func TestPrepareRunSelectionWithoutPreviousRun(t *testing.T) {
 	_, err := prepareRunSelection(baseDir, "default", "failed")
 	if !errors.Is(err, errNoPreviousRun) {
 		t.Fatalf("error = %v, want errNoPreviousRun", err)
+	}
+}
+
+func TestCompareQueueWithRun(t *testing.T) {
+	dir := t.TempDir()
+	queuePath := filepath.Join(dir, "queue.json")
+	runPath := filepath.Join(dir, "commands.json")
+	if err := writeJSON(queuePath, Queue{Commands: []QueuedCommand{
+		{Command: []string{"echo", "same"}, Name: "same"},
+		{Command: []string{"echo", "changed"}, Name: "new-name"},
+		{Command: []string{"echo", "added"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(runPath, Queue{Commands: []QueuedCommand{
+		{Command: []string{"echo", "same"}, Name: "same"},
+		{Command: []string{"echo", "changed"}, Name: "old-name"},
+		{Command: []string{"echo", "removed"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	diff, err := compareQueueWithRun(queuePath, runPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Added != 1 || diff.Removed != 1 || diff.Changed != 1 {
+		t.Fatalf("diff = %#v, want added=1 removed=1 changed=1", diff)
 	}
 }

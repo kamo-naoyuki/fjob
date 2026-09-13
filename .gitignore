@@ -1,4 +1,6 @@
-# Go build artifacts and local jobq state
+# Go build artifacts and local fjob state
+/fjob
+/.fjob-state/
 /jobq
 /.jobq-state/
 /.example-state*/

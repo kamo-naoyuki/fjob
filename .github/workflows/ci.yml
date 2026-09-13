@@ -36,7 +36,7 @@ jobs:
         run: go test ./...
 
       - name: Build
-        run: go build ./cmd/jobq
+        run: go build ./cmd/fjob
 
       - name: Check example script
         run: bash -n example.sh

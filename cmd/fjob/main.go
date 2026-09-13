@@ -144,7 +144,7 @@ func run(args []string) int {
 }
 
 func printUsage() {
-	fmt.Println("jobq: lightweight local job queue")
+	fmt.Println("fjob: lightweight local job queue")
 	fmt.Println("")
 	fmt.Println("Usage:")
 	for _, command := range cliCommandSpecs {
@@ -187,7 +187,7 @@ func cmdCheck(args []string) int {
 	}
 	if running {
 		fmt.Fprintln(os.Stderr, red(fmt.Sprintf("queue '%s' is running; new jobs are not allowed", queueName)))
-		fmt.Fprintf(os.Stderr, "cancel with: jobq cancel --basedir %s --queue-name %s\n", paths.baseDir, queueName)
+		fmt.Fprintf(os.Stderr, "cancel with: fjob cancel --basedir %s --queue-name %s\n", paths.baseDir, queueName)
 		return 1
 	}
 	if *serverRequired {
@@ -216,7 +216,7 @@ func cmdWorkerRun(args []string) int {
 	}
 	left := fs.Args()
 	if len(left) != 5 {
-		fmt.Fprintln(os.Stderr, "usage: jobq __worker-run [--basedir DIR] <queue_name> <run_id> <local_concurrency> <slurm_max_active> <retry>")
+		fmt.Fprintln(os.Stderr, "usage: fjob __worker-run [--basedir DIR] <queue_name> <run_id> <local_concurrency> <slurm_max_active> <retry>")
 		return 1
 	}
 	queueName := left[0]
@@ -415,7 +415,7 @@ func failedJobHints(paths pathSet, runID string, results []JobResult) string {
 			continue
 		}
 		seen[result.ID] = true
-		fmt.Fprintf(&hints, "  Job: %s\n  Command: %s\n  Show output:\n    jobq show --basedir %s --queue-name %s --run-id %s --job-id %s\n",
+		fmt.Fprintf(&hints, "  Job: %s\n  Command: %s\n  Show output:\n    fjob show --basedir %s --queue-name %s --run-id %s --job-id %s\n",
 			result.ID, strings.Join(result.Command, " "), paths.baseDir, paths.queueName, runID, result.ID)
 	}
 	return hints.String()
@@ -541,30 +541,30 @@ func resolveBaseDir(cliBaseDir string) (string, bool, error) {
 	if cliBaseDir != "" {
 		return cliBaseDir, true, nil
 	}
-	if v := os.Getenv("JOBQ_BASEDIR"); v != "" {
+	if v := os.Getenv("FJOB_BASEDIR"); v != "" {
 		return v, true, nil
 	}
 	if cwd, err := os.Getwd(); err == nil {
-		localState := filepath.Join(cwd, ".jobq-state")
+		localState := filepath.Join(cwd, ".fjob-state")
 		if info, err := os.Stat(localState); err == nil && info.IsDir() {
 			return localState, false, nil
 		}
 	}
 	if v := os.Getenv("XDG_STATE_HOME"); v != "" {
-		return filepath.Join(v, "jobq"), false, nil
+		return filepath.Join(v, "fjob"), false, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", false, err
 	}
-	return filepath.Join(home, ".local", "state", "jobq"), false, nil
+	return filepath.Join(home, ".local", "state", "fjob"), false, nil
 }
 
 func resolveQueueName(baseDir string, cliQueueName string) (string, error) {
 	if cliQueueName != "" {
 		return cliQueueName, nil
 	}
-	if value := os.Getenv("JOBQ_QUEUE_NAME"); value != "" {
+	if value := os.Getenv("FJOB_QUEUE_NAME"); value != "" {
 		return value, nil
 	}
 	queuesDir := filepath.Join(baseDir, "queues")
@@ -585,7 +585,7 @@ func resolveQueueName(baseDir string, cliQueueName string) (string, error) {
 			for _, q := range available {
 				list = append(list, "  - "+q)
 			}
-			return "", fmt.Errorf("multiple queues exist, please specify one with --queue-name or JOBQ_QUEUE_NAME:\n%s", strings.Join(list, "\n"))
+			return "", fmt.Errorf("multiple queues exist, please specify one with --queue-name or FJOB_QUEUE_NAME:\n%s", strings.Join(list, "\n"))
 		}
 	}
 	return defaultQueueName, nil
@@ -637,7 +637,7 @@ func writeJSON(path string, v any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".jobq-tmp-")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".fjob-tmp-")
 	if err != nil {
 		return err
 	}

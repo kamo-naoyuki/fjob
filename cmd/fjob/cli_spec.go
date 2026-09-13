@@ -37,7 +37,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "check",
 		Description: "check queue and dependencies",
-		Usage:       "jobq check [--basedir DIR] [--queue-name NAME] [--server]",
+		Usage:       "fjob check [--basedir DIR] [--queue-name NAME] [--server]",
 		Flags: append(commonCLIFlags(), cliFlagSpec{
 			Name: "server", Description: "also require a running server",
 		}),
@@ -45,7 +45,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "cancel",
 		Description: "cancel the current run",
-		Usage:       "jobq cancel [--basedir DIR] [--queue-name NAME] [--wait]",
+		Usage:       "fjob cancel [--basedir DIR] [--queue-name NAME] [--wait]",
 		Flags: append(commonCLIFlags(), cliFlagSpec{
 			Name: "wait", Description: "wait until cancellation is complete",
 		}),
@@ -53,13 +53,13 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "clear",
 		Description: "clear saved run history",
-		Usage:       "jobq clear [--basedir DIR] [--queue-name NAME]",
+		Usage:       "fjob clear [--basedir DIR] [--queue-name NAME]",
 		Flags:       commonCLIFlags(),
 	},
 	{
 		Name:        "show",
 		Description: "show queue or run status",
-		Usage:       "jobq show [--basedir DIR] [--queue-name NAME] [--run-id ID] [--job-id ID] [--failed] [--logs] [--failed-logs] [--runs]",
+		Usage:       "fjob show [--basedir DIR] [--queue-name NAME] [--run-id ID] [--job-id ID] [--failed] [--logs] [--failed-logs] [--runs]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "run-id", Description: "run ID", ValueName: "ID"},
 			cliFlagSpec{Name: "job-id", Description: "job ID", ValueName: "ID"},
@@ -72,7 +72,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "wait",
 		Description: "wait for an asynchronous run",
-		Usage:       "jobq wait [--basedir DIR] [--queue-name NAME] --run-id ID [--timeout DURATION]",
+		Usage:       "fjob wait [--basedir DIR] [--queue-name NAME] --run-id ID [--timeout DURATION]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "run-id", Description: "run ID", ValueName: "ID"},
 			cliFlagSpec{Name: "timeout", Description: "maximum wait duration", ValueName: "DURATION"},
@@ -81,7 +81,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "submit",
 		Description: "add a command to a queue",
-		Usage:       "jobq submit [--basedir DIR] [--queue-name NAME] [--backend BACKEND] [--sbatch-option OPTION] [--job-name NAME] <command ...>",
+		Usage:       "fjob submit [--basedir DIR] [--queue-name NAME] [--backend BACKEND] [--sbatch-option OPTION] [--job-name NAME] <command ...>",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "backend", Description: "job backend", ValueName: "BACKEND", Values: []string{"local", "slurm"}},
 			cliFlagSpec{Name: "sbatch-option", Description: "option passed to sbatch", ValueName: "OPTION"},
@@ -93,7 +93,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "run",
 		Description: "execute queued commands",
-		Usage:       "jobq run [--basedir DIR] [--queue-name NAME] [--local-concurrency N] [--slurm-max-active N] [--retry N] [--failed|--unfinished|--success|--nonsuccess] [--async] [--backend BACKEND] [--sbatch-option OPTION]",
+		Usage:       "fjob run [--basedir DIR] [--queue-name NAME] [--local-concurrency N] [--slurm-max-active N] [--retry N] [--failed|--unfinished|--success|--nonsuccess] [--async] [--backend BACKEND] [--sbatch-option OPTION]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "local-concurrency", Description: "local worker concurrency", ValueName: "N"},
 			cliFlagSpec{Name: "slurm-max-active", Description: "maximum active Slurm jobs", ValueName: "N"},
@@ -110,7 +110,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "server",
 		Description: "manage the background server",
-		Usage:       "jobq server <status|list|shutdown> [--basedir DIR] [--masterdir DIR]",
+		Usage:       "fjob server <status|list|shutdown> [--basedir DIR] [--masterdir DIR]",
 		Flags: []cliFlagSpec{
 			{Name: "basedir", Description: "state directory", ValueName: "DIR"},
 			{Name: "masterdir", Description: "server registry directory", ValueName: "DIR"},
@@ -124,7 +124,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "completion",
 		Description: "print shell completion script",
-		Usage:       "jobq completion <bash|zsh|install [bash|zsh]>",
+		Usage:       "fjob completion <bash|zsh|install [bash|zsh]>",
 		Subcommands: []cliSubcommandSpec{
 			{Name: "bash", Description: "bash completion"},
 			{Name: "zsh", Description: "zsh completion"},
@@ -134,7 +134,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "version",
 		Description: "print version",
-		Usage:       "jobq version",
+		Usage:       "fjob version",
 	},
 }
 
@@ -152,7 +152,7 @@ func cliUsage(name string) string {
 			return command.Usage
 		}
 	}
-	return "jobq " + name
+	return "fjob " + name
 }
 
 func cliSubcommandNames(name string) []string {

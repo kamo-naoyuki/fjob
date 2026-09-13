@@ -9,12 +9,12 @@ import (
 
 func cmdCompletion(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: jobq completion <bash|zsh|install [bash|zsh]>")
+		fmt.Fprintln(os.Stderr, "usage: fjob completion <bash|zsh|install [bash|zsh]>")
 		return 1
 	}
 	if args[0] == "install" {
 		if len(args) > 2 {
-			fmt.Fprintln(os.Stderr, "usage: jobq completion install [bash|zsh]")
+			fmt.Fprintln(os.Stderr, "usage: fjob completion install [bash|zsh]")
 			return 1
 		}
 		shell := ""
@@ -54,15 +54,15 @@ func installCompletion(shell string) error {
 	switch shell {
 	case "bash":
 		path := filepath.Join(home, ".bashrc")
-		return appendCompletionBlock(path, "bash", `if command -v jobq >/dev/null 2>&1; then
-    eval "$(jobq completion bash)"
+		return appendCompletionBlock(path, "bash", `if command -v fjob >/dev/null 2>&1; then
+    eval "$(fjob completion bash)"
 fi`)
 	case "zsh":
 		zfuncDir := filepath.Join(home, ".zfunc")
 		if err := os.MkdirAll(zfuncDir, 0o755); err != nil {
 			return fmt.Errorf("failed to create %s: %w", zfuncDir, err)
 		}
-		completionPath := filepath.Join(zfuncDir, "_jobq")
+		completionPath := filepath.Join(zfuncDir, "_fjob")
 		if err := os.WriteFile(completionPath, []byte(generateZshCompletion()), 0o644); err != nil {
 			return fmt.Errorf("failed to write %s: %w", completionPath, err)
 		}
@@ -79,7 +79,7 @@ autoload -Uz compinit && compinit`); err != nil {
 }
 
 func appendCompletionBlock(path, shell, block string) error {
-	marker := "# jobq completion (" + shell + ")"
+	marker := "# fjob completion (" + shell + ")"
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to read %s: %w", path, err)
@@ -102,7 +102,7 @@ func appendCompletionBlock(path, shell, block string) error {
 
 func generateBashCompletion() string {
 	var builder strings.Builder
-	builder.WriteString("# bash completion for jobq\n_jobq_completion() {\n")
+	builder.WriteString("# bash completion for fjob\n_fjob_completion() {\n")
 	builder.WriteString("    local cur prev command\n    cur=\"${COMP_WORDS[COMP_CWORD]}\"\n")
 	builder.WriteString("    prev=\"${COMP_WORDS[COMP_CWORD-1]}\"\n    command=\"${COMP_WORDS[1]}\"\n\n")
 	builder.WriteString("    if [[ ${COMP_CWORD} -eq 1 ]]; then\n")
@@ -138,7 +138,7 @@ func generateBashCompletion() string {
 		}
 		builder.WriteString("            ;;\n")
 	}
-	builder.WriteString("    esac\n}\ncomplete -F _jobq_completion jobq\n")
+	builder.WriteString("    esac\n}\ncomplete -F _fjob_completion fjob\n")
 	return builder.String()
 }
 
@@ -152,22 +152,25 @@ func bashOptions(flags []cliFlagSpec) string {
 
 func generateZshCompletion() string {
 	var builder strings.Builder
-	builder.WriteString("#compdef jobq\n\n_jobq() {\n    local -a commands\n    commands=(\n")
+	builder.WriteString("#compdef fjob\n\n_fjob() {\n    local -a commands\n    commands=(\n")
 	for _, command := range cliCommandSpecs {
 		fmt.Fprintf(&builder, "        '%s:%s'\n", command.Name, command.Description)
 	}
 	builder.WriteString("    )\n\n    if (( CURRENT == 2 )); then\n        _describe 'command' commands\n        return\n    fi\n\n    case $words[2] in\n")
+	subcommandIndex := 0
 	for _, command := range cliCommandSpecs {
 		if len(command.Flags) == 0 && len(command.Subcommands) == 0 {
 			continue
 		}
 		fmt.Fprintf(&builder, "        %s)\n", command.Name)
 		if len(command.Subcommands) > 0 {
-			values := make([]string, 0, len(command.Subcommands))
+			arrayName := fmt.Sprintf("subcommands%d", subcommandIndex)
+			subcommandIndex++
+			fmt.Fprintf(&builder, "            local -a %s\n            %s=(\n", arrayName, arrayName)
 			for _, subcommand := range command.Subcommands {
-				values = append(values, fmt.Sprintf("'%s:%s'", subcommand.Name, subcommand.Description))
+				fmt.Fprintf(&builder, "                '%s:%s'\n", subcommand.Name, subcommand.Description)
 			}
-			fmt.Fprintf(&builder, "            if (( CURRENT == 3 )); then\n                _describe 'subcommand' %s\n            else\n", strings.Join(values, " "))
+			fmt.Fprintf(&builder, "            )\n            if (( CURRENT == 3 )); then\n                _describe 'subcommand' %s\n            else\n", arrayName)
 			if len(command.Flags) > 0 {
 				fmt.Fprintf(&builder, "                _arguments %s\n", zshArguments(command.Flags))
 			}

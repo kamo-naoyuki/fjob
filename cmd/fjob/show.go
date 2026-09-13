@@ -120,6 +120,10 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 	if summaryOK {
 		fmt.Printf("Started: %s\nFinished: %s\nExit code: %d\n", summary.StartedAt, summary.FinishedAt, summary.ExitCode)
 	}
+	if diff, err := compareQueueWithRun(paths.queueFile, filepath.Join(runDir, "commands.json")); err == nil && diff.HasChanges() {
+		fmt.Printf("\n%s\n", yellow("Queue differs from this run:"))
+		fmt.Printf("  Added: %d\n  Removed: %d\n  Changed: %d\n", diff.Added, diff.Removed, diff.Changed)
+	}
 	jobSpecs := loadRunJobSpecs(runDir)
 
 	entries, err := os.ReadDir(runDir)
@@ -176,8 +180,81 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		}
 	}
 	fmt.Printf("\n%s\n", cyan("Output directory: "+runDir))
-	fmt.Printf("\nTo clear all saved run logs:\n  jobq clear --basedir %s --queue-name %s\n", paths.baseDir, paths.queueName)
+	fmt.Printf("\nTo clear all saved run logs:\n  fjob clear --basedir %s --queue-name %s\n", paths.baseDir, paths.queueName)
 	return 0
+}
+
+type queueRunDiff struct {
+	Added   int
+	Removed int
+	Changed int
+}
+
+func (diff queueRunDiff) HasChanges() bool {
+	return diff.Added != 0 || diff.Removed != 0 || diff.Changed != 0
+}
+
+func compareQueueWithRun(queuePath, runCommandsPath string) (queueRunDiff, error) {
+	current, err := loadQueue(queuePath)
+	if err != nil {
+		return queueRunDiff{}, err
+	}
+	runData, err := os.ReadFile(runCommandsPath)
+	if err != nil {
+		return queueRunDiff{}, err
+	}
+	var runQueue Queue
+	if err := json.Unmarshal(runData, &runQueue); err != nil {
+		return queueRunDiff{}, err
+	}
+
+	currentJobs := queueToJobs(current.Commands)
+	runJobs := queueToJobs(runQueue.Commands)
+	currentByID := make(map[string]JobSpec, len(currentJobs))
+	for _, job := range currentJobs {
+		currentByID[job.ID] = job
+	}
+	runByID := make(map[string]JobSpec, len(runJobs))
+	for _, job := range runJobs {
+		runByID[job.ID] = job
+	}
+	var diff queueRunDiff
+	for id, currentJob := range currentByID {
+		runJob, ok := runByID[id]
+		if !ok {
+			diff.Added++
+		} else if !sameJobSpec(currentJob, runJob) {
+			diff.Changed++
+		}
+	}
+	for id := range runByID {
+		if _, ok := currentByID[id]; !ok {
+			diff.Removed++
+		}
+	}
+	return diff, nil
+}
+
+func sameJobSpec(left, right JobSpec) bool {
+	if left.ID != right.ID || left.Name != right.Name || left.Backend != right.Backend {
+		return false
+	}
+	if !slicesEqual(left.Command, right.Command) || !slicesEqual(left.SbatchOptions, right.SbatchOptions) {
+		return false
+	}
+	return true
+}
+
+func slicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func showRuns(paths pathSet) int {

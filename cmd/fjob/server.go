@@ -45,7 +45,7 @@ type serverResponse struct {
 	Failed    int    `json:"failed,omitempty"`
 }
 
-type jobqServer struct {
+type fjobServer struct {
 	listener   net.Listener
 	stopped    chan struct{}
 	stopOnce   sync.Once
@@ -272,7 +272,7 @@ func cmdRun(args []string) int {
 				selection = ""
 			} else {
 				fmt.Fprintf(os.Stderr, "%v\n", err)
-				fmt.Fprintf(os.Stderr, "inspect latest run with: jobq show --basedir %s --queue-name %s\n", baseDir, queueName)
+				fmt.Fprintf(os.Stderr, "inspect latest run with: fjob show --basedir %s --queue-name %s\n", baseDir, queueName)
 				return 1
 			}
 		}
@@ -363,7 +363,7 @@ func runServer(baseDir string) int {
 	}
 	defer unregisterServer(masterDir, baseDir)
 
-	server := &jobqServer{listener: listener, stopped: make(chan struct{}), lastAccess: time.Now()}
+	server := &fjobServer{listener: listener, stopped: make(chan struct{}), lastAccess: time.Now()}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
@@ -384,7 +384,7 @@ func runServer(baseDir string) int {
 	}
 }
 
-func (server *jobqServer) isStopped() bool {
+func (server *fjobServer) isStopped() bool {
 	select {
 	case <-server.stopped:
 		return true
@@ -393,20 +393,20 @@ func (server *jobqServer) isStopped() bool {
 	}
 }
 
-func (server *jobqServer) stop() {
+func (server *fjobServer) stop() {
 	server.stopOnce.Do(func() {
 		close(server.stopped)
 		_ = server.listener.Close()
 	})
 }
 
-func (server *jobqServer) touch() {
+func (server *fjobServer) touch() {
 	server.accessMu.Lock()
 	server.lastAccess = time.Now()
 	server.accessMu.Unlock()
 }
 
-func (server *jobqServer) idleChecker(masterDir, baseDir string) {
+func (server *fjobServer) idleChecker(masterDir, baseDir string) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
@@ -424,7 +424,7 @@ func (server *jobqServer) idleChecker(masterDir, baseDir string) {
 	}
 }
 
-func (server *jobqServer) handle(baseDir string, conn net.Conn) {
+func (server *fjobServer) handle(baseDir string, conn net.Conn) {
 	defer conn.Close()
 	server.touch()
 	var request serverRequest
@@ -550,14 +550,14 @@ func cmdCancel(args []string) int {
 	return 0
 }
 
-func (server *jobqServer) beginRun() {
+func (server *fjobServer) beginRun() {
 	server.accessMu.Lock()
 	server.activeRuns++
 	server.lastAccess = time.Now()
 	server.accessMu.Unlock()
 }
 
-func (server *jobqServer) endRun() {
+func (server *fjobServer) endRun() {
 	server.accessMu.Lock()
 	server.activeRuns--
 	server.lastAccess = time.Now()
@@ -568,7 +568,7 @@ func (server *jobqServer) endRun() {
 	}
 }
 
-func (server *jobqServer) isBusy() bool {
+func (server *fjobServer) isBusy() bool {
 	server.accessMu.Lock()
 	defer server.accessMu.Unlock()
 	return server.activeRuns > 0
@@ -732,7 +732,7 @@ func finishCancelMessage(message string, paths pathSet, queueName, runID string,
 			time.Sleep(500 * time.Millisecond)
 		}
 	}
-	message += fmt.Sprintf("\n\nInspect status:\n  jobq show --basedir %s --queue-name %s --run-id %s", paths.baseDir, queueName, runID)
+	message += fmt.Sprintf("\n\nInspect status:\n  fjob show --basedir %s --queue-name %s --run-id %s", paths.baseDir, queueName, runID)
 	return message, nil
 }
 
@@ -826,7 +826,7 @@ func startServerRun(baseDir, queueName string, localConcurrency, slurmMaxActive,
 		return "", errors.New("queue is already running")
 	}
 	runDir := filepath.Join(paths.runsDir, runID)
-	return fmt.Sprintf("Run started:\n  Queue: %s\n  Run: %s\n  Directory: %s\n\nCheck status:\n  jobq show --basedir %s --queue-name %s --run-id %s\n\nCancel run:\n  jobq cancel --basedir %s --queue-name %s",
+	return fmt.Sprintf("Run started:\n  Queue: %s\n  Run: %s\n  Directory: %s\n\nCheck status:\n  fjob show --basedir %s --queue-name %s --run-id %s\n\nCancel run:\n  fjob cancel --basedir %s --queue-name %s",
 		queueName, runID, runDir, paths.baseDir, queueName, runID, paths.baseDir, queueName), nil
 }
 
@@ -883,7 +883,7 @@ func runServerSync(baseDir, queueName string, localConcurrency, slurmMaxActive, 
 		if progress != nil {
 			message := ""
 			if result.ExitCode != 0 && retry == 0 {
-				message = fmt.Sprintf("Job failed:\n  ID: %s\n  Command: %s\n  Show output:\n    jobq show --basedir %s --queue-name %s --run-id %s --job-id %s",
+				message = fmt.Sprintf("Job failed:\n  ID: %s\n  Command: %s\n  Show output:\n    fjob show --basedir %s --queue-name %s --run-id %s --job-id %s",
 					result.ID, strings.Join(result.Command, " "), paths.baseDir, paths.queueName, runID, result.ID)
 			} else if strings.HasPrefix(result.Error, "retry:") {
 				message = fmt.Sprintf("Retrying job: attempt=%s job=%s command=%v", strings.TrimPrefix(result.Error, "retry:"), result.ID, result.Command)
