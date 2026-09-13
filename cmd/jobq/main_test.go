@@ -294,7 +294,12 @@ func TestInstallCompletionForZsh(t *testing.T) {
 }
 
 func TestPrepareRunSelectionWithoutPreviousRun(t *testing.T) {
-	_, err := prepareRunSelection(t.TempDir(), "default", "failed")
+	baseDir := t.TempDir()
+	queueDir := filepath.Join(baseDir, "queues", "default")
+	if err := os.MkdirAll(queueDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := prepareRunSelection(baseDir, "default", "failed")
 	if !errors.Is(err, errNoPreviousRun) {
 		t.Fatalf("error = %v, want errNoPreviousRun", err)
 	}
