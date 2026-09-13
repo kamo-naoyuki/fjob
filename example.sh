@@ -6,7 +6,7 @@ PATH="${script_dir}:${PATH}"
 export PATH
 export JOBQ_BASEDIR=${JOBQ_BASEDIR:-"${script_dir}/.jobq-state"}
 export JOBQ_QUEUE_NAME=${JOBQ_QUEUE_NAME:-${1:-demo}}
-slurm_options=${JOBQ_SLURM_OPTIONS:--p\ cpu}
+slurm_options=${JOBQ_SLURM_OPTIONS:-}
 async=${JOBQ_ASYNC:-false}
 
 if ! command -v jobq >/dev/null 2>&1; then
