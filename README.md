@@ -52,6 +52,22 @@ jobq run --queue-name build
 completion. The queue name can be supplied with `--queue-name`,
 `JOBQ_QUEUE_NAME`, or omitted to use `default`.
 
+## Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `JOBQ_BASEDIR` | Base directory for queue state. Overridden by `--basedir`. |
+| `JOBQ_QUEUE_NAME` | Default queue name. Overridden by `--queue-name`. |
+| `JOBQ_MASTERDIR` | Directory used by `jobq server list` to find supervisors. |
+| `XDG_STATE_HOME` | Base location used when `JOBQ_BASEDIR` or `JOBQ_MASTERDIR` is not set. |
+
+The included `example.sh` also supports:
+
+| Variable | Purpose |
+| --- | --- |
+| `JOBQ_SLURM_PARTITION` | Slurm partition used by the example; defaults to `cpu`. |
+| `JOBQ_ASYNC` | Set to `true` to run the example asynchronously; defaults to `false`. |
+
 ## Slurm
 
 Backend and Slurm options can be set per command:
@@ -62,11 +78,13 @@ jobq submit --queue-name build \
   --backend slurm \
   --sbatch-option="-p short --cpus-per-task=2" \
   ./heavy-test.sh
-jobq run --queue-name build --local-concurrency 4 --slurm-max-active 8
+jobq run --queue-name build --local-concurrency 4 --slurm-max-active 8 --retry 2
 ```
 
 Local and Slurm commands may be mixed in the same queue. Use
 `--local-concurrency` for local jobs and `--slurm-max-active` for Slurm jobs.
+Use `--retry N` to retry failed jobs up to N additional times.
+Use `--retry -1` to retry failed jobs indefinitely.
 
 ## Async runs
 

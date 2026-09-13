@@ -23,7 +23,7 @@ jobq submit --backend slurm --sbatch-option "-p ${slurm_partition} --cpus-per-ta
 jobq submit sh -c 'echo failing local job; exit 1'
 
 # Run with separate local and Slurm concurrency limits.
-run_args=(--local-concurrency 2 --slurm-max-active 2)
+run_args=(--local-concurrency 2 --slurm-max-active 2 --retry 1)
 if [[ "${async}" == true ]]; then
     run_args+=(--async)
 elif [[ "${async}" != false ]]; then

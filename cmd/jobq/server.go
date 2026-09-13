@@ -24,16 +24,24 @@ type serverRequest struct {
 	Command          []string `json:"command,omitempty"`
 	LocalConcurrency int      `json:"local_concurrency,omitempty"`
 	SlurmMaxActive   int      `json:"slurm_max_active,omitempty"`
+	Retry            int      `json:"retry,omitempty"`
+	Wait             bool     `json:"wait,omitempty"`
 	Async            bool     `json:"async,omitempty"`
 	Backend          string   `json:"backend,omitempty"`
 	SbatchOptions    []string `json:"sbatch_options,omitempty"`
 }
 
 type serverResponse struct {
-	OK       bool   `json:"ok"`
-	Message  string `json:"message,omitempty"`
-	PID      int    `json:"pid,omitempty"`
-	ExitCode int    `json:"exit_code,omitempty"`
+	OK        bool   `json:"ok"`
+	Message   string `json:"message,omitempty"`
+	PID       int    `json:"pid,omitempty"`
+	ExitCode  int    `json:"exit_code,omitempty"`
+	Progress  bool   `json:"progress,omitempty"`
+	JobID     string `json:"job_id,omitempty"`
+	Completed int    `json:"completed,omitempty"`
+	Total     int    `json:"total,omitempty"`
+	Succeeded int    `json:"succeeded,omitempty"`
+	Failed    int    `json:"failed,omitempty"`
 }
 
 type jobqServer struct {
@@ -171,7 +179,7 @@ func cmdServerRequest(args []string, op string) int {
 		fmt.Fprintln(os.Stderr, response.Message)
 		return 1
 	}
-	fmt.Println(response.Message)
+	fmt.Print(colorMessage(response.Message))
 	return 0
 }
 
@@ -212,6 +220,7 @@ func cmdRun(args []string) int {
 	queueNameOption := fs.String("queue-name", "", "queue name")
 	localConcurrency := fs.Int("local-concurrency", 8, "local worker concurrency")
 	slurmMaxActive := fs.Int("slurm-max-active", 8, "maximum active Slurm jobs")
+	retry := fs.Int("retry", 0, "retry failed jobs up to N times")
 	failed := fs.Bool("failed", false, "run failed jobs from the latest run")
 	unfinished := fs.Bool("unfinished", false, "run unfinished jobs from the latest run")
 	success := fs.Bool("success", false, "run successful jobs from the latest run")
@@ -234,8 +243,8 @@ func cmdRun(args []string) int {
 			selection = name
 		}
 	}
-	if len(left) != 0 || *localConcurrency < 1 || *slurmMaxActive < 1 {
-		fmt.Fprintln(os.Stderr, "usage: jobq run [--basedir DIR] [--queue-name NAME] [--local-concurrency N] [--slurm-max-active N] [--failed|--unfinished|--success|--nonsuccess] [--async]")
+	if len(left) != 0 || *localConcurrency < 1 || *slurmMaxActive < 1 || *retry < -1 {
+		fmt.Fprintln(os.Stderr, "usage: jobq run [--basedir DIR] [--queue-name NAME] [--local-concurrency N] [--slurm-max-active N] [--retry N] [--failed|--unfinished|--success|--nonsuccess] [--async]")
 		return 1
 	}
 	baseDir, _, err := resolveBaseDir(*basedir)
@@ -254,10 +263,17 @@ func cmdRun(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	response, err := sendServerRequest(baseDir, serverRequest{
-		Op: "run", QueueName: resolveQueueName(*queueNameOption), LocalConcurrency: *localConcurrency, SlurmMaxActive: *slurmMaxActive, Async: *async,
+	fmt.Printf("%s\n  Base directory: %s\n  Queue: %s\n", green("Run started:"), baseDir, resolveQueueName(*queueNameOption))
+	request := serverRequest{
+		Op: "run", QueueName: resolveQueueName(*queueNameOption), LocalConcurrency: *localConcurrency, SlurmMaxActive: *slurmMaxActive, Retry: *retry, Async: *async,
 		Backend: *backend, SbatchOptions: sbatchOptions,
-	})
+	}
+	var response serverResponse
+	if *async {
+		response, err = sendServerRequest(baseDir, request)
+	} else {
+		response, err = sendRunRequest(baseDir, request)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to contact server: %v\n", err)
 		return 1
@@ -266,7 +282,7 @@ func cmdRun(args []string) int {
 		fmt.Fprintln(os.Stderr, response.Message)
 		return 1
 	}
-	fmt.Println(response.Message)
+	fmt.Print(colorMessage(response.Message))
 	return response.ExitCode
 }
 
@@ -399,6 +415,7 @@ func (server *jobqServer) handle(baseDir string, conn net.Conn) {
 		return
 	}
 	response := serverResponse{}
+	encoder := json.NewEncoder(conn)
 	switch request.Op {
 	case "ping":
 		response = serverResponse{OK: true, PID: os.Getpid()}
@@ -409,7 +426,7 @@ func (server *jobqServer) handle(baseDir string, conn net.Conn) {
 			response.Message = err.Error()
 		}
 	case "cancel":
-		message, err := cancelQueue(baseDir, request.QueueName)
+		message, err := cancelQueue(baseDir, request.QueueName, request.Wait)
 		response = serverResponse{OK: err == nil, Message: message}
 		if err != nil {
 			response.Message = err.Error()
@@ -422,14 +439,16 @@ func (server *jobqServer) handle(baseDir string, conn net.Conn) {
 		if request.Async {
 			server.beginRun()
 			onDone = server.endRun
-			message, err = startServerRun(baseDir, request.QueueName, request.LocalConcurrency, request.SlurmMaxActive, request.Backend, request.SbatchOptions, onDone)
+			message, err = startServerRun(baseDir, request.QueueName, request.LocalConcurrency, request.SlurmMaxActive, request.Retry, request.Backend, request.SbatchOptions, onDone)
 			if err != nil && onDone != nil {
 				onDone()
 			}
 		} else {
 			server.beginRun()
 			defer server.endRun()
-			message, exitCode, err = runServerSyncWithDisconnect(conn, baseDir, request.QueueName, request.LocalConcurrency, request.SlurmMaxActive, request.Backend, request.SbatchOptions)
+			message, exitCode, err = runServerSyncWithDisconnect(conn, baseDir, request.QueueName, request.LocalConcurrency, request.SlurmMaxActive, request.Retry, request.Backend, request.SbatchOptions, func(progress serverResponse) {
+				_ = encoder.Encode(progress)
+			})
 		}
 		response = serverResponse{OK: err == nil, Message: message, ExitCode: exitCode}
 		if err != nil {
@@ -441,10 +460,10 @@ func (server *jobqServer) handle(baseDir string, conn net.Conn) {
 	default:
 		response.Message = "unknown server operation: " + request.Op
 	}
-	_ = json.NewEncoder(conn).Encode(response)
+	_ = encoder.Encode(response)
 }
 
-func runServerSyncWithDisconnect(conn net.Conn, baseDir, queueName string, localConcurrency, slurmMaxActive int, backend string, sbatchOptions []string) (string, int, error) {
+func runServerSyncWithDisconnect(conn net.Conn, baseDir, queueName string, localConcurrency, slurmMaxActive, retry int, backend string, sbatchOptions []string, progress func(serverResponse)) (string, int, error) {
 	type result struct {
 		message  string
 		exitCode int
@@ -452,7 +471,7 @@ func runServerSyncWithDisconnect(conn net.Conn, baseDir, queueName string, local
 	}
 	done := make(chan result, 1)
 	go func() {
-		message, exitCode, err := runServerSync(baseDir, queueName, localConcurrency, slurmMaxActive, backend, sbatchOptions)
+		message, exitCode, err := runServerSync(baseDir, queueName, localConcurrency, slurmMaxActive, retry, backend, sbatchOptions, progress)
 		done <- result{message: message, exitCode: exitCode, err: err}
 	}()
 	disconnected := make(chan struct{})
@@ -467,7 +486,7 @@ func runServerSyncWithDisconnect(conn net.Conn, baseDir, queueName string, local
 	case result := <-done:
 		return result.message, result.exitCode, result.err
 	case <-disconnected:
-		_, _ = cancelQueue(baseDir, queueName)
+		_, _ = cancelQueue(baseDir, queueName, false)
 		result := <-done
 		return result.message, result.exitCode, result.err
 	}
@@ -478,11 +497,12 @@ func cmdCancel(args []string) int {
 	fs.SetOutput(os.Stderr)
 	basedir := fs.String("basedir", "", "state directory")
 	queueNameOption := fs.String("queue-name", "", "queue name")
+	wait := fs.Bool("wait", false, "wait until cancellation is complete")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 	if len(fs.Args()) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: jobq cancel [--basedir DIR] [--queue-name NAME]")
+		fmt.Fprintln(os.Stderr, "usage: jobq cancel [--basedir DIR] [--queue-name NAME] [--wait]")
 		return 1
 	}
 	baseDir, _, err := resolveBaseDir(*basedir)
@@ -494,7 +514,7 @@ func cmdCancel(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	response, err := sendServerRequest(baseDir, serverRequest{Op: "cancel", QueueName: resolveQueueName(*queueNameOption)})
+	response, err := sendServerRequest(baseDir, serverRequest{Op: "cancel", QueueName: resolveQueueName(*queueNameOption), Wait: *wait})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to contact server: %v\n", err)
 		return 1
@@ -547,6 +567,44 @@ func sendServerRequest(baseDir string, request serverRequest) (serverResponse, e
 	return response, nil
 }
 
+func sendRunRequest(baseDir string, request serverRequest) (serverResponse, error) {
+	conn, err := net.DialTimeout("unix", serverSocketPath(baseDir), time.Second)
+	if err != nil {
+		return serverResponse{}, err
+	}
+	defer conn.Close()
+	if err := json.NewEncoder(conn).Encode(request); err != nil {
+		return serverResponse{}, err
+	}
+	decoder := json.NewDecoder(conn)
+	lastCompleted, lastSucceeded, lastFailed := -1, -1, -1
+	for {
+		var response serverResponse
+		if err := decoder.Decode(&response); err != nil {
+			return serverResponse{}, err
+		}
+		if response.Progress {
+			if response.Message != "" {
+				if strings.HasPrefix(response.Message, "Job failed") {
+					fmt.Printf("%s\n", red(response.Message))
+				} else if strings.HasPrefix(response.Message, "Retrying job") {
+					fmt.Printf("%s\n", yellow(response.Message))
+				} else {
+					fmt.Printf("%s\n", yellow(response.Message))
+				}
+			} else {
+				if response.Completed == lastCompleted && response.Succeeded == lastSucceeded && response.Failed == lastFailed {
+					continue
+				}
+				fmt.Printf("%s\n", cyan(fmt.Sprintf("progress: %d/%d completed=%d failed=%d", response.Completed, response.Total, response.Succeeded, response.Failed)))
+				lastCompleted, lastSucceeded, lastFailed = response.Completed, response.Succeeded, response.Failed
+			}
+			continue
+		}
+		return response, nil
+	}
+}
+
 func resolveQueueBackend(baseDir, queueName, requested string) (string, error) {
 	paths, err := resolvePaths(baseDir, queueName)
 	if err != nil {
@@ -578,7 +636,7 @@ func resolveQueueBackend(baseDir, queueName, requested string) (string, error) {
 	return resolved, nil
 }
 
-func cancelQueue(baseDir, queueName string) (string, error) {
+func cancelQueue(baseDir, queueName string, wait bool) (string, error) {
 	paths, err := resolvePaths(baseDir, queueName)
 	if err != nil {
 		return "", err
@@ -606,8 +664,7 @@ func cancelQueue(baseDir, queueName string) (string, error) {
 				return "", fmt.Errorf("scancel %s: %w", job.SlurmJobID, err)
 			}
 		}
-		return fmt.Sprintf("Cancel requested\n  Queue: %s\n  Run: %s\n  Slurm jobs: %d\n\nInspect status:\n  jobq show --basedir %s --queue-name %s --run-id %s",
-			queueName, lock.RunID, len(jobs), baseDir, queueName, lock.RunID), nil
+		return finishCancelMessage(fmt.Sprintf("Cancel requested\n  Queue: %s\n  Run: %s\n  Slurm jobs: %d", queueName, lock.RunID, len(jobs)), paths, queueName, lock.RunID, wait)
 	}
 
 	if lock.PID == os.Getpid() {
@@ -626,14 +683,34 @@ func cancelQueue(baseDir, queueName string) (string, error) {
 				cancelled++
 			}
 		}
-		return fmt.Sprintf("Cancel requested\n  Queue: %s\n  Run: %s\n  Local jobs: %d\n\nInspect status:\n  jobq show --basedir %s --queue-name %s --run-id %s",
-			queueName, lock.RunID, cancelled, baseDir, queueName, lock.RunID), nil
+		return finishCancelMessage(fmt.Sprintf("Cancel requested\n  Queue: %s\n  Run: %s\n  Local jobs: %d", queueName, lock.RunID, cancelled), paths, queueName, lock.RunID, wait)
 	}
 	if err := syscall.Kill(-lock.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return "", fmt.Errorf("cancel local worker: %w", err)
 	}
-	return fmt.Sprintf("Cancel requested\n  Queue: %s\n  Run: %s\n  Worker PID: %d\n\nInspect status:\n  jobq show --basedir %s --queue-name %s --run-id %s",
-		queueName, lock.RunID, lock.PID, baseDir, queueName, lock.RunID), nil
+	return finishCancelMessage(fmt.Sprintf("Cancel requested\n  Queue: %s\n  Run: %s\n  Worker PID: %d", queueName, lock.RunID, lock.PID), paths, queueName, lock.RunID, wait)
+}
+
+func finishCancelMessage(message string, paths pathSet, queueName, runID string, wait bool) (string, error) {
+	if wait {
+		deadline := time.Now().Add(5 * time.Minute)
+		for {
+			running, err := isRunning(paths.lockFile)
+			if err != nil {
+				return "", err
+			}
+			if !running {
+				message += "\n\nCancellation complete"
+				break
+			}
+			if time.Now().After(deadline) {
+				return "", errors.New("timed out waiting for cancellation")
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	message += fmt.Sprintf("\n\nInspect status:\n  jobq show --basedir %s --queue-name %s --run-id %s", paths.baseDir, queueName, runID)
+	return message, nil
 }
 
 func enqueueCommand(baseDir, queueName string, command []string, backend string, sbatchOptions []string) (string, error) {
@@ -694,7 +771,7 @@ func enqueueCommand(baseDir, queueName string, command []string, backend string,
 	return fmt.Sprintf("submitted queue=%s command=%s", queueName, joinCommand(command)), nil
 }
 
-func startServerRun(baseDir, queueName string, localConcurrency, slurmMaxActive int, backend string, sbatchOptions []string, onDone func()) (string, error) {
+func startServerRun(baseDir, queueName string, localConcurrency, slurmMaxActive, retry int, backend string, sbatchOptions []string, onDone func()) (string, error) {
 	_, err := resolveQueueBackend(baseDir, queueName, backend)
 	if err != nil {
 		return "", err
@@ -722,15 +799,15 @@ func startServerRun(baseDir, queueName string, localConcurrency, slurmMaxActive 
 		return "", fmt.Errorf("queue %q has no queued commands", queueName)
 	}
 	runID := makeRunID()
-	if err := launchAsyncRun(paths, queueName, runID, localConcurrency, slurmMaxActive, backend, sbatchOptions); err != 0 {
+	if err := launchAsyncRun(paths, queueName, runID, localConcurrency, slurmMaxActive, retry, backend, sbatchOptions); err != 0 {
 		return "", errors.New("queue is already running")
 	}
 	runDir := filepath.Join(paths.runsDir, runID)
-	return fmt.Sprintf("Run started\n  Queue: %s\n  Run: %s\n  Directory: %s\n\nCheck status:\n  jobq show --basedir %s --queue-name %s --run-id %s\n\nCancel run:\n  jobq cancel --basedir %s --queue-name %s",
+	return fmt.Sprintf("Run started:\n  Queue: %s\n  Run: %s\n  Directory: %s\n\nCheck status:\n  jobq show --basedir %s --queue-name %s --run-id %s\n\nCancel run:\n  jobq cancel --basedir %s --queue-name %s",
 		queueName, runID, runDir, paths.baseDir, queueName, runID, paths.baseDir, queueName), nil
 }
 
-func runServerSync(baseDir, queueName string, localConcurrency, slurmMaxActive int, backend string, sbatchOptions []string) (string, int, error) {
+func runServerSync(baseDir, queueName string, localConcurrency, slurmMaxActive, retry int, backend string, sbatchOptions []string, progress func(serverResponse)) (string, int, error) {
 	resolvedBackend, err := resolveQueueBackend(baseDir, queueName, backend)
 	if err != nil {
 		return "", 1, err
@@ -779,7 +856,18 @@ func runServerSync(baseDir, queueName string, localConcurrency, slurmMaxActive i
 	}
 	release()
 
-	exitCode := executeMixedRun(paths, runID, localConcurrency, slurmMaxActive, resolvedBackend, sbatchOptions)
+	exitCode := executeMixedRun(paths, runID, localConcurrency, slurmMaxActive, retry, resolvedBackend, sbatchOptions, func(result JobResult, completed, total, succeeded, failed int) {
+		if progress != nil {
+			message := ""
+			if result.ExitCode != 0 && retry == 0 {
+				message = fmt.Sprintf("Job failed:\n  ID: %s\n  Command: %s\n  Show output:\n    jobq show --basedir %s --queue-name %s --run-id %s --job-id %s",
+					result.ID, strings.Join(result.Command, " "), paths.baseDir, paths.queueName, runID, result.ID)
+			} else if strings.HasPrefix(result.Error, "retry:") {
+				message = fmt.Sprintf("Retrying job: attempt=%s job=%s command=%v", strings.TrimPrefix(result.Error, "retry:"), result.ID, result.Command)
+			}
+			progress(serverResponse{OK: true, Progress: true, Message: message, JobID: result.ID, Completed: completed, Total: total, Succeeded: succeeded, Failed: failed})
+		}
+	})
 	meta.Phase = "finished"
 	meta.LastRunID = runID
 	meta.LastRunExitCode = exitCode
@@ -798,7 +886,7 @@ func runServerSync(baseDir, queueName string, localConcurrency, slurmMaxActive i
 			return formatRunCompletion(paths, runID, summary), exitCode, nil
 		}
 	}
-	return fmt.Sprintf("run finished queue=%s run_id=%s exit_code=%d", queueName, runID, exitCode), exitCode, nil
+	return fmt.Sprintf("Run finished:\n  Queue: %s\n  Run: %s\n  Exit code: %d", queueName, runID, exitCode), exitCode, nil
 }
 
 func joinCommand(command []string) string {

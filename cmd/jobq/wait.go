@@ -80,9 +80,9 @@ func formatRunCompletion(paths pathSet, runID string, summary RunSummary) string
 		}
 	}
 	runDir := filepath.Join(paths.runsDir, runID)
-	title := "Run finished"
+	title := "Run finished:"
 	if summary.ExitCode != 0 {
-		title = red("Run failed")
+		title = red("Run failed:")
 	} else {
 		title = green(title)
 	}

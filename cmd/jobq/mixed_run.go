@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
-func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActive int, requestedBackend string, sbatchOptions []string) int {
+func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActive, retry int, requestedBackend string, sbatchOptions []string, progress func(JobResult, int, int, int, int)) int {
 	queue, err := loadQueue(paths.queueFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load queue: %v\n", err)
@@ -26,6 +27,50 @@ func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActi
 		return 1
 	}
 
+	finalResults := make(map[string]JobResult, len(jobs))
+	pending := append([]JobSpec(nil), jobs...)
+	for attempt := 0; (retry == -1 || attempt <= retry) && len(pending) > 0; attempt++ {
+		attemptResults := executeMixedAttempt(runDir, queue, pending, localConcurrency, slurmMaxActive, requestedBackend, sbatchOptions)
+		for _, result := range attemptResults {
+			finalResults[result.ID] = result
+		}
+		nextPending := make([]JobSpec, 0, len(jobs))
+		for _, job := range jobs {
+			result, ok := finalResults[job.ID]
+			if ok && result.ExitCode != 0 {
+				nextPending = append(nextPending, job)
+			}
+		}
+		pending = nextPending
+		if len(pending) > 0 && (retry == -1 || attempt < retry) && progress != nil {
+			completed, succeeded, failed := summarizeResults(finalResults)
+			for _, job := range pending {
+				progress(JobResult{ID: job.ID, Command: job.Command, Error: fmt.Sprintf("retry:%d", attempt+1)}, completed, len(jobs), succeeded, failed)
+			}
+		}
+		if progress != nil {
+			completed, succeeded, failed := summarizeResults(finalResults)
+			for _, result := range attemptResults {
+				progress(result, completed, len(jobs), succeeded, failed)
+			}
+		}
+	}
+
+	summary := RunSummary{RunID: runID, StartedAt: nowRFC3339(), FinishedAt: nowRFC3339(), Results: make([]JobResult, 0, len(jobs))}
+	for _, job := range jobs {
+		result := finalResults[job.ID]
+		summary.Results = append(summary.Results, result)
+		if result.ExitCode != 0 {
+			summary.ExitCode = 1
+		}
+	}
+	if err := writeJSON(filepath.Join(runDir, "summary.json"), summary); err != nil {
+		return 1
+	}
+	return summary.ExitCode
+}
+
+func executeMixedAttempt(runDir string, queue Queue, jobs []JobSpec, localConcurrency, slurmMaxActive int, requestedBackend string, sbatchOptions []string) []JobResult {
 	defaultBackend := requestedBackend
 	if defaultBackend == "" {
 		defaultBackend = queue.DefaultBackend
@@ -49,7 +94,7 @@ func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActi
 
 	results := make(chan JobResult, len(jobs))
 	var workers sync.WaitGroup
-	workers.Add(1)
+	workers.Add(2)
 	go func() {
 		defer workers.Done()
 		sem := make(chan struct{}, localConcurrency)
@@ -65,8 +110,6 @@ func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActi
 		}
 		jobsWait.Wait()
 	}()
-
-	workers.Add(1)
 	go func() {
 		defer workers.Done()
 		for start := 0; start < len(slurmJobs); start += slurmMaxActive {
@@ -74,9 +117,8 @@ func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActi
 			if end > len(slurmJobs) {
 				end = len(slurmJobs)
 			}
-			batch := slurmJobs[start:end]
-			metadata := make([]slurmJobMetadata, 0, len(batch))
-			for _, job := range batch {
+			metadata := make([]slurmJobMetadata, 0, end-start)
+			for _, job := range slurmJobs[start:end] {
 				options := job.SbatchOptions
 				if len(options) == 0 {
 					options = sbatchOptions
@@ -84,30 +126,40 @@ func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActi
 				if len(options) == 0 {
 					options = queue.DefaultSbatchOptions
 				}
-				submitted, submitErr := submitSlurmJob(runDir, job, options)
-				if submitErr != nil {
-					results <- JobResult{ID: job.ID, ExitCode: 1, Error: submitErr.Error()}
+				submitted, err := submitSlurmJob(runDir, job, options)
+				if err != nil {
+					results <- JobResult{ID: job.ID, ExitCode: 1, Error: err.Error()}
 					continue
 				}
 				metadata = append(metadata, submitted)
 			}
 			for _, job := range metadata {
-				results <- waitSlurmJob(runDir, job)
+				result := waitSlurmJob(runDir, job)
+				if result.ExitCode != 0 {
+					fmt.Printf("%s\n", red(fmt.Sprintf("fail job=%s exit=%d command=%s", result.ID, result.ExitCode, strings.Join(result.Command, " "))))
+				}
+				results <- result
 			}
 		}
 	}()
-
 	workers.Wait()
 	close(results)
-	summary := RunSummary{RunID: runID, StartedAt: nowRFC3339(), FinishedAt: nowRFC3339(), Results: make([]JobResult, 0, len(jobs))}
+	collected := make([]JobResult, 0, len(jobs))
 	for result := range results {
-		summary.Results = append(summary.Results, result)
-		if result.ExitCode != 0 {
-			summary.ExitCode = 1
+		collected = append(collected, result)
+	}
+	return collected
+}
+
+func summarizeResults(results map[string]JobResult) (int, int, int) {
+	completed, succeeded, failed := 0, 0, 0
+	for _, result := range results {
+		completed++
+		if result.ExitCode == 0 {
+			succeeded++
+		} else {
+			failed++
 		}
 	}
-	if err := writeJSON(filepath.Join(runDir, "summary.json"), summary); err != nil {
-		return 1
-	}
-	return summary.ExitCode
+	return completed, succeeded, failed
 }

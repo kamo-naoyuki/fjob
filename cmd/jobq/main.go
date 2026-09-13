@@ -81,9 +81,10 @@ type JobSpec struct {
 }
 
 type JobResult struct {
-	ID       string `json:"id"`
-	ExitCode int    `json:"exit_code"`
-	Error    string `json:"error,omitempty"`
+	ID       string   `json:"id"`
+	ExitCode int      `json:"exit_code"`
+	Error    string   `json:"error,omitempty"`
+	Command  []string `json:"command,omitempty"`
 }
 
 type RunSummary struct {
@@ -148,7 +149,7 @@ func printUsage() {
 	fmt.Println("  jobq show [--basedir DIR] [--queue-name NAME] [--run-id ID] [--job-id ID] [--failed]")
 	fmt.Println("  jobq wait [--basedir DIR] [--queue-name NAME] --run-id ID [--timeout DURATION]")
 	fmt.Println("  jobq submit [--basedir DIR] [--queue-name NAME] [--backend BACKEND] [--sbatch-option OPTION] <command ...>")
-	fmt.Println("  jobq run [--basedir DIR] [--queue-name NAME] [--local-concurrency N] [--slurm-max-active N] [--async]")
+	fmt.Println("  jobq run [--basedir DIR] [--queue-name NAME] [--local-concurrency N] [--slurm-max-active N] [--retry N] [--async]")
 	fmt.Println("  jobq server <status|list|shutdown> [--basedir DIR] [--masterdir DIR]")
 }
 
@@ -206,16 +207,17 @@ func cmdWorkerRun(args []string) int {
 		return 1
 	}
 	left := fs.Args()
-	if len(left) != 4 {
-		fmt.Fprintln(os.Stderr, "usage: jobq __worker-run [--basedir DIR] <queue_name> <run_id> <local_concurrency> <slurm_max_active>")
+	if len(left) != 5 {
+		fmt.Fprintln(os.Stderr, "usage: jobq __worker-run [--basedir DIR] <queue_name> <run_id> <local_concurrency> <slurm_max_active> <retry>")
 		return 1
 	}
 	queueName := left[0]
 	runID := left[1]
 	localConcurrency, err := strconv.Atoi(left[2])
 	slurmMaxActive, slurmErr := strconv.Atoi(left[3])
-	if err != nil || slurmErr != nil || localConcurrency < 1 || slurmMaxActive < 1 {
-		fmt.Fprintf(os.Stderr, "invalid concurrency: local=%s slurm=%s\n", left[2], left[3])
+	retry, retryErr := strconv.Atoi(left[4])
+	if err != nil || slurmErr != nil || retryErr != nil || localConcurrency < 1 || slurmMaxActive < 1 || retry < -1 {
+		fmt.Fprintf(os.Stderr, "invalid run options: local=%s slurm=%s retry=%s\n", left[2], left[3], left[4])
 		return 1
 	}
 
@@ -234,7 +236,7 @@ func cmdWorkerRun(args []string) int {
 		return 1
 	}
 
-	exitCode := executeMixedRun(paths, runID, localConcurrency, slurmMaxActive, *backend, sbatchOptions)
+	exitCode := executeMixedRun(paths, runID, localConcurrency, slurmMaxActive, retry, *backend, sbatchOptions, nil)
 	meta.Phase = "finished"
 	meta.LastRunID = runID
 	meta.LastRunExitCode = exitCode
@@ -251,7 +253,7 @@ func cmdWorkerRun(args []string) int {
 	return exitCode
 }
 
-func launchAsyncRun(paths pathSet, queueName, runID string, localConcurrency, slurmMaxActive int, backend string, sbatchOptions []string) int {
+func launchAsyncRun(paths pathSet, queueName, runID string, localConcurrency, slurmMaxActive, retry int, backend string, sbatchOptions []string) int {
 	if err := acquireLock(paths.lockFile, LockInfo{PID: os.Getpid(), RunID: runID, StartedAt: nowRFC3339()}); err != nil {
 		fmt.Fprintf(os.Stderr, "queue '%s' is running; run is not allowed: %v\n", queueName, err)
 		return 1
@@ -284,7 +286,7 @@ func launchAsyncRun(paths pathSet, queueName, runID string, localConcurrency, sl
 	for _, option := range sbatchOptions {
 		childArgs = append(childArgs, "--sbatch-option", option)
 	}
-	childArgs = append(childArgs, queueName, runID, strconv.Itoa(localConcurrency), strconv.Itoa(slurmMaxActive))
+	childArgs = append(childArgs, queueName, runID, strconv.Itoa(localConcurrency), strconv.Itoa(slurmMaxActive), strconv.Itoa(retry))
 
 	cmd := exec.Command(exe, childArgs...)
 	cmd.Stdout = os.Stdout
@@ -399,12 +401,14 @@ func printFailedJobHints(paths pathSet, runID string, results []JobResult) {
 
 func failedJobHints(paths pathSet, runID string, results []JobResult) string {
 	var hints strings.Builder
+	seen := make(map[string]bool)
 	for _, result := range results {
-		if result.ExitCode == 0 {
+		if result.ExitCode == 0 || seen[result.ID] {
 			continue
 		}
-		fmt.Fprintf(&hints, "  Job: %s\n  Show output:\n    jobq show --basedir %s --queue-name %s --run-id %s --job-id %s\n",
-			result.ID, paths.baseDir, paths.queueName, runID, result.ID)
+		seen[result.ID] = true
+		fmt.Fprintf(&hints, "  Job: %s\n  Command: %s\n  Show output:\n    jobq show --basedir %s --queue-name %s --run-id %s --job-id %s\n",
+			result.ID, strings.Join(result.Command, " "), paths.baseDir, paths.queueName, runID, result.ID)
 	}
 	return hints.String()
 }
@@ -412,14 +416,14 @@ func failedJobHints(paths pathSet, runID string, results []JobResult) string {
 func runOneJob(runDir string, job JobSpec) JobResult {
 	jobDir := filepath.Join(runDir, job.ID)
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
-		return JobResult{ID: job.ID, ExitCode: 1, Error: err.Error()}
+		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
 
 	if err := os.WriteFile(filepath.Join(jobDir, "command"), []byte(strings.Join(job.Command, " ")+"\n"), 0o644); err != nil {
-		return JobResult{ID: job.ID, ExitCode: 1, Error: err.Error()}
+		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
 	if err := os.WriteFile(filepath.Join(jobDir, "submitted_at"), []byte(nowRFC3339()+"\n"), 0o644); err != nil {
-		return JobResult{ID: job.ID, ExitCode: 1, Error: err.Error()}
+		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
 
 	logPath := filepath.Join(jobDir, "output")
@@ -430,7 +434,7 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 	defer logf.Close()
 
 	if len(job.Command) == 0 {
-		return JobResult{ID: job.ID, ExitCode: 1, Error: "empty command"}
+		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: "empty command"}
 	}
 
 	cmd := exec.Command(job.Command[0], job.Command[1:]...)
@@ -440,7 +444,7 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 		_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte("1\n"), 0o644)
 		_ = os.WriteFile(filepath.Join(jobDir, "finished_at"), []byte(nowRFC3339()+"\n"), 0o644)
 		fmt.Printf("fail job=%s command=%s error=%v\n", job.ID, strings.Join(job.Command, " "), err)
-		return JobResult{ID: job.ID, ExitCode: 1, Error: err.Error()}
+		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
 
 	_ = os.WriteFile(filepath.Join(jobDir, "pid"), []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o644)
@@ -462,10 +466,10 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 	if exitCode == 0 {
 		fmt.Printf("%s\n", green(fmt.Sprintf("success job=%s", job.ID)))
 	} else {
-		fmt.Printf("%s\n", red(fmt.Sprintf("fail job=%s exit=%d", job.ID, exitCode)))
+		fmt.Printf("%s\n", red(fmt.Sprintf("fail job=%s exit=%d command=%s", job.ID, exitCode, strings.Join(job.Command, " "))))
 	}
 
-	return JobResult{ID: job.ID, ExitCode: exitCode}
+	return JobResult{ID: job.ID, Command: job.Command, ExitCode: exitCode}
 }
 
 func queueToJobs(commands []QueuedCommand) []JobSpec {

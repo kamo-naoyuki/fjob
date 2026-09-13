@@ -1,6 +1,9 @@
 package main
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 const (
 	ansiReset  = "\033[0m"
@@ -22,3 +25,28 @@ func green(text string) string  { return colorText(text, ansiGreen, os.Stdout) }
 func red(text string) string    { return colorText(text, ansiRed, os.Stderr) }
 func yellow(text string) string { return colorText(text, ansiYellow, os.Stdout) }
 func cyan(text string) string   { return colorText(text, ansiCyan, os.Stdout) }
+
+func colorMessage(message string) string {
+	lines := strings.SplitAfter(message, "\n")
+	for i, line := range lines {
+		text := strings.TrimSuffix(line, "\n")
+		switch {
+		case strings.HasPrefix(text, "Run failed:"):
+			lines[i] = red(text) + newline(line)
+		case strings.HasPrefix(text, "Run finished:"), strings.HasPrefix(text, "Run started"):
+			lines[i] = green(text) + newline(line)
+		case strings.HasPrefix(text, "Retrying job:"):
+			lines[i] = yellow(text) + newline(line)
+		case strings.HasPrefix(text, "Inspect"), strings.HasPrefix(text, "Check"), strings.HasPrefix(text, "Cancel"), strings.HasPrefix(text, "Rerun"), strings.HasPrefix(text, "Failed job output"):
+			lines[i] = cyan(text) + newline(line)
+		}
+	}
+	return strings.Join(lines, "")
+}
+
+func newline(line string) string {
+	if strings.HasSuffix(line, "\n") {
+		return "\n"
+	}
+	return ""
+}
