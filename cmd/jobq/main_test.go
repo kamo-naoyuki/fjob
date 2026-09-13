@@ -90,7 +90,7 @@ func TestResolveBaseDirPriority(t *testing.T) {
 	})
 
 	// 1. Fallback to default (home directory, etc.) if .jobq-state does not exist in current dir
-	_, _, err := resolveBaseDir("")
+	_, _, err = resolveBaseDir("")
 	if err != nil {
 		t.Fatal(err)
 	}
