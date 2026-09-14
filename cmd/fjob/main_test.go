@@ -3,11 +3,15 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveQueueNamePriority(t *testing.T) {
@@ -333,6 +337,128 @@ func TestCompareQueueWithRun(t *testing.T) {
 	}
 }
 
+func TestResolveQueueBackendUsesDefaultBackend(t *testing.T) {
+	baseDir := t.TempDir()
+	queueDir := filepath.Join(baseDir, "queues", "default")
+	if err := os.MkdirAll(queueDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(queueDir, "queue.json"), Queue{
+		DefaultBackend: "slurm",
+		Commands: []QueuedCommand{{Command: []string{"echo", "hello"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveQueueBackend(baseDir, "default", "")
+	if err != nil {
+		t.Fatalf("resolveQueueBackend returned error: %v", err)
+	}
+	if got != "slurm" {
+		t.Fatalf("resolved backend = %q, want slurm", got)
+	}
+
+	if _, err := resolveQueueBackend(baseDir, "default", "invalid"); err == nil {
+		t.Fatal("resolveQueueBackend accepted unsupported backend")
+	}
+}
+
+func TestRemoveFinishedJobsDropsCompletedResults(t *testing.T) {
+	jobs := []JobSpec{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+	remaining := removeFinishedJobs(jobs, map[string]JobResult{"b": {ID: "b", ExitCode: 0}})
+	if len(remaining) != 2 {
+		t.Fatalf("remaining jobs = %d, want 2", len(remaining))
+	}
+	ids := map[string]bool{}
+	for _, job := range remaining {
+		ids[job.ID] = true
+	}
+	if ids["b"] {
+		t.Fatal("completed job was not removed from remaining list")
+	}
+	for _, want := range []string{"a", "c"} {
+		if !ids[want] {
+			t.Fatalf("missing job %q in remaining list: %#v", want, remaining)
+		}
+	}
+}
+
+func TestExecuteMixedRunRetriesFailedJob(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(baseDir, "retry-marker")
+	if err := writeJSON(paths.queueFile, Queue{Commands: []QueuedCommand{{
+		Command: []string{"/bin/sh", "-c", fmt.Sprintf("if [ -f %q ]; then exit 0; else touch %q; exit 1; fi", marker, marker)},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := executeMixedRun(paths, "retry-run", 1, 1, 1, "", nil, nil); code != 0 {
+		t.Fatalf("executeMixedRun exit = %d, want 0", code)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("retry marker was not created: %v", err)
+	}
+
+	summaryPath := filepath.Join(paths.runsDir, "retry-run", "summary.json")
+	data, err := os.ReadFile(summaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary RunSummary
+	if err := json.Unmarshal(data, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Results) != 1 || summary.Results[0].ExitCode != 0 {
+		t.Fatalf("summary = %#v, want single successful result", summary.Results)
+	}
+}
+
+func TestExecuteMixedRunBlocksWhenDependencyFails(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.queueFile, Queue{Commands: []QueuedCommand{
+		{Command: []string{"/bin/sh", "-c", "exit 1"}, Name: "job1"},
+		{Command: []string{"/bin/sh", "-c", "echo ok"}, Name: "job2", DependsOn: []string{"job1"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := executeMixedRun(paths, "blocked-run", 1, 1, 0, "", nil, nil); code != 1 {
+		t.Fatalf("executeMixedRun exit = %d, want 1", code)
+	}
+
+	data, err := os.ReadFile(filepath.Join(paths.runsDir, "blocked-run", "summary.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary RunSummary
+	if err := json.Unmarshal(data, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Results) != 2 {
+		t.Fatalf("summary len = %d, want 2", len(summary.Results))
+	}
+	if summary.Results[0].ExitCode != 1 || summary.Results[1].ExitCode != 1 {
+		t.Fatalf("results = %#v, want both jobs to fail", summary.Results)
+	}
+	if summary.Results[1].Error != "blocked by failed dependency" {
+		t.Fatalf("job2 error = %q, want blocked by failed dependency", summary.Results[1].Error)
+	}
+}
+
 func TestValidateDependencies(t *testing.T) {
 	valid := []JobSpec{
 		{Name: "job1", Command: []string{"echo", "1"}},
@@ -367,5 +493,198 @@ func TestValidateDependencies(t *testing.T) {
 				t.Fatal("validateDependencies returned nil")
 			}
 		})
+	}
+}
+
+func TestFinishCancelMessageWaitsUntilLockDisappears(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lock := LockInfo{PID: os.Getpid(), RunID: "run-1", StartedAt: nowRFC3339()}
+	if err := writeJSON(paths.lockFile, lock); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_ = os.Remove(paths.lockFile)
+	}()
+
+	message, err := finishCancelMessage("Cancel requested", paths, "default", "run-1", true)
+	if err != nil {
+		t.Fatalf("finishCancelMessage returned error: %v", err)
+	}
+	if !strings.Contains(message, "Cancellation complete") {
+		t.Fatalf("message = %q, want cancellation complete", message)
+	}
+}
+
+func TestServerBeginAndEndRunTracksActiveState(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	server := &fjobServer{listener: listener, stopped: make(chan struct{}), lastAccess: time.Now()}
+	server.beginRun()
+	if server.activeRuns != 1 {
+		t.Fatalf("activeRuns = %d, want 1", server.activeRuns)
+	}
+	server.endRun()
+	if server.activeRuns != 0 {
+		t.Fatalf("activeRuns = %d, want 0", server.activeRuns)
+	}
+	select {
+	case <-server.stopped:
+	default:
+		t.Fatal("server.stop was not triggered when activeRuns reached 0")
+	}
+}
+
+func TestFinishCancelMessageIncludesInspectHintWhenNotWaiting(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	message, err := finishCancelMessage("Cancel requested", paths, "default", "run-1", false)
+	if err != nil {
+		t.Fatalf("finishCancelMessage returned error: %v", err)
+	}
+	if !strings.Contains(message, "Inspect status") {
+		t.Fatalf("message = %q, want inspect status hint", message)
+	}
+	if !strings.Contains(message, "fjob show --basedir") {
+		t.Fatalf("message = %q, want show command hint", message)
+	}
+}
+
+func TestFjobServerBusyStateTracksRunBoundary(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	server := &fjobServer{listener: listener, stopped: make(chan struct{}), lastAccess: time.Now()}
+	if server.isBusy() {
+		t.Fatal("server should be idle before any run begins")
+	}
+	server.beginRun()
+	if !server.isBusy() {
+		t.Fatal("server should report busy while a run is active")
+	}
+	server.endRun()
+	if server.isBusy() {
+		t.Fatal("server should not report busy after all runs finish")
+	}
+}
+
+func TestSendRunRequestReadsProgressThenFinalResponse(t *testing.T) {
+	baseDir, err := os.MkdirTemp("", "fjob-socket-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(baseDir)
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", serverSocketPath(baseDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	defer os.Remove(serverSocketPath(baseDir))
+
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var request serverRequest
+		if err := json.NewDecoder(conn).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		if request.Op != "run" {
+			t.Errorf("request op = %q, want run", request.Op)
+		}
+		encoder := json.NewEncoder(conn)
+		if err := encoder.Encode(serverResponse{Progress: true, Completed: 1, Total: 2, Succeeded: 1, Failed: 0, Message: "progress"}); err != nil {
+			t.Errorf("encode progress: %v", err)
+			return
+		}
+		if err := encoder.Encode(serverResponse{OK: true, Message: "Run finished", ExitCode: 0}); err != nil {
+			t.Errorf("encode final response: %v", err)
+		}
+	}()
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+
+	response, err := sendRunRequest(baseDir, serverRequest{Op: "run"})
+	_ = w.Close()
+	output, readErr := io.ReadAll(r)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if err != nil {
+		t.Fatalf("sendRunRequest returned error: %v", err)
+	}
+	if !response.OK || response.Message != "Run finished" || response.ExitCode != 0 {
+		t.Fatalf("response = %#v, want OK=true message=Run finished exit_code=0", response)
+	}
+	if !strings.Contains(string(output), "progress") && !strings.Contains(string(output), "progress:") {
+		t.Fatalf("progress output missing; got %q", string(output))
+	}
+}
+
+func TestRunServerSyncWithDisconnectReturnsAfterSocketEOF(t *testing.T) {
+	baseDir := t.TempDir()
+	queueDir := filepath.Join(baseDir, "queues", "default")
+	if err := os.MkdirAll(queueDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(queueDir, "queue.json"), Queue{Commands: []QueuedCommand{{Command: []string{"sleep", "3"}, Name: "slow"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(queueDir, "meta.json"), defaultMeta()); err != nil {
+		t.Fatal(err)
+	}
+
+	client, serverConn := net.Pipe()
+	defer client.Close()
+	defer serverConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _, _ = runServerSyncWithDisconnect(serverConn, baseDir, "default", 1, 1, 0, "", nil, func(serverResponse) {})
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("runServerSyncWithDisconnect did not return after disconnect")
 	}
 }
