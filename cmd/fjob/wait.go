@@ -95,9 +95,9 @@ func formatRunCompletion(paths pathSet, runID string, summary RunSummary) string
 	} else {
 		title = green(title)
 	}
-	message := fmt.Sprintf("%s\n  Queue: %s\n  Run: %s\n  Exit code: %d\n  Success: %d\n  Failed: %d\n  Directory: %s\n",
+	message := fmt.Sprintf("%s\n  Queue: %s\n  Run: %s\n  Status: %s\n  Exit code: %d\n  Success: %d\n  Failed: %d\n  Directory: %s\n",
 		title,
-		paths.queueName, runID, summary.ExitCode, successCount, failedCount, runDir)
+		paths.queueName, runID, summary.Status, summary.ExitCode, successCount, failedCount, runDir)
 	if failedCount > 0 {
 		message += fmt.Sprintf("\nInspect run:\n  fjob show --basedir %s --queue-name %s --run-id %s\n\nSee failed job output below.\n\nFailed job output:\n%s",
 			paths.baseDir, paths.queueName, runID, failedJobHints(paths, runID, summary.Results))

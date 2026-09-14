@@ -179,21 +179,18 @@ func TestMakeRunIDFormat(t *testing.T) {
 	}
 }
 
-func TestQueueUnmarshalSupportsLegacyCommands(t *testing.T) {
-	var queue Queue
-	if err := json.Unmarshal([]byte(`{"commands":[["echo","hello"]]}`), &queue); err != nil {
-		t.Fatal(err)
+func TestRunStatus(t *testing.T) {
+	if got := runStatus(0); got != "finished" {
+		t.Fatalf("runStatus(0) = %q, want finished", got)
 	}
-	if len(queue.Commands) != 1 || len(queue.Commands[0].Command) != 2 {
-		t.Fatalf("unexpected queue: %#v", queue)
-	}
-	if queue.Commands[0].Command[0] != "echo" {
-		t.Fatalf("unexpected command: %#v", queue.Commands[0].Command)
+	if got := runStatus(1); got != "failed" {
+		t.Fatalf("runStatus(1) = %q, want failed", got)
 	}
 }
 
 func TestQueueToJobsPreservesName(t *testing.T) {
 	jobs := queueToJobs([]QueuedCommand{{
+		ID:      "fixed-id",
 		Command: []string{"echo", "hello"},
 		Name:    "greeting",
 	}})
@@ -202,6 +199,33 @@ func TestQueueToJobsPreservesName(t *testing.T) {
 	}
 	if jobs[0].Name != "greeting" {
 		t.Fatalf("job name = %q, want greeting", jobs[0].Name)
+	}
+	if jobs[0].ID != "fixed-id" {
+		t.Fatalf("job id = %q, want fixed-id", jobs[0].ID)
+	}
+}
+
+func TestEnqueueCommandPersistsStableJobID(t *testing.T) {
+	baseDir := t.TempDir()
+	if _, err := enqueueCommand(baseDir, "default", []string{"echo", "old"}, "", nil, "job", nil); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.Commands) != 1 || queue.Commands[0].ID == "" {
+		t.Fatalf("queue command ID = %q, want a persisted ID", queue.Commands[0].ID)
+	}
+	id := queue.Commands[0].ID
+	queue.Commands[0].Command = []string{"echo", "new"}
+	jobs := queueToJobs(queue.Commands)
+	if len(jobs) != 1 || jobs[0].ID != id {
+		t.Fatalf("changed command ID = %q, want %q", jobs[0].ID, id)
 	}
 }
 
@@ -243,6 +267,9 @@ func TestCompletionScriptsContainCommandOptions(t *testing.T) {
 	}
 	if !strings.Contains(generateZshCompletion(), "'install:install completion") {
 		t.Error("Zsh completion does not contain the install subcommand")
+	}
+	if !strings.Contains(generateZshCompletion(), "compdef _fjob fjob") {
+		t.Error("Zsh completion does not register fjob")
 	}
 }
 
@@ -334,12 +361,41 @@ func TestInstallCompletionForZsh(t *testing.T) {
 	if !strings.Contains(string(completion), "#compdef fjob") {
 		t.Fatal("Zsh completion header is missing")
 	}
+	if err := os.WriteFile(filepath.Join(home, ".zfunc", "_fjob"), []byte("stale zsh completion"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := installCompletion("zsh"); err != nil {
+		t.Fatal(err)
+	}
+	completion, err = os.ReadFile(filepath.Join(home, ".zfunc", "_fjob"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(completion), "#compdef fjob") {
+		t.Fatal("Zsh completion was not refreshed after stale install")
+	}
 	rc, err := os.ReadFile(filepath.Join(home, ".zshrc"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Count(string(rc), "# fjob completion (zsh)") != 1 {
 		t.Fatal("Zsh completion block was installed more than once")
+	}
+	if !strings.Contains(string(rc), "autoload -Uz _fjob && compdef _fjob fjob") {
+		t.Fatal("Zsh completion function was not registered")
+	}
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("# fjob completion (zsh)\nfpath=(\"$HOME/.zfunc\" $fpath)\nautoload -Uz compinit && compinit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := installCompletion("zsh"); err != nil {
+		t.Fatal(err)
+	}
+	rc, err = os.ReadFile(filepath.Join(home, ".zshrc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rc), "autoload -Uz _fjob && compdef _fjob fjob") {
+		t.Fatal("Existing Zsh completion block was not upgraded")
 	}
 }
 
@@ -360,16 +416,16 @@ func TestCompareQueueWithRun(t *testing.T) {
 	queuePath := filepath.Join(dir, "queue.json")
 	runPath := filepath.Join(dir, "commands.json")
 	if err := writeJSON(queuePath, Queue{Commands: []QueuedCommand{
-		{Command: []string{"echo", "same"}, Name: "same"},
-		{Command: []string{"echo", "changed"}, Name: "new-name"},
-		{Command: []string{"echo", "added"}},
+		{ID: "same", Command: []string{"echo", "same"}, Name: "same"},
+		{ID: "changed", Command: []string{"echo", "changed"}, Name: "new-name"},
+		{ID: "added", Command: []string{"echo", "added"}},
 	}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeJSON(runPath, Queue{Commands: []QueuedCommand{
-		{Command: []string{"echo", "same"}, Name: "same"},
-		{Command: []string{"echo", "changed"}, Name: "old-name"},
-		{Command: []string{"echo", "removed"}},
+		{ID: "same", Command: []string{"echo", "same"}, Name: "same"},
+		{ID: "changed", Command: []string{"echo", "changed"}, Name: "old-name"},
+		{ID: "removed", Command: []string{"echo", "removed"}},
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +447,7 @@ func TestResolveQueueBackendUsesDefaultBackend(t *testing.T) {
 	}
 	if err := writeJSON(filepath.Join(queueDir, "queue.json"), Queue{
 		DefaultBackend: "slurm",
-		Commands:       []QueuedCommand{{Command: []string{"echo", "hello"}}},
+		Commands:       []QueuedCommand{{ID: "hello", Command: []string{"echo", "hello"}}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -440,6 +496,7 @@ func TestExecuteMixedRunRetriesFailedJob(t *testing.T) {
 	}
 	marker := filepath.Join(baseDir, "retry-marker")
 	if err := writeJSON(paths.queueFile, Queue{Commands: []QueuedCommand{{
+		ID:      "retry",
 		Command: []string{"/bin/sh", "-c", fmt.Sprintf("if [ -f %q ]; then exit 0; else touch %q; exit 1; fi", marker, marker)},
 	}}}); err != nil {
 		t.Fatal(err)
@@ -466,6 +523,97 @@ func TestExecuteMixedRunRetriesFailedJob(t *testing.T) {
 	}
 }
 
+func TestFinishRunClearsQueueAndKeepsRunHistory(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(paths.runsDir, "run-1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	queue := Queue{DefaultBackend: "slurm", Commands: []QueuedCommand{{ID: "queued", Command: []string{"echo", "queued"}}}}
+	if err := writeJSON(paths.queueFile, queue); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(paths.runsDir, "run-1", "commands.json"), queue); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.metaFile, defaultMeta()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := finishRun(paths, "run-1", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	gotQueue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotQueue.Commands) != 0 {
+		t.Fatalf("queue commands = %d, want 0", len(gotQueue.Commands))
+	}
+	if gotQueue.DefaultBackend != "slurm" {
+		t.Fatalf("queue default backend = %q, want slurm", gotQueue.DefaultBackend)
+	}
+	if _, err := os.Stat(filepath.Join(paths.runsDir, "run-1", "commands.json")); err != nil {
+		t.Fatalf("run snapshot was removed: %v", err)
+	}
+	meta, err := loadMeta(paths.metaFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Phase != "finished" || meta.LastRunID != "run-1" || meta.LastRunExitCode != 1 {
+		t.Fatalf("metadata = %#v, want finished run-1 exit 1", meta)
+	}
+}
+
+func TestChangeBatchRestoresAndEditsPreviousRun(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(paths.runsDir, "run-1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := Queue{Commands: []QueuedCommand{
+		{ID: "prepare-id", Command: []string{"echo", "prepare"}, Name: "prepare"},
+		{ID: "train-id", Command: []string{"echo", "train"}, Name: "train", DependsOn: []string{"prepare"}},
+	}}
+	if err := writeJSON(filepath.Join(paths.runsDir, "run-1", "commands.json"), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.metaFile, Meta{Phase: "finished", LastRunID: "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	message, err := changeBatch(baseDir, "default", "", "train-id", "", "slurm",
+		[]string{"-p gpu"}, false, "", []string{"prepare"}, false, []string{"./train-v2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(message, "job=train-id") {
+		t.Fatalf("change message = %q, want train-id", message)
+	}
+	changed, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Commands[1].ID != "train-id" || changed.Commands[1].Backend != "slurm" ||
+		changed.Commands[1].Command[0] != "./train-v2" || len(changed.Commands[1].SbatchOptions) != 1 {
+		t.Fatalf("changed queue = %#v", changed)
+	}
+	original, err := loadQueue(filepath.Join(paths.runsDir, "run-1", "commands.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if original.Commands[1].Command[0] != "echo" || original.Commands[1].Backend != "" {
+		t.Fatalf("snapshot was modified: %#v", original.Commands[1])
+	}
+}
+
 func TestExecuteMixedRunBlocksWhenDependencyFails(t *testing.T) {
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "default")
@@ -476,8 +624,8 @@ func TestExecuteMixedRunBlocksWhenDependencyFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeJSON(paths.queueFile, Queue{Commands: []QueuedCommand{
-		{Command: []string{"/bin/sh", "-c", "exit 1"}, Name: "job1"},
-		{Command: []string{"/bin/sh", "-c", "echo ok"}, Name: "job2", DependsOn: []string{"job1"}},
+		{ID: "job1-id", Command: []string{"/bin/sh", "-c", "exit 1"}, Name: "job1"},
+		{ID: "job2-id", Command: []string{"/bin/sh", "-c", "echo ok"}, Name: "job2", DependsOn: []string{"job1"}},
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -706,7 +854,7 @@ func TestRunServerSyncWithDisconnectReturnsAfterSocketEOF(t *testing.T) {
 	if err := os.MkdirAll(queueDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeJSON(filepath.Join(queueDir, "queue.json"), Queue{Commands: []QueuedCommand{{Command: []string{"sleep", "3"}, Name: "slow"}}}); err != nil {
+	if err := writeJSON(filepath.Join(queueDir, "queue.json"), Queue{Commands: []QueuedCommand{{ID: "slow-id", Command: []string{"sleep", "3"}, Name: "slow"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeJSON(filepath.Join(queueDir, "meta.json"), defaultMeta()); err != nil {

@@ -109,18 +109,23 @@ commands and run history:
         ├── commands.json
         ├── summary.json
         └── <job-id>/
+          ├── command.json
           └── output
 ```
 
 `submit` adds commands to the queue's `queue.json`. It does not create a run.
+Each submitted command receives a stable job ID, which remains unchanged if
+the command or its execution options are edited later.
 `run` reads the current queue, creates a new `<run-id>`, and saves the command
-snapshot and results under `runs/<run-id>/`. A run is therefore an execution
-record, while a queue is the reusable set of commands waiting to be executed.
+snapshot and results under `runs/<run-id>/`. After the run finishes, the queue
+is emptied while the run record is retained for inspection or selection such
+as `run --failed`.
+Each run summary also records a status such as `finished` or `failed`; this
+leaves room for distinguishing cancelled or aborted runs later.
 
-Run history is not modified when new commands are submitted. The commands in
-`queue.json` remain available for the next run, so running the same queue again
-will execute them again unless the queue is replaced by a selection such as
-`run --failed` or otherwise changed.
+The next `submit` starts a new batch. When it is submitted after a completed
+run, the previous run history is also cleared. A run is therefore an execution
+record, while a queue is the current batch of commands waiting to be executed.
 
 ## Environment variables
 
@@ -199,6 +204,9 @@ fjob show --queue-name build --failed-logs
 `--logs` prints the output log for every job in the selected run.
 `--failed-logs` prints logs only for jobs that failed. Both options accept
 `--run-id RUN_ID` to inspect a specific run.
+Without `--run-id`, `show` displays the current queue when it has commands;
+otherwise it displays the latest run. Use `--run-id` to inspect a run while a
+changed or newly submitted queue is waiting.
 When output is a terminal, log views (including `--job-id`) longer than 24
 lines open in `$PAGER` (or `less -R` by default). Use `--no-pager` to print
 directly; piped and redirected output is always printed directly.
@@ -211,6 +219,19 @@ fjob run --queue-name build --unfinished
 fjob run --queue-name build --success
 fjob run --queue-name build --nonsuccess
 ```
+
+Prepare a modified batch from the latest run without changing its history:
+
+```sh
+fjob change --job-name train --backend local
+fjob change --job-name train --sbatch-option="-p gpu"
+fjob change --job-name train --depends-on prepare -- ./train-v2.sh
+fjob run --failed
+```
+
+`change` replaces only the options specified. It keeps the job ID and edits
+the current batch; if the queue is empty, the latest run snapshot is restored
+first. Use `--run-id` to select another run.
 
 Stop running jobs without stopping the supervisor:
 

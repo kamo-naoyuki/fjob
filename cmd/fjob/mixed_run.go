@@ -106,7 +106,11 @@ func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActi
 		if progress != nil {
 			completed, succeeded, failed := summarizeResults(finalResults)
 			for _, result := range attemptResults {
-				progress(result, completed, len(jobs), succeeded, failed)
+				progressResult := result
+				if result.ExitCode != 0 && !jobIsPending(pending, result.ID) {
+					progressResult.Error = "final-failure"
+				}
+				progress(progressResult, completed, len(jobs), succeeded, failed)
 			}
 		}
 	}
@@ -116,7 +120,7 @@ func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActi
 		}
 	}
 
-	summary := RunSummary{RunID: runID, StartedAt: nowRFC3339(), FinishedAt: nowRFC3339(), Results: make([]JobResult, 0, len(jobs))}
+	summary := RunSummary{RunID: runID, Status: "finished", StartedAt: nowRFC3339(), FinishedAt: nowRFC3339(), Results: make([]JobResult, 0, len(jobs))}
 	for _, job := range jobs {
 		result := finalResults[job.ID]
 		summary.Results = append(summary.Results, result)
@@ -124,10 +128,20 @@ func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActi
 			summary.ExitCode = 1
 		}
 	}
+	summary.Status = runStatus(summary.ExitCode)
 	if err := writeJSON(filepath.Join(runDir, "summary.json"), summary); err != nil {
 		return 1
 	}
 	return summary.ExitCode
+}
+
+func jobIsPending(jobs []JobSpec, jobID string) bool {
+	for _, job := range jobs {
+		if job.ID == jobID {
+			return true
+		}
+	}
+	return false
 }
 
 func removeFinishedJobs(jobs []JobSpec, results map[string]JobResult) []JobSpec {

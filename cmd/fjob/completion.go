@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -43,6 +44,90 @@ func cmdCompletion(args []string) int {
 	return 0
 }
 
+func cmdComplete(args []string) int {
+	if len(args) == 0 || (args[0] != "run-id" && args[0] != "job-id") {
+		return 1
+	}
+	basedir, queueName := "", ""
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--basedir":
+			if i+1 >= len(args) {
+				return 1
+			}
+			basedir = args[i+1]
+			i++
+		case "--queue-name":
+			if i+1 >= len(args) {
+				return 1
+			}
+			queueName = args[i+1]
+			i++
+		}
+	}
+	baseDir, _, err := resolveBaseDir(basedir)
+	if err != nil {
+		return 1
+	}
+	queueName, err = resolveQueueName(baseDir, queueName)
+	if err != nil {
+		return 1
+	}
+	paths, err := resolvePaths(baseDir, queueName)
+	if err != nil {
+		return 1
+	}
+
+	values := make(map[string]struct{})
+	if args[0] == "run-id" {
+		entries, err := os.ReadDir(paths.runsDir)
+		if err != nil {
+			return 0
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				values[entry.Name()] = struct{}{}
+			}
+		}
+	} else {
+		queue, err := loadQueue(paths.queueFile)
+		if err == nil {
+			for _, command := range queue.Commands {
+				if command.ID != "" {
+					values[command.ID] = struct{}{}
+				}
+			}
+		}
+		entries, err := os.ReadDir(paths.runsDir)
+		if err == nil {
+			for _, run := range entries {
+				if !run.IsDir() {
+					continue
+				}
+				jobs, err := os.ReadDir(filepath.Join(paths.runsDir, run.Name()))
+				if err != nil {
+					continue
+				}
+				for _, job := range jobs {
+					if job.IsDir() {
+						values[job.Name()] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	if len(result) > 0 {
+		fmt.Println(strings.Join(result, "\n"))
+	}
+	return 0
+}
+
 func installCompletion(shell string) error {
 	if shell == "" {
 		shell = filepath.Base(os.Getenv("SHELL"))
@@ -63,19 +148,53 @@ fi`)
 			return fmt.Errorf("failed to create %s: %w", zfuncDir, err)
 		}
 		completionPath := filepath.Join(zfuncDir, "_fjob")
-		if err := os.WriteFile(completionPath, []byte(generateZshCompletion()), 0o644); err != nil {
-			return fmt.Errorf("failed to write %s: %w", completionPath, err)
+		newCompletion := generateZshCompletion()
+		completionChanged := true
+		if existing, err := os.ReadFile(completionPath); err == nil && string(existing) == newCompletion {
+			completionChanged = false
+		} else {
+			if err := os.WriteFile(completionPath, []byte(newCompletion), 0o644); err != nil {
+				return fmt.Errorf("failed to write %s: %w", completionPath, err)
+			}
 		}
 		rcPath := filepath.Join(home, ".zshrc")
 		if err := appendCompletionBlock(rcPath, "zsh", `fpath=("$HOME/.zfunc" $fpath)
-autoload -Uz compinit && compinit`); err != nil {
+autoload -Uz compinit && compinit
+autoload -Uz _fjob && compdef _fjob fjob`); err != nil {
 			return err
 		}
-		fmt.Printf("installed zsh completion: %s\n", completionPath)
+		if err := ensureZshCompletionRegistration(rcPath); err != nil {
+			return err
+		}
+		if completionChanged {
+			fmt.Printf("installed zsh completion: %s\n", completionPath)
+		} else {
+			fmt.Printf("zsh completion already installed: %s\n", completionPath)
+		}
 		return nil
 	default:
 		return fmt.Errorf("unsupported shell %q; specify bash or zsh", shell)
 	}
+}
+
+func ensureZshCompletionRegistration(path string) error {
+	const registration = "autoload -Uz _fjob && compdef _fjob fjob"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read %s: %w", path, err)
+	}
+	if strings.Contains(string(data), registration) {
+		return nil
+	}
+	content := string(data)
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	content += registration + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	return nil
 }
 
 func appendCompletionBlock(path, shell, block string) error {
@@ -116,6 +235,7 @@ func generateBashCompletion() string {
 			fmt.Fprintf(&builder, "        --%s)\n            COMPREPLY=($(compgen -W \"%s\" -- \"$cur\"))\n            return\n            ;;\n", option.Name, strings.Join(option.Values, " "))
 		}
 	}
+	builder.WriteString("        --run-id)\n            local -a __fjob_completion_args=()\n            local __i\n            for (( __i = 2; __i < ${#COMP_WORDS[@]}; __i++ )); do\n                case \"${COMP_WORDS[__i]}\" in\n                    --basedir|--queue-name)\n                        if (( __i + 1 < ${#COMP_WORDS[@]} )); then\n                            __fjob_completion_args+=(\"${COMP_WORDS[__i]}\" \"${COMP_WORDS[__i+1]}\")\n                            (( __i++ ))\n                        fi\n                        ;;\n                esac\n            done\n            COMPREPLY=($(compgen -W \"$(fjob __complete run-id \"${__fjob_completion_args[@]}\" 2>/dev/null)\" -- \"$cur\"))\n            return\n            ;;\n        --job-id)\n            local -a __fjob_completion_args=()\n            local __i\n            for (( __i = 2; __i < ${#COMP_WORDS[@]}; __i++ )); do\n                case \"${COMP_WORDS[__i]}\" in\n                    --basedir|--queue-name)\n                        if (( __i + 1 < ${#COMP_WORDS[@]} )); then\n                            __fjob_completion_args+=(\"${COMP_WORDS[__i]}\" \"${COMP_WORDS[__i+1]}\")\n                            (( __i++ ))\n                        fi\n                        ;;\n                esac\n            done\n            COMPREPLY=($(compgen -W \"$(fjob __complete job-id \"${__fjob_completion_args[@]}\" 2>/dev/null)\" -- \"$cur\"))\n            return\n            ;;\n")
 	completionValues := cliSubcommandNames("completion")
 	fmt.Fprintf(&builder, "        completion)\n            COMPREPLY=($(compgen -W \"%s\" -- \"$cur\"))\n            return\n            ;;\n    esac\n\n    case \"$command\" in\n", strings.Join(completionValues, " "))
 	for _, command := range cliCommandSpecs {
@@ -131,6 +251,8 @@ func generateBashCompletion() string {
 			fmt.Fprintf(&builder, "            if [[ ${COMP_CWORD} -eq 2 ]]; then\n                COMPREPLY=($(compgen -W \"%s\" -- \"$cur\"))\n            else\n", strings.Join(values, " "))
 			if len(command.Flags) > 0 {
 				fmt.Fprintf(&builder, "                COMPREPLY=($(compgen -W \"%s\" -- \"$cur\"))\n", bashOptions(command.Flags))
+			} else {
+				builder.WriteString("                COMPREPLY=()\n")
 			}
 			builder.WriteString("            fi\n")
 		} else {
@@ -152,7 +274,7 @@ func bashOptions(flags []cliFlagSpec) string {
 
 func generateZshCompletion() string {
 	var builder strings.Builder
-	builder.WriteString("#compdef fjob\n\n_fjob() {\n    local -a commands\n    commands=(\n")
+	builder.WriteString("#compdef fjob\n\n_fjob_run_ids() {\n    local -a args\n    args=(\"${words[@]:3}\")\n    reply=(\"${(@f)$(fjob __complete run-id \"${args[@]}\" 2>/dev/null)}\")\n}\n_fjob_job_ids() {\n    local -a args\n    args=(\"${words[@]:3}\")\n    reply=(\"${(@f)$(fjob __complete job-id \"${args[@]}\" 2>/dev/null)}\")\n}\n\n_fjob() {\n    local -a commands\n    commands=(\n")
 	for _, command := range cliCommandSpecs {
 		fmt.Fprintf(&builder, "        '%s:%s'\n", command.Name, command.Description)
 	}
@@ -177,7 +299,7 @@ func generateZshCompletion() string {
 			builder.WriteString("            fi\n")
 		} else {
 			if len(command.Flags) > 0 {
-				fmt.Fprintf(&builder, "            if [[ $words[CURRENT] == -* ]]; then\n                compadd -- %s\n                return\n            fi\n", zshOptionNames(command.Flags))
+				fmt.Fprintf(&builder, "            case $words[CURRENT-1] in\n                --run-id)\n                    _fjob_run_ids\n                    compadd -- $reply\n                    return\n                    ;;\n                --job-id)\n                    _fjob_job_ids\n                    compadd -- $reply\n                    return\n                    ;;\n            esac\n            if [[ $words[CURRENT] == -* ]]; then\n                compadd -- %s\n                return\n            fi\n", zshOptionNames(command.Flags))
 			}
 			arguments := zshArguments(command.Flags)
 			if command.HasPositional {
@@ -187,7 +309,7 @@ func generateZshCompletion() string {
 		}
 		builder.WriteString("            ;;\n")
 	}
-	builder.WriteString("    esac\n}\n")
+	builder.WriteString("    esac\n}\n\n_fjob_completion_context() {\n    local -a args\n    local i\n    for (( i = 3; i <= ${#words[@]}; i++ )); do\n        case $words[i] in\n            --basedir|--queue-name)\n                if (( i + 1 <= ${#words[@]} )); then\n                    args+=(\"$words[i]\" \"$words[i+1]\")\n                    (( i++ ))\n                fi\n                ;;\n        esac\n    done\n    reply=(\"${(@f)$(fjob __complete \"$1\" \"${args[@]}\" 2>/dev/null)}\")\n}\n_fjob_run_ids() { _fjob_completion_context run-id }\n_fjob_job_ids() { _fjob_completion_context job-id }\n\nif (( $+functions[compdef] )); then\n    compdef _fjob fjob\nfi\n")
 	return builder.String()
 }
 
@@ -197,6 +319,9 @@ func zshArguments(flags []cliFlagSpec) string {
 		argument := fmt.Sprintf("'--%s[%s]", flag.Name, flag.Description)
 		if len(flag.Values) > 0 {
 			argument += ":" + flag.ValueName + ":(" + strings.Join(flag.Values, " ") + ")"
+		} else if flag.Name == "run-id" || flag.Name == "job-id" {
+			action := "_fjob_" + strings.ReplaceAll(flag.Name, "-", "_") + "s"
+			argument += ":" + flag.ValueName + ":" + action
 		} else if flag.ValueName != "" {
 			argument += ":" + flag.ValueName + ":"
 		}

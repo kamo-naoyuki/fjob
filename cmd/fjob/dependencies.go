@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 func validateDependencies(jobs []JobSpec) error {
 	byName := make(map[string]JobSpec, len(jobs))

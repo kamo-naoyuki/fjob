@@ -48,13 +48,18 @@ func prepareRunSelection(baseDir, queueName, selection string) (int, error) {
 		results[result.ID] = result.ExitCode
 	}
 
-	data, err := os.ReadFile(filepath.Join(runDir, "commands.json"))
+	snapshot, err := loadQueue(paths.queueFile)
 	if err != nil {
-		return 0, fmt.Errorf("failed to load command snapshot: %w", err)
+		return 0, fmt.Errorf("failed to load queue: %w", err)
 	}
-	var snapshot Queue
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return 0, fmt.Errorf("failed to parse command snapshot: %w", err)
+	if len(snapshot.Commands) == 0 {
+		data, err := os.ReadFile(filepath.Join(runDir, "commands.json"))
+		if err != nil {
+			return 0, fmt.Errorf("failed to load command snapshot: %w", err)
+		}
+		if err := json.Unmarshal(data, &snapshot); err != nil {
+			return 0, fmt.Errorf("failed to parse command snapshot: %w", err)
+		}
 	}
 	selected := make([]QueuedCommand, 0)
 	selectedNames := make(map[string]bool)
@@ -76,7 +81,7 @@ func prepareRunSelection(baseDir, queueName, selection string) (int, error) {
 		if include {
 			selectedNames[job.Name] = true
 			selected = append(selected, QueuedCommand{
-				Command: job.Command, Backend: job.Backend, SbatchOptions: job.SbatchOptions, Name: job.Name, DependsOn: job.DependsOn,
+				ID: job.ID, Command: job.Command, Backend: job.Backend, SbatchOptions: job.SbatchOptions, Name: job.Name, DependsOn: job.DependsOn,
 			})
 		}
 	}

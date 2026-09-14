@@ -105,6 +105,7 @@ func executeSlurmRun(paths pathSet, runID string, maxActive int, sbatchOptions [
 
 	summary := RunSummary{
 		RunID:      runID,
+		Status:     "finished",
 		StartedAt:  nowRFC3339(),
 		FinishedAt: nowRFC3339(),
 		ExitCode:   0,
@@ -115,6 +116,7 @@ func executeSlurmRun(paths pathSet, runID string, maxActive int, sbatchOptions [
 			summary.ExitCode = 1
 		}
 	}
+	summary.Status = runStatus(summary.ExitCode)
 	successCount := 0
 	failedCount := 0
 	for _, result := range results {

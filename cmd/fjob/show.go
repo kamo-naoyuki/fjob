@@ -54,6 +54,23 @@ func cmdShow(args []string) int {
 	if *showRunsList {
 		return showRuns(paths)
 	}
+	if *runIDOption == "" {
+		queue, err := loadQueue(paths.queueFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to load queue: %v\n", err)
+			return 1
+		}
+		if len(queue.Commands) > 0 {
+			if *showLogs || *showFailedLogs || *failedOnly {
+				fmt.Fprintln(os.Stderr, "logs and failed filters require --run-id")
+				return 1
+			}
+			if *jobIDOption != "" {
+				return showQueueJob(paths, queue, *jobIDOption)
+			}
+			return showQueue(paths, queue)
+		}
+	}
 	runID, err := selectRunID(paths, *runIDOption)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -234,15 +251,20 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		}
 	}
 
-	fmt.Printf("%s\n%s\n%s\n", cyan("Queue: "+paths.queueName), cyan("Run: "+runID), cyan("Directory: "+runDir))
+	fmt.Printf("%s %s\n%s %s\n%s %s\n", cyan("Queue:"), paths.queueName, cyan("Run:"), runID, cyan("Directory:"), runDir)
 	if summaryOK {
-		fmt.Printf("Started: %s\nFinished: %s\nExit code: %d\n", summary.StartedAt, summary.FinishedAt, summary.ExitCode)
+		fmt.Printf("%s %s\n%s %s\n%s %s\n%s %d\n", cyan("Status:"), summary.Status, cyan("Started:"), summary.StartedAt, cyan("Finished:"), summary.FinishedAt, cyan("Exit code:"), summary.ExitCode)
 	}
-	if diff, err := compareQueueWithRun(paths.queueFile, filepath.Join(runDir, "commands.json")); err == nil && diff.HasChanges() {
+	fmt.Printf("%s %s\n", cyan("Output directory:"), runDir)
+	queue, queueErr := loadQueue(paths.queueFile)
+	if queueErr == nil && len(queue.Commands) > 0 {
+		if diff, err := compareQueueWithRun(paths.queueFile, filepath.Join(runDir, "commands.json")); err == nil && diff.HasChanges() {
 		fmt.Printf("\n%s\n", yellow("Queue differs from this run:"))
 		fmt.Printf("  Added: %d\n  Removed: %d\n  Changed: %d\n", diff.Added, diff.Removed, diff.Changed)
+		}
 	}
 	jobSpecs := loadRunJobSpecs(runDir)
+	runQueue, _ := loadQueue(filepath.Join(runDir, "commands.json"))
 	resultByID := make(map[string]JobResult, len(summary.Results))
 	for _, result := range summary.Results {
 		resultByID[result.ID] = result
@@ -254,6 +276,7 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		return 1
 	}
 	fmt.Println("\n" + cyan("Jobs:"))
+	changeHints := make([]JobSpec, 0)
 	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-12s %-15s %-20s %-10s %-30s %-24s %-24s %s", "JOB ID", "NAME", "DEPENDS ON", "STATUS", "BACKEND", "SUBMITTED", "FINISHED", "COMMAND")))
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -286,21 +309,14 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 				blocked = strings.HasPrefix(result.Error, "blocked")
 			}
 		}
-		backend, options := jobSpecs[jobID].Backend, jobSpecs[jobID].SbatchOptions
-		if backend == "" {
-			backend = "local"
-		}
-		backendText := colorBackend(backend)
-		if len(options) > 0 {
-			backendText += " (" + strings.Join(options, " ") + ")"
-		}
+		backendText := queueBackendText(runQueue, jobSpecs[jobID])
 		if failedOnly && (!statusOK || status == 0) {
 			continue
 		}
-		command := readCommand(filepath.Join(runDir, jobID, "command"))
-		if command == "" {
-			command = readJSONCommand(filepath.Join(runDir, jobID, "command.json"))
+		if statusOK && status != 0 {
+			changeHints = append(changeHints, jobSpecs[jobID])
 		}
+		command := readJSONCommand(filepath.Join(runDir, jobID, "command.json"))
 		submittedAt := readSubmittedAt(runDir, jobID)
 		finishedAt := readFinishedAt(runDir, jobID)
 		if statusOK {
@@ -315,9 +331,104 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 			fmt.Printf("%-12s %-15s %-20s %-10s %-30s %-24s %-24s %s\n", jobID, name, dependsOn, yellow("running"), backendText, submittedAt, finishedAt, command)
 		}
 	}
-	fmt.Printf("\n%s\n", cyan("Output directory: "+runDir))
-	fmt.Printf("\nTo clear all saved run logs:\n  fjob clear --basedir %s --queue-name %s\n", paths.baseDir, paths.queueName)
+	printChangeHints(paths, runQueue, changeHints)
+	fmt.Printf("\n%s\n  fjob clear --basedir %s --queue-name %s\n", cyan("To clear all saved run logs:"), paths.baseDir, paths.queueName)
 	return 0
+}
+
+func printChangeHints(paths pathSet, queue Queue, jobs []JobSpec) {
+	if len(jobs) == 0 {
+		return
+	}
+	hasSlurm := false
+	hasDependencies := false
+	selector := "--job-id JOB_ID"
+	if len(jobs) == 1 && jobs[0].Name != "" {
+		selector = "--job-name " + jobs[0].Name
+	}
+	for _, job := range jobs {
+		backend := job.Backend
+		if backend == "" {
+			backend = queue.DefaultBackend
+		}
+		if backend == "slurm" {
+			hasSlurm = true
+		}
+		if len(job.DependsOn) > 0 {
+			hasDependencies = true
+		}
+	}
+	fmt.Println("\n" + cyan("Change:"))
+	fmt.Println("  " + cyan("e.g., Replace the command:"))
+	fmt.Printf("    fjob change --basedir %s --queue-name %s %s -- <new-command ...>\n", paths.baseDir, paths.queueName, selector)
+	if hasSlurm {
+		fmt.Println("  " + cyan("e.g., Replace the Slurm options:"))
+		fmt.Printf("    fjob change --basedir %s --queue-name %s %s --sbatch-option=\"<slurm-options>\"\n", paths.baseDir, paths.queueName, selector)
+	}
+	if hasDependencies {
+		fmt.Println("  " + cyan("e.g., Replace the dependencies:"))
+		fmt.Printf("    fjob change --basedir %s --queue-name %s %s --depends-on <job-name>\n", paths.baseDir, paths.queueName, selector)
+	}
+	fmt.Println("\n" + cyan("Rerun:"))
+	fmt.Printf("    fjob run --failed --basedir %s --queue-name %s\n", paths.baseDir, paths.queueName)
+}
+
+func showQueue(paths pathSet, queue Queue) int {
+	jobs := queueToJobs(queue.Commands)
+	fmt.Printf("%s\n%s\n\n", cyan("Queue: "+paths.queueName), cyan("Current batch"))
+	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-12s %-15s %-20s %-30s %s", "JOB ID", "NAME", "DEPENDS ON", "BACKEND", "COMMAND")))
+	for _, job := range jobs {
+		name := job.Name
+		if name == "" {
+			name = "-"
+		}
+		dependsOn := strings.Join(job.DependsOn, ",")
+		if dependsOn == "" {
+			dependsOn = "-"
+		}
+		backendText := queueBackendText(queue, job)
+		fmt.Printf("%-12s %-15s %-20s %-30s %s\n", job.ID, name, dependsOn, backendText, strings.Join(job.Command, " "))
+	}
+	return 0
+}
+
+func showQueueJob(paths pathSet, queue Queue, jobID string) int {
+	for _, job := range queueToJobs(queue.Commands) {
+		if job.ID != jobID {
+			continue
+		}
+		fmt.Printf("%s\n%s\n", cyan("Queue: "+paths.queueName), cyan("Job: "+job.ID))
+		if job.Name != "" {
+			fmt.Printf("Name: %s\n", job.Name)
+		}
+		fmt.Printf("Backend: %s\n", queueBackendText(queue, job))
+		if len(job.DependsOn) > 0 {
+			fmt.Printf("Depends on: %s\n", strings.Join(job.DependsOn, ", "))
+		}
+		fmt.Printf("Command: %s\n", strings.Join(job.Command, " "))
+		return 0
+	}
+	fmt.Fprintf(os.Stderr, "job %q not found in current queue\n", jobID)
+	return 1
+}
+
+func queueBackendText(queue Queue, job JobSpec) string {
+	backend := job.Backend
+	options := job.SbatchOptions
+	if backend == "" {
+		backend = queue.DefaultBackend
+	}
+	if backend == "" {
+		backend = "local"
+	}
+	if backend == "slurm" && len(options) == 0 {
+		options = queue.DefaultSbatchOptions
+	}
+	backendText := colorBackend(backend)
+	if len(options) > 0 {
+		backendText += " (" + strings.Join(options, " ") + ")"
+	}
+	return backendText
 }
 
 type queueRunDiff struct {
@@ -409,7 +520,7 @@ func showRuns(paths pathSet) int {
 		startedAt  string
 		finishedAt string
 		exitCode   int
-		statusText string
+		status     string
 		hasSummary bool
 		modTime    int64
 	}
@@ -435,16 +546,15 @@ func showRuns(paths pathSet) int {
 				r.startedAt = summary.StartedAt
 				r.finishedAt = summary.FinishedAt
 				r.exitCode = summary.ExitCode
-				r.hasSummary = true
-				if summary.ExitCode == 0 {
-					r.statusText = green("0 (success)")
-				} else {
-					r.statusText = red(fmt.Sprintf("%d (failed)", summary.ExitCode))
+				r.status = summary.Status
+				if r.status == "" {
+					r.status = runStatus(summary.ExitCode)
 				}
+				r.hasSummary = true
 			}
 		}
 		if !r.hasSummary {
-			r.statusText = yellow("running")
+			r.status = "running"
 		}
 		runs = append(runs, r)
 	}
@@ -455,7 +565,7 @@ func showRuns(paths pathSet) int {
 
 	fmt.Printf("%s\n%s\n", cyan("Queue: "+paths.queueName), cyan("Runs directory: "+paths.runsDir))
 	fmt.Println("\n" + cyan("Runs:"))
-	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-36s %-15s %-24s %-24s", "RUN ID", "EXIT CODE", "STARTED", "FINISHED")))
+	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-36s %-12s %-12s %-24s %-24s", "RUN ID", "STATUS", "EXIT CODE", "STARTED", "FINISHED")))
 	for _, r := range runs {
 		started := r.startedAt
 		if started == "" {
@@ -465,7 +575,19 @@ func showRuns(paths pathSet) int {
 		if finished == "" {
 			finished = "-"
 		}
-		fmt.Printf("%-36s %-15s %-24s %-24s\n", r.id, r.statusText, started, finished)
+		statusText := r.status
+		if statusText == "finished" {
+			statusText = green(statusText)
+		} else if statusText == "failed" {
+			statusText = red(statusText)
+		} else {
+			statusText = yellow(statusText)
+		}
+		exitCode := "-"
+		if r.hasSummary {
+			exitCode = strconv.Itoa(r.exitCode)
+		}
+		fmt.Printf("%-36s %-12s %-12s %-24s %-24s\n", r.id, statusText, exitCode, started, finished)
 	}
 	return 0
 }
@@ -560,47 +682,56 @@ func showJob(writer io.Writer, paths pathSet, runID, jobID string) int {
 		fmt.Fprintf(os.Stderr, "job %q not found in run %q\n", jobID, runID)
 		return 1
 	}
-	fmt.Fprintf(writer, "%s\n%s\n%s\n", cyan("Queue: "+paths.queueName), cyan("Run: "+runID), cyan("Job: "+jobID))
+	fmt.Fprintf(writer, "%s %s\n%s %s\n%s %s\n", cyan("Queue:"), paths.queueName, cyan("Run:"), runID, cyan("Job:"), jobID)
 	jobSpecs := loadRunJobSpecs(runDir)
 	name := readJobName(jobDir)
 	if name == "" {
 		name = jobSpecs[jobID].Name
 	}
 	if name != "" {
-		fmt.Fprintf(writer, "Name: %s\n", name)
+		fmt.Fprintf(writer, "%s %s\n", cyan("Name:"), name)
+	}
+	backend, options := jobSpecs[jobID].Backend, jobSpecs[jobID].SbatchOptions
+	if backend == "" {
+		backend = "local"
+	}
+	fmt.Fprintf(writer, "%s %s\n", cyan("Backend:"), backend)
+	if len(options) > 0 {
+		fmt.Fprintf(writer, "%s %s\n", cyan("Slurm options:"), strings.Join(options, " "))
 	}
 	if dependencies := jobSpecs[jobID].DependsOn; len(dependencies) > 0 {
-		fmt.Fprintf(writer, "Depends on: %s\n", strings.Join(dependencies, ", "))
+		fmt.Fprintf(writer, "%s %s\n", cyan("Depends on:"), strings.Join(dependencies, ", "))
 	}
-	fmt.Fprintf(writer, "Submitted: %s\n", readSubmittedAt(runDir, jobID))
-	fmt.Fprintf(writer, "Finished: %s\n", readFinishedAt(runDir, jobID))
+	fmt.Fprintf(writer, "%s %s\n", cyan("Submitted:"), readSubmittedAt(runDir, jobID))
+	fmt.Fprintf(writer, "%s %s\n", cyan("Finished:"), readFinishedAt(runDir, jobID))
 	if status, ok := readJobStatus(filepath.Join(jobDir, "status")); ok {
 		if status == 0 {
-			fmt.Fprintf(writer, "%s\n", green(fmt.Sprintf("Status: %d", status)))
+			fmt.Fprintf(writer, "%s %s\n", cyan("Status:"), green(strconv.Itoa(status)))
 		} else {
-			fmt.Fprintf(writer, "%s\n", red(fmt.Sprintf("Status: %d", status)))
+			fmt.Fprintf(writer, "%s %s\n", cyan("Status:"), red(strconv.Itoa(status)))
 		}
 	} else if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok {
 		status := fmt.Sprintf("Status: %s (exit code %d)", slurm.Phase, slurm.ExitCode)
 		if slurm.Phase == "finished" && slurm.ExitCode == 0 {
-			fmt.Fprintf(writer, "%s\n", green(status))
+			fmt.Fprintf(writer, "%s %s\n", cyan("Status:"), green(strings.TrimPrefix(status, "Status: ")))
 		} else if slurm.Phase == "finished" {
-			fmt.Fprintf(writer, "%s\n", red(status))
+			fmt.Fprintf(writer, "%s %s\n", cyan("Status:"), red(strings.TrimPrefix(status, "Status: ")))
 		} else {
-			fmt.Fprintf(writer, "%s\n", yellow(status))
+			fmt.Fprintf(writer, "%s %s\n", cyan("Status:"), yellow(strings.TrimPrefix(status, "Status: ")))
 		}
 	} else {
 		summary, err := loadRunSummary(filepath.Join(runDir, "summary.json"))
 		if err == nil {
 			for _, result := range summary.Results {
 				if result.ID == jobSpecs[jobID].ID && strings.HasPrefix(result.Error, "blocked") {
-					fmt.Fprintf(writer, "%s\n", yellow("Status: blocked (dependency failed)"))
+					fmt.Fprintf(writer, "%s %s\n", cyan("Status:"), yellow("blocked (dependency failed)"))
 				}
 			}
 		}
 	}
-	fmt.Fprintf(writer, "Command: %s\n", readCommand(filepath.Join(jobDir, "command")))
-	fmt.Fprintf(writer, "Output: %s\n\n", filepath.Join(jobDir, "output"))
+	command := readJSONCommand(filepath.Join(jobDir, "command.json"))
+	fmt.Fprintf(writer, "%s %s\n", cyan("Command:"), command)
+	fmt.Fprintf(writer, "%s %s\n\n", cyan("Output:"), filepath.Join(jobDir, "output"))
 	output, err := os.ReadFile(filepath.Join(jobDir, "output"))
 	if err == nil {
 		fmt.Fprint(writer, string(output))
@@ -615,14 +746,6 @@ func readJobStatus(path string) (int, bool) {
 	}
 	value, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	return value, err == nil
-}
-
-func readCommand(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
 }
 
 func readJSONCommand(path string) string {
@@ -677,10 +800,7 @@ func showRunLogs(writer io.Writer, paths pathSet, runID string, failedOnly bool)
 		if name == "" {
 			name = jobSpecs[jobID].Name
 		}
-		command := readCommand(filepath.Join(jobDir, "command"))
-		if command == "" {
-			command = readJSONCommand(filepath.Join(jobDir, "command.json"))
-		}
+		command := readJSONCommand(filepath.Join(jobDir, "command.json"))
 
 		header := fmt.Sprintf("=== Job: %s", jobID)
 		if name != "" {

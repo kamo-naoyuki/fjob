@@ -678,6 +678,9 @@ func cancelQueue(baseDir, queueName string, wait bool) (string, error) {
 	if err := json.Unmarshal(data, &lock); err != nil {
 		return "", fmt.Errorf("invalid running lock: %w", err)
 	}
+	if err := markQueueCancelling(paths); err != nil {
+		return "", err
+	}
 	runDir := filepath.Join(paths.runsDir, lock.RunID)
 	metadataPath := filepath.Join(runDir, "slurm_jobs.json")
 	if metadata, err := os.ReadFile(metadataPath); err == nil {
@@ -715,6 +718,24 @@ func cancelQueue(baseDir, queueName string, wait bool) (string, error) {
 		return "", fmt.Errorf("cancel local worker: %w", err)
 	}
 	return finishCancelMessage(fmt.Sprintf("Cancel requested\n  Queue: %s\n  Run: %s\n  Worker PID: %d", queueName, lock.RunID, lock.PID), paths, queueName, lock.RunID, wait)
+}
+
+func markQueueCancelling(paths pathSet) error {
+	release, err := acquireStateLock(paths.stateLockFile)
+	if err != nil {
+		return fmt.Errorf("failed to lock queue: %w", err)
+	}
+	defer release()
+	meta, err := loadMeta(paths.metaFile)
+	if err != nil {
+		return fmt.Errorf("failed to load metadata: %w", err)
+	}
+	meta.Phase = "cancelling"
+	meta.UpdatedAt = nowRFC3339()
+	if err := writeJSON(paths.metaFile, meta); err != nil {
+		return fmt.Errorf("failed to mark queue as cancelling: %w", err)
+	}
+	return nil
 }
 
 func finishCancelMessage(message string, paths pathSet, queueName, runID string, wait bool) (string, error) {
@@ -784,7 +805,7 @@ func enqueueCommand(baseDir, queueName string, command []string, backend string,
 		queue.DefaultSbatchOptions = append([]string(nil), sbatchOptions...)
 	}
 	queue.Commands = append(queue.Commands, QueuedCommand{
-		Command: command, Backend: backend, SbatchOptions: sbatchOptions, Name: jobName, DependsOn: dependsOn,
+		ID: makeJobID(), Command: command, Backend: backend, SbatchOptions: sbatchOptions, Name: jobName, DependsOn: dependsOn,
 	})
 	if err := writeJSON(paths.queueFile, queue); err != nil {
 		return "", err
@@ -885,8 +906,13 @@ func runServerSync(baseDir, queueName string, localConcurrency, slurmMaxActive, 
 	exitCode := executeMixedRun(paths, runID, localConcurrency, slurmMaxActive, retry, resolvedBackend, sbatchOptions, func(result JobResult, completed, total, succeeded, failed int) {
 		if progress != nil {
 			message := ""
-			if result.ExitCode != 0 && retry == 0 {
-				message = fmt.Sprintf("Job failed:\n  ID: %s\n  Command: %s\n  Show output:\n    fjob show --basedir %s --queue-name %s --run-id %s --job-id %s",
+			if result.ExitCode != 0 && result.Error == "final-failure" {
+				failureTitle := "Job failed:"
+				if retry > 0 {
+					failureTitle = "Job failed after retry:"
+				}
+				message = fmt.Sprintf("%s\n  ID: %s\n  Command: %s\n  Show output:\n    fjob show --basedir %s --queue-name %s --run-id %s --job-id %s",
+					failureTitle,
 					result.ID, strings.Join(result.Command, " "), paths.baseDir, paths.queueName, runID, result.ID)
 			} else if strings.HasPrefix(result.Error, "retry:") {
 				message = fmt.Sprintf("Retrying job: attempt=%s job=%s command=%v", strings.TrimPrefix(result.Error, "retry:"), result.ID, result.Command)
@@ -894,11 +920,7 @@ func runServerSync(baseDir, queueName string, localConcurrency, slurmMaxActive, 
 			progress(serverResponse{OK: true, Progress: true, Message: message, JobID: result.ID, Completed: completed, Total: total, Succeeded: succeeded, Failed: failed})
 		}
 	})
-	meta.Phase = "finished"
-	meta.LastRunID = runID
-	meta.LastRunExitCode = exitCode
-	meta.UpdatedAt = nowRFC3339()
-	if err := writeJSON(paths.metaFile, meta); err != nil {
+	if err := finishRun(paths, runID, exitCode); err != nil {
 		_ = os.Remove(paths.lockFile)
 		return "", 1, err
 	}

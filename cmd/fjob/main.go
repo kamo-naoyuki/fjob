@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,37 +29,12 @@ type Queue struct {
 }
 
 type QueuedCommand struct {
+	ID            string   `json:"id"`
 	Command       []string `json:"command"`
 	Backend       string   `json:"backend,omitempty"`
 	SbatchOptions []string `json:"sbatch_options,omitempty"`
 	Name          string   `json:"name,omitempty"`
 	DependsOn     []string `json:"depends_on,omitempty"`
-}
-
-func (queue *Queue) UnmarshalJSON(data []byte) error {
-	var current struct {
-		DefaultBackend       string          `json:"default_backend,omitempty"`
-		DefaultSbatchOptions []string        `json:"default_sbatch_options,omitempty"`
-		Commands             json.RawMessage `json:"commands"`
-	}
-	if err := json.Unmarshal(data, &current); err != nil {
-		return err
-	}
-	var commands []QueuedCommand
-	if err := json.Unmarshal(current.Commands, &commands); err != nil {
-		var legacy [][]string
-		if err := json.Unmarshal(current.Commands, &legacy); err != nil {
-			return err
-		}
-		commands = make([]QueuedCommand, 0, len(legacy))
-		for _, command := range legacy {
-			commands = append(commands, QueuedCommand{Command: command})
-		}
-	}
-	queue.DefaultBackend = current.DefaultBackend
-	queue.DefaultSbatchOptions = current.DefaultSbatchOptions
-	queue.Commands = commands
-	return nil
 }
 
 type Meta struct {
@@ -94,10 +68,18 @@ type JobResult struct {
 
 type RunSummary struct {
 	RunID      string      `json:"run_id"`
+	Status     string      `json:"status"`
 	StartedAt  string      `json:"started_at"`
 	FinishedAt string      `json:"finished_at"`
 	ExitCode   int         `json:"exit_code"`
 	Results    []JobResult `json:"results"`
+}
+
+func runStatus(exitCode int) string {
+	if exitCode == 0 {
+		return "finished"
+	}
+	return "failed"
 }
 
 func main() {
@@ -122,6 +104,8 @@ func run(args []string) int {
 		return cmdCancel(args[1:])
 	case "clear":
 		return cmdClear(args[1:])
+	case "change":
+		return cmdChange(args[1:])
 	case "show":
 		return cmdShow(args[1:])
 	case "wait":
@@ -134,6 +118,8 @@ func run(args []string) int {
 		return cmdServer(args[1:])
 	case "completion":
 		return cmdCompletion(args[1:])
+	case "__complete":
+		return cmdComplete(args[1:])
 	case "__server":
 		return cmdServerProcess(args[1:])
 	case "__worker-run":
@@ -188,6 +174,15 @@ func cmdCheck(args []string) int {
 		return 1
 	}
 	if running {
+		meta, metaErr := loadMeta(paths.metaFile)
+		if metaErr == nil && meta.Phase == "cancelling" {
+			if !waitForCancellation(paths, queueName) {
+				return 1
+			}
+			running = false
+		}
+	}
+	if running {
 		fmt.Fprintln(os.Stderr, red(fmt.Sprintf("queue '%s' is running; new jobs are not allowed", queueName)))
 		fmt.Fprintf(os.Stderr, "cancel with: fjob cancel --basedir %s --queue-name %s\n", paths.baseDir, queueName)
 		return 1
@@ -203,6 +198,30 @@ func cmdCheck(args []string) int {
 	}
 	fmt.Printf("%s\n", green(fmt.Sprintf("queue '%s' is available", queueName)))
 	return 0
+}
+
+const cancellationWaitTimeout = 5 * time.Minute
+
+func waitForCancellation(paths pathSet, queueName string) bool {
+	fmt.Println(cyan(fmt.Sprintf("queue '%s' is cancelling", queueName)))
+	fmt.Println(cyan("Waiting for jobs to stop..."))
+	deadline := time.Now().Add(cancellationWaitTimeout)
+	for {
+		running, err := isRunning(paths.lockFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to check queue: %v\n", err)
+			return false
+		}
+		if !running {
+			fmt.Println(cyan("Cancellation complete"))
+			return true
+		}
+		if time.Now().After(deadline) {
+			fmt.Fprintln(os.Stderr, "cancellation is still in progress")
+			return false
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 func cmdWorkerRun(args []string) int {
@@ -247,11 +266,7 @@ func cmdWorkerRun(args []string) int {
 	}
 
 	exitCode := executeMixedRun(paths, runID, localConcurrency, slurmMaxActive, retry, *backend, sbatchOptions, nil)
-	meta.Phase = "finished"
-	meta.LastRunID = runID
-	meta.LastRunExitCode = exitCode
-	meta.UpdatedAt = nowRFC3339()
-	if err := writeJSON(paths.metaFile, meta); err != nil {
+	if err := finishRun(paths, runID, exitCode); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to finalize metadata: %v\n", err)
 		return 1
 	}
@@ -261,6 +276,36 @@ func cmdWorkerRun(args []string) int {
 	}
 
 	return exitCode
+}
+
+func finishRun(paths pathSet, runID string, exitCode int) error {
+	release, err := acquireStateLock(paths.stateLockFile)
+	if err != nil {
+		return fmt.Errorf("failed to lock queue: %w", err)
+	}
+	defer release()
+
+	queue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		return fmt.Errorf("failed to load queue: %w", err)
+	}
+	queue.Commands = nil
+	if err := writeJSON(paths.queueFile, queue); err != nil {
+		return fmt.Errorf("failed to clear queue: %w", err)
+	}
+
+	meta, err := loadMeta(paths.metaFile)
+	if err != nil {
+		return fmt.Errorf("failed to load metadata: %w", err)
+	}
+	meta.Phase = "finished"
+	meta.LastRunID = runID
+	meta.LastRunExitCode = exitCode
+	meta.UpdatedAt = nowRFC3339()
+	if err := writeJSON(paths.metaFile, meta); err != nil {
+		return fmt.Errorf("failed to finalize metadata: %w", err)
+	}
+	return nil
 }
 
 func launchAsyncRun(paths pathSet, queueName, runID string, localConcurrency, slurmMaxActive, retry int, backend string, sbatchOptions []string) int {
@@ -368,6 +413,7 @@ func executeRun(paths pathSet, runID string, numParallel int) int {
 
 	summary := RunSummary{
 		RunID:      runID,
+		Status:     "finished",
 		StartedAt:  startedAt,
 		FinishedAt: nowRFC3339(),
 		ExitCode:   0,
@@ -379,6 +425,7 @@ func executeRun(paths pathSet, runID string, numParallel int) int {
 			summary.ExitCode = 1
 		}
 	}
+	summary.Status = runStatus(summary.ExitCode)
 	successCount := 0
 	failedCount := 0
 	for _, result := range summary.Results {
@@ -429,7 +476,7 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
 
-	if err := os.WriteFile(filepath.Join(jobDir, "command"), []byte(strings.Join(job.Command, " ")+"\n"), 0o644); err != nil {
+	if err := writeJSON(filepath.Join(jobDir, "command.json"), job); err != nil {
 		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
 	if job.Name != "" {
@@ -486,22 +533,13 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 }
 
 func queueToJobs(commands []QueuedCommand) []JobSpec {
-	counter := map[string]int{}
 	jobs := make([]JobSpec, 0, len(commands))
 	for _, queued := range commands {
 		if len(queued.Command) == 0 {
 			continue
 		}
-		key := strings.Join(queued.Command, "\x00")
-		counter[key]++
-		idSeed := key
-		if counter[key] > 1 {
-			idSeed = idSeed + "#" + strconv.Itoa(counter[key])
-		}
-		sum := sha256.Sum256([]byte(idSeed))
-		id := hex.EncodeToString(sum[:])[:jobIDLen]
 		jobs = append(jobs, JobSpec{
-			ID: id, Command: queued.Command, Name: queued.Name,
+			ID: queued.ID, Command: queued.Command, Name: queued.Name,
 			Backend: queued.Backend, SbatchOptions: queued.SbatchOptions, DependsOn: queued.DependsOn,
 		})
 	}
@@ -755,6 +793,14 @@ func makeRunID() string {
 	}
 	timestamp := time.Now().UTC().Format("20060102-150405")
 	return fmt.Sprintf("%s-%08x", timestamp, value)
+}
+
+func makeJobID() string {
+	var value [5]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		panic(fmt.Sprintf("failed to generate job id: %v", err))
+	}
+	return hex.EncodeToString(value[:])[:jobIDLen]
 }
 
 func nowRFC3339() string {
