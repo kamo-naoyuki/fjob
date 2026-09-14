@@ -259,8 +259,8 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 	queue, queueErr := loadQueue(paths.queueFile)
 	if queueErr == nil && len(queue.Commands) > 0 {
 		if diff, err := compareQueueWithRun(paths.queueFile, filepath.Join(runDir, "commands.json")); err == nil && diff.HasChanges() {
-		fmt.Printf("\n%s\n", yellow("Queue differs from this run:"))
-		fmt.Printf("  Added: %d\n  Removed: %d\n  Changed: %d\n", diff.Added, diff.Removed, diff.Changed)
+			fmt.Printf("\n%s\n", yellow("Queue differs from this run:"))
+			fmt.Printf("  Added: %d\n  Removed: %d\n  Changed: %d\n", diff.Added, diff.Removed, diff.Changed)
 		}
 	}
 	jobSpecs := loadRunJobSpecs(runDir)

@@ -27,7 +27,9 @@ jobs:
           cache: true
 
       - name: Check formatting
-        run: test -z "$(gofmt -l .)"
+        run: |
+          export PATH="/home/kamo/work/go/bin:$PATH"
+          test -z "$(gofmt -l .)"
 
       - name: Run vet
         run: go vet ./...
