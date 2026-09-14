@@ -230,7 +230,7 @@ func TestZshArgumentsIncludeValueNames(t *testing.T) {
 }
 
 func TestCompletionScriptsContainCommandOptions(t *testing.T) {
-	for _, option := range []string{"--basedir", "--queue-name", "--failed-logs", "--job-name"} {
+	for _, option := range []string{"--basedir", "--queue-name", "--failed-logs", "--no-pager", "--job-name"} {
 		if !strings.Contains(generateBashCompletion(), option) {
 			t.Errorf("Bash completion does not contain %s", option)
 		}
@@ -243,6 +243,52 @@ func TestCompletionScriptsContainCommandOptions(t *testing.T) {
 	}
 	if !strings.Contains(generateZshCompletion(), "'install:install completion") {
 		t.Error("Zsh completion does not contain the install subcommand")
+	}
+}
+
+func TestShowWithPagerDisabledWritesDirectly(t *testing.T) {
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	defer func() { os.Stdout = oldStdout }()
+
+	if code := showWithPager(false, func(writer io.Writer) int {
+		_, _ = fmt.Fprint(writer, "log output")
+		return 0
+	}); code != 0 {
+		t.Fatalf("showWithPager exit code = %d, want 0", code)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "log output" {
+		t.Fatalf("output = %q, want log output", output)
+	}
+}
+
+func TestExceedsPagerLineLimit(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		output   string
+		newlines int
+		want     bool
+	}{
+		{name: "24 complete lines", output: strings.Repeat("line\n", pagerLineLimit), newlines: pagerLineLimit},
+		{name: "25 complete lines", output: strings.Repeat("line\n", pagerLineLimit+1), newlines: pagerLineLimit + 1, want: true},
+		{name: "25th partial line", output: strings.Repeat("line\n", pagerLineLimit) + "line", newlines: pagerLineLimit, want: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := exceedsPagerLineLimit([]byte(testCase.output), testCase.newlines); got != testCase.want {
+				t.Fatalf("exceedsPagerLineLimit() = %t, want %t", got, testCase.want)
+			}
+		})
 	}
 }
 
@@ -345,7 +391,7 @@ func TestResolveQueueBackendUsesDefaultBackend(t *testing.T) {
 	}
 	if err := writeJSON(filepath.Join(queueDir, "queue.json"), Queue{
 		DefaultBackend: "slurm",
-		Commands: []QueuedCommand{{Command: []string{"echo", "hello"}}},
+		Commands:       []QueuedCommand{{Command: []string{"echo", "hello"}}},
 	}); err != nil {
 		t.Fatal(err)
 	}

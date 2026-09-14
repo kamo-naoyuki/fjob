@@ -44,42 +44,50 @@ func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActi
 		for _, job := range pending {
 			pendingByID[job.ID] = true
 		}
-		blocked := make([]JobSpec, 0)
-		ready := make([]JobSpec, 0, len(pending))
-		for _, job := range pending {
-			blockedBy := ""
-			readyForRun := true
-			for _, dependency := range job.DependsOn {
-				dependencyJob := jobsByName[dependency]
-				result, done := finalResults[dependencyJob.ID]
-				if !done || (result.ExitCode != 0 && pendingByID[dependencyJob.ID]) {
-					readyForRun = false
-					continue
+		// Resolve dependency waves within this attempt: a job whose
+		// dependency finishes in an earlier wave of the same attempt must
+		// run in this attempt too, instead of waiting for the next retry.
+		unresolved := pending
+		var attemptResults []JobResult
+		for {
+			blocked := make([]JobSpec, 0)
+			ready := make([]JobSpec, 0, len(unresolved))
+			stillUnresolved := make([]JobSpec, 0, len(unresolved))
+			for _, job := range unresolved {
+				blockedBy := ""
+				readyForRun := true
+				for _, dependency := range job.DependsOn {
+					dependencyJob := jobsByName[dependency]
+					result, done := finalResults[dependencyJob.ID]
+					if !done || (result.ExitCode != 0 && pendingByID[dependencyJob.ID]) {
+						readyForRun = false
+						continue
+					}
+					if result.ExitCode != 0 {
+						blockedBy = dependency
+						break
+					}
 				}
-				if result.ExitCode != 0 {
-					blockedBy = dependency
-					break
+				if blockedBy != "" {
+					blocked = append(blocked, job)
+				} else if readyForRun {
+					ready = append(ready, job)
+				} else {
+					stillUnresolved = append(stillUnresolved, job)
 				}
 			}
-			if blockedBy != "" {
-				blocked = append(blocked, job)
-			} else if readyForRun {
-				ready = append(ready, job)
+			for _, job := range blocked {
+				finalResults[job.ID] = JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: "blocked by failed dependency"}
 			}
-		}
-		for _, job := range blocked {
-			finalResults[job.ID] = JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: "blocked by failed dependency"}
-		}
-		if len(ready) == 0 {
-			pending = removeFinishedJobs(pending, finalResults)
-			if len(blocked) == 0 {
+			if len(ready) == 0 {
 				break
 			}
-			continue
-		}
-		attemptResults := executeMixedAttempt(runDir, queue, ready, localConcurrency, slurmMaxActive, requestedBackend, sbatchOptions)
-		for _, result := range attemptResults {
-			finalResults[result.ID] = result
+			waveResults := executeMixedAttempt(runDir, queue, ready, localConcurrency, slurmMaxActive, requestedBackend, sbatchOptions)
+			for _, result := range waveResults {
+				finalResults[result.ID] = result
+			}
+			attemptResults = append(attemptResults, waveResults...)
+			unresolved = stillUnresolved
 		}
 		nextPending := make([]JobSpec, 0, len(jobs))
 		for _, job := range pending {

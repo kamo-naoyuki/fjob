@@ -5,6 +5,10 @@
 Lightweight local job queue for running commands locally or through Slurm.
 It keeps job output and results so failed jobs can be inspected and run again.
 
+| Plain shell (background jobs) | fjob |
+| --- | --- |
+| ![shell background jobs demo](docs/demo-shell.gif) | ![fjob demo](docs/demo-fjob.gif) |
+
 ## Build and installation
 
 ```sh
@@ -174,6 +178,11 @@ fjob wait --queue-name build
 The async start message prints commands for checking status and cancelling the
 run. `wait` returns the overall run exit code.
 
+An async run is started as a detached process in a new session (`setsid`), so
+it keeps running even if the terminal that launched it is closed. Use
+`fjob wait` from any terminal (or later) to block on the run, and
+`fjob cancel` to stop it.
+
 ## Inspect and recover
 
 To inspect the latest run or list all runs:
@@ -190,6 +199,9 @@ fjob show --queue-name build --failed-logs
 `--logs` prints the output log for every job in the selected run.
 `--failed-logs` prints logs only for jobs that failed. Both options accept
 `--run-id RUN_ID` to inspect a specific run.
+When output is a terminal, log views (including `--job-id`) longer than 24
+lines open in `$PAGER` (or `less -R` by default). Use `--no-pager` to print
+directly; piped and redirected output is always printed directly.
 
 Run selected jobs from the latest run:
 

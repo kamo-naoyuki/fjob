@@ -1,15 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 )
+
+const pagerLineLimit = 24
 
 func cmdShow(args []string) int {
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
@@ -22,6 +27,7 @@ func cmdShow(args []string) int {
 	showRunsList := cliBool(fs, "runs", false)
 	showLogs := cliBool(fs, "logs", false)
 	showFailedLogs := cliBool(fs, "failed-logs", false)
+	noPager := cliBool(fs, "no-pager", false)
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -54,12 +60,124 @@ func cmdShow(args []string) int {
 		return 1
 	}
 	if *jobIDOption != "" {
-		return showJob(paths, runID, *jobIDOption)
+		return showWithPager(!*noPager, func(writer io.Writer) int {
+			return showJob(writer, paths, runID, *jobIDOption)
+		})
 	}
 	if *showLogs || *showFailedLogs {
-		return showRunLogs(paths, runID, *showFailedLogs)
+		return showWithPager(!*noPager, func(writer io.Writer) int {
+			return showRunLogs(writer, paths, runID, *showFailedLogs)
+		})
 	}
 	return showRun(paths, runID, *failedOnly)
+}
+
+func showWithPager(usePager bool, show func(io.Writer) int) int {
+	if !usePager || !isTerminal(os.Stdout) {
+		return show(os.Stdout)
+	}
+
+	writer := &pagerWriter{output: os.Stdout}
+	exitCode := show(writer)
+	if err := writer.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		if exitCode == 0 {
+			return 1
+		}
+	}
+	return exitCode
+}
+
+type pagerWriter struct {
+	output   io.Writer
+	buffer   bytes.Buffer
+	newlines int
+	input    io.WriteCloser
+	command  *exec.Cmd
+}
+
+func (writer *pagerWriter) Write(data []byte) (int, error) {
+	if writer.input != nil {
+		return writer.input.Write(data)
+	}
+	if writer.command != nil {
+		return writer.output.Write(data)
+	}
+
+	for offset, value := range data {
+		if value == '\n' {
+			writer.newlines++
+		}
+		if writer.newlines > pagerLineLimit {
+			writer.buffer.Write(data[:offset+1])
+			if err := writer.startPager(); err != nil {
+				return 0, err
+			}
+			if offset+1 == len(data) {
+				return len(data), nil
+			}
+			written, err := writer.Write(data[offset+1:])
+			return offset + 1 + written, err
+		}
+	}
+	writer.buffer.Write(data)
+	return len(data), nil
+}
+
+func (writer *pagerWriter) Close() error {
+	if writer.input == nil && writer.command == nil && exceedsPagerLineLimit(writer.buffer.Bytes(), writer.newlines) {
+		if err := writer.startPager(); err != nil {
+			if _, writeErr := writer.output.Write(writer.buffer.Bytes()); writeErr != nil {
+				return fmt.Errorf("%v; failed to write output directly: %w", err, writeErr)
+			}
+			writer.buffer.Reset()
+			return nil
+		}
+	}
+	if writer.input == nil {
+		_, err := writer.output.Write(writer.buffer.Bytes())
+		return err
+	}
+	if err := writer.input.Close(); err != nil {
+		return err
+	}
+	if err := writer.command.Wait(); err != nil {
+		return fmt.Errorf("pager %q failed: %w", writer.command.Args[0], err)
+	}
+	return nil
+}
+
+func exceedsPagerLineLimit(data []byte, newlines int) bool {
+	return newlines > pagerLineLimit || newlines == pagerLineLimit && len(data) > 0 && data[len(data)-1] != '\n'
+}
+
+func (writer *pagerWriter) startPager() error {
+	args := strings.Fields(os.Getenv("PAGER"))
+	if len(args) == 0 {
+		args = []string{"less", "-R"}
+	}
+	command := exec.Command(args[0], args[1:]...)
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	input, err := command.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("failed to start pager: %w", err)
+	}
+	if err := command.Start(); err != nil {
+		return fmt.Errorf("failed to start pager %q: %w", args[0], err)
+	}
+	writer.input = input
+	writer.command = command
+	if _, err := writer.input.Write(writer.buffer.Bytes()); err != nil {
+		return err
+	}
+	writer.buffer.Reset()
+	return nil
+}
+
+func isTerminal(file *os.File) bool {
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 func selectRunID(paths pathSet, requested string) (string, error) {
@@ -435,57 +553,57 @@ func loadRunJobSpecs(runDir string) map[string]JobSpec {
 	return specs
 }
 
-func showJob(paths pathSet, runID, jobID string) int {
+func showJob(writer io.Writer, paths pathSet, runID, jobID string) int {
 	jobDir := filepath.Join(paths.runsDir, runID, jobID)
 	runDir := filepath.Dir(jobDir)
 	if info, err := os.Stat(jobDir); err != nil || !info.IsDir() {
 		fmt.Fprintf(os.Stderr, "job %q not found in run %q\n", jobID, runID)
 		return 1
 	}
-	fmt.Printf("%s\n%s\n%s\n", cyan("Queue: "+paths.queueName), cyan("Run: "+runID), cyan("Job: "+jobID))
+	fmt.Fprintf(writer, "%s\n%s\n%s\n", cyan("Queue: "+paths.queueName), cyan("Run: "+runID), cyan("Job: "+jobID))
 	jobSpecs := loadRunJobSpecs(runDir)
 	name := readJobName(jobDir)
 	if name == "" {
 		name = jobSpecs[jobID].Name
 	}
 	if name != "" {
-		fmt.Printf("Name: %s\n", name)
+		fmt.Fprintf(writer, "Name: %s\n", name)
 	}
 	if dependencies := jobSpecs[jobID].DependsOn; len(dependencies) > 0 {
-		fmt.Printf("Depends on: %s\n", strings.Join(dependencies, ", "))
+		fmt.Fprintf(writer, "Depends on: %s\n", strings.Join(dependencies, ", "))
 	}
-	fmt.Printf("Submitted: %s\n", readSubmittedAt(runDir, jobID))
-	fmt.Printf("Finished: %s\n", readFinishedAt(runDir, jobID))
+	fmt.Fprintf(writer, "Submitted: %s\n", readSubmittedAt(runDir, jobID))
+	fmt.Fprintf(writer, "Finished: %s\n", readFinishedAt(runDir, jobID))
 	if status, ok := readJobStatus(filepath.Join(jobDir, "status")); ok {
 		if status == 0 {
-			fmt.Printf("%s\n", green(fmt.Sprintf("Status: %d", status)))
+			fmt.Fprintf(writer, "%s\n", green(fmt.Sprintf("Status: %d", status)))
 		} else {
-			fmt.Printf("%s\n", red(fmt.Sprintf("Status: %d", status)))
+			fmt.Fprintf(writer, "%s\n", red(fmt.Sprintf("Status: %d", status)))
 		}
 	} else if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok {
 		status := fmt.Sprintf("Status: %s (exit code %d)", slurm.Phase, slurm.ExitCode)
 		if slurm.Phase == "finished" && slurm.ExitCode == 0 {
-			fmt.Printf("%s\n", green(status))
+			fmt.Fprintf(writer, "%s\n", green(status))
 		} else if slurm.Phase == "finished" {
-			fmt.Printf("%s\n", red(status))
+			fmt.Fprintf(writer, "%s\n", red(status))
 		} else {
-			fmt.Printf("%s\n", yellow(status))
+			fmt.Fprintf(writer, "%s\n", yellow(status))
 		}
 	} else {
 		summary, err := loadRunSummary(filepath.Join(runDir, "summary.json"))
 		if err == nil {
 			for _, result := range summary.Results {
 				if result.ID == jobSpecs[jobID].ID && strings.HasPrefix(result.Error, "blocked") {
-					fmt.Printf("%s\n", yellow("Status: blocked (dependency failed)"))
+					fmt.Fprintf(writer, "%s\n", yellow("Status: blocked (dependency failed)"))
 				}
 			}
 		}
 	}
-	fmt.Printf("Command: %s\n", readCommand(filepath.Join(jobDir, "command")))
-	fmt.Printf("Output: %s\n\n", filepath.Join(jobDir, "output"))
+	fmt.Fprintf(writer, "Command: %s\n", readCommand(filepath.Join(jobDir, "command")))
+	fmt.Fprintf(writer, "Output: %s\n\n", filepath.Join(jobDir, "output"))
 	output, err := os.ReadFile(filepath.Join(jobDir, "output"))
 	if err == nil {
-		fmt.Print(string(output))
+		fmt.Fprint(writer, string(output))
 	}
 	return 0
 }
@@ -527,7 +645,7 @@ func readJobName(jobDir string) string {
 	return ""
 }
 
-func showRunLogs(paths pathSet, runID string, failedOnly bool) int {
+func showRunLogs(writer io.Writer, paths pathSet, runID string, failedOnly bool) int {
 	runDir := filepath.Join(paths.runsDir, runID)
 	entries, err := os.ReadDir(runDir)
 	if err != nil {
@@ -578,21 +696,21 @@ func showRunLogs(paths pathSet, runID string, failedOnly bool) int {
 			header += " [Status: running]"
 		}
 		header += " ==="
-		fmt.Println(cyan(header))
-		fmt.Printf("Command: %s\n", command)
-		fmt.Printf("Output path: %s\n", filepath.Join(jobDir, "output"))
+		fmt.Fprintln(writer, cyan(header))
+		fmt.Fprintf(writer, "Command: %s\n", command)
+		fmt.Fprintf(writer, "Output path: %s\n", filepath.Join(jobDir, "output"))
 
 		output, err := os.ReadFile(filepath.Join(jobDir, "output"))
 		if err == nil && len(output) > 0 {
-			fmt.Println("--- Log Output ---")
-			fmt.Print(string(output))
+			fmt.Fprintln(writer, "--- Log Output ---")
+			fmt.Fprint(writer, string(output))
 			if !strings.HasSuffix(string(output), "\n") {
-				fmt.Println()
+				fmt.Fprintln(writer)
 			}
 		} else {
-			fmt.Println("(No output log)")
+			fmt.Fprintln(writer, "(No output log)")
 		}
-		fmt.Println()
+		fmt.Fprintln(writer)
 	}
 	return 0
 }
