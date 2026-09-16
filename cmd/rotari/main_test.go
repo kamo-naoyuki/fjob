@@ -782,9 +782,9 @@ func TestFormatRunCompletionIncludesRunNameAndFailedJobHint(t *testing.T) {
 	}
 	message := formatRunCompletion(paths, "run-1", RunSummary{
 		RunID: "run-1", RunName: "nightly", Status: "failed", ExitCode: 1,
-		Results: []JobResult{{ID: "job-1", ExitCode: 1}},
+		Results: []JobResult{{ID: "job-1", ExitCode: 1, Hosts: []string{"compute-01"}}},
 	})
-	for _, want := range []string{"nightly (run-1)", "Failed: 1", "rotari show", "rotari retry"} {
+	for _, want := range []string{"nightly (run-1)", "Failed: 1", "Hosts: compute-01", "rotari show", "rotari retry"} {
 		if !strings.Contains(message, want) {
 			t.Errorf("completion message missing %q: %s", want, message)
 		}

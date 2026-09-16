@@ -73,6 +73,7 @@ type JobResult struct {
 	ExitCode int      `json:"exit_code"`
 	Error    string   `json:"error,omitempty"`
 	Command  []string `json:"command,omitempty"`
+	Hosts    []string `json:"hosts,omitempty"`
 }
 
 type RunSummary struct {
@@ -579,16 +580,21 @@ func failedJobHints(paths pathSet, runID string, results []JobResult) string {
 			continue
 		}
 		seen[result.ID] = true
+		hosts := strings.Join(result.Hosts, ",")
+		if hosts == "" {
+			hosts = "-"
+		}
 		if hints.Len() > 0 {
 			hints.WriteString("  ----\n")
 		}
-		fmt.Fprintf(&hints, "  Job: %s\n  Command: %s\n  Show output:\n    rotari show --basedir %s --queue-name %s --run-id %s --job-id %s\n",
-			result.ID, strings.Join(result.Command, " "), paths.baseDir, paths.queueName, runID, result.ID)
+		fmt.Fprintf(&hints, "  Job: %s\n  Hosts: %s\n  Command: %s\n  Show output:\n    rotari show --basedir %s --queue-name %s --run-id %s --job-id %s\n",
+			result.ID, hosts, strings.Join(result.Command, " "), paths.baseDir, paths.queueName, runID, result.ID)
 	}
 	return hints.String()
 }
 
 func runOneJob(runDir string, job JobSpec) JobResult {
+	hostname, _ := os.Hostname()
 	jobDir := filepath.Join(runDir, job.ID)
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
@@ -650,7 +656,7 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 		fmt.Printf("%s\n", red(fmt.Sprintf("fail job=%s exit=%d command=%s", job.ID, exitCode, strings.Join(job.Command, " "))))
 	}
 
-	return JobResult{ID: job.ID, Command: job.Command, ExitCode: exitCode}
+	return JobResult{ID: job.ID, Command: job.Command, ExitCode: exitCode, Hosts: []string{hostname}}
 }
 
 func jobCancellationRequested(jobDir string) bool {

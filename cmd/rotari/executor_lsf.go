@@ -149,7 +149,7 @@ func waitLSFJob(runDir string, job lsfJobMetadata) JobResult {
 	var accountingDeadline time.Time
 	for {
 		if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
-			return JobResult{ID: job.JobID, Command: job.Command, ExitCode: status.ExitCode, Error: status.Error}
+			return jobResultFromStatus(job.JobID, job.Command, status)
 		}
 		active, err := lsfJobActive(job.LSFJobID)
 		if err != nil {
@@ -157,7 +157,7 @@ func waitLSFJob(runDir string, job lsfJobMetadata) JobResult {
 		}
 		if !active {
 			if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
-				return JobResult{ID: job.JobID, Command: job.Command, ExitCode: status.ExitCode, Error: status.Error}
+				return jobResultFromStatus(job.JobID, job.Command, status)
 			}
 			if accountingDeadline.IsZero() {
 				accountingDeadline = time.Now().Add(lsfAccountingWait)

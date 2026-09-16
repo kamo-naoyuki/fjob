@@ -302,7 +302,7 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 	}
 	fmt.Println("\n" + cyan("Jobs:"))
 	changeHints := make([]JobSpec, 0)
-	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-12s %-15s %-20s %-10s %-30s %-24s %-24s %s", "JOB ID", "NAME", "DEPENDS ON", "STATUS", "EXECUTOR", "SUBMITTED", "FINISHED", "COMMAND")))
+	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-12s %-15s %-20s %-10s %-30s %-24s %-24s %-24s %s", "JOB ID", "NAME", "DEPENDS ON", "STATUS", "EXECUTOR", "SUBMITTED", "FINISHED", "HOSTS", "COMMAND")))
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -341,6 +341,12 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		if statusOK && status != 0 {
 			changeHints = append(changeHints, jobSpecs[jobID])
 		}
+		hosts := "-"
+		if result, ok := resultByID[jobSpecs[jobID].ID]; ok && len(result.Hosts) > 0 {
+			hosts = strings.Join(result.Hosts, ",")
+		} else if slurm, ok := loadSlurmStatus(filepath.Join(runDir, jobID, "status.json")); ok && len(slurm.Hosts) > 0 {
+			hosts = strings.Join(slurm.Hosts, ",")
+		}
 		command := readJSONCommand(filepath.Join(runDir, jobID, "command.json"))
 		submittedAt := readSubmittedAt(runDir, jobID)
 		finishedAt := readFinishedAt(runDir, jobID)
@@ -351,9 +357,9 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 			} else if status != 0 {
 				statusText = red(strconv.Itoa(status))
 			}
-			fmt.Printf("%-12s %-15s %-20s %-10s %-30s %-24s %-24s %s\n", jobID, name, dependsOn, statusText, executorText, submittedAt, finishedAt, command)
+			fmt.Printf("%-12s %-15s %-20s %-10s %-30s %-24s %-24s %-24s %s\n", jobID, name, dependsOn, statusText, executorText, submittedAt, finishedAt, hosts, command)
 		} else {
-			fmt.Printf("%-12s %-15s %-20s %-10s %-30s %-24s %-24s %s\n", jobID, name, dependsOn, yellow("running"), executorText, submittedAt, finishedAt, command)
+			fmt.Printf("%-12s %-15s %-20s %-10s %-30s %-24s %-24s %-24s %s\n", jobID, name, dependsOn, yellow("running"), executorText, submittedAt, finishedAt, hosts, command)
 		}
 	}
 	printChangeHints(paths, runQueue, changeHints)
@@ -755,6 +761,18 @@ func showJob(writer io.Writer, paths pathSet, runID, jobID string) int {
 	}
 	fmt.Fprintf(writer, "%s %s\n", cyan("Submitted:"), readSubmittedAt(runDir, jobID))
 	fmt.Fprintf(writer, "%s %s\n", cyan("Finished:"), readFinishedAt(runDir, jobID))
+	if summary, err := loadRunSummary(filepath.Join(runDir, "summary.json")); err == nil {
+		for _, result := range summary.Results {
+			if result.ID == jobSpecs[jobID].ID {
+				hosts := strings.Join(result.Hosts, ",")
+				if hosts == "" {
+					hosts = "-"
+				}
+				fmt.Fprintf(writer, "%s %s\n", cyan("Hosts:"), hosts)
+				break
+			}
+		}
+	}
 	if status, ok := readJobStatus(filepath.Join(jobDir, "status")); ok {
 		if status == 0 {
 			fmt.Fprintf(writer, "%s %s\n", cyan("Status:"), green(strconv.Itoa(status)))

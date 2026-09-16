@@ -147,12 +147,12 @@ func TestWaitSlurmJobUsesWrapperStatus(t *testing.T) {
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeJSON(filepath.Join(jobDir, "status.json"), slurmStatus{Phase: "finished", ExitCode: 8, Error: "failed"}); err != nil {
+	if err := writeJSON(filepath.Join(jobDir, "status.json"), slurmStatus{Phase: "finished", ExitCode: 8, Error: "failed", Hosts: []string{"compute-01", "compute-02"}}); err != nil {
 		t.Fatal(err)
 	}
 
 	result := waitSlurmJob(runDir, job)
-	if result.ExitCode != 8 || result.Error != "failed" {
+	if result.ExitCode != 8 || result.Error != "failed" || len(result.Hosts) != 2 || result.Hosts[1] != "compute-02" {
 		t.Fatalf("result = %+v, want exit 8 and failed", result)
 	}
 }

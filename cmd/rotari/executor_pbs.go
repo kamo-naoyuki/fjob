@@ -135,7 +135,7 @@ func waitPBSJob(runDir string, job pbsJobMetadata) JobResult {
 	var accountingDeadline time.Time
 	for {
 		if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
-			return JobResult{ID: job.JobID, Command: job.Command, ExitCode: status.ExitCode, Error: status.Error}
+			return jobResultFromStatus(job.JobID, job.Command, status)
 		}
 		active, err := pbsJobActive(job.PBSJobID)
 		if err != nil {
@@ -143,7 +143,7 @@ func waitPBSJob(runDir string, job pbsJobMetadata) JobResult {
 		}
 		if !active {
 			if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
-				return JobResult{ID: job.JobID, Command: job.Command, ExitCode: status.ExitCode, Error: status.Error}
+				return jobResultFromStatus(job.JobID, job.Command, status)
 			}
 			if accountingDeadline.IsZero() {
 				accountingDeadline = time.Now().Add(pbsAccountingWait)

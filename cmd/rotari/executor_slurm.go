@@ -15,11 +15,12 @@ import (
 )
 
 type slurmStatus struct {
-	Phase      string `json:"phase"`
-	ExitCode   int    `json:"exit_code,omitempty"`
-	Error      string `json:"error,omitempty"`
-	StartedAt  string `json:"started_at,omitempty"`
-	FinishedAt string `json:"finished_at,omitempty"`
+	Phase      string   `json:"phase"`
+	ExitCode   int      `json:"exit_code,omitempty"`
+	Error      string   `json:"error,omitempty"`
+	Hosts      []string `json:"hosts,omitempty"`
+	StartedAt  string   `json:"started_at,omitempty"`
+	FinishedAt string   `json:"finished_at,omitempty"`
 }
 
 type slurmJobMetadata struct {
@@ -352,15 +353,16 @@ func statusWrapperScript(command []string, jobDir string) string {
 	return fmt.Sprintf(`#!/bin/sh
 set +e
 status_path=%s
+hostname=$(hostname 2>/dev/null || true)
 write_status() {
     phase=$1
     code=$2
     tmp="${status_path}.tmp.$$"
     now=$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)
     if [ "$phase" = "running" ]; then
-        printf '{"phase":"running","started_at":"%%s"}\n' "$now" > "$tmp"
+		printf '{"phase":"running","hosts":["%%s"],"started_at":"%%s"}\n' "$hostname" "$now" > "$tmp"
     else
-        printf '{"phase":"%%s","exit_code":%%s,"finished_at":"%%s"}\n' "$phase" "$code" "$now" > "$tmp"
+		printf '{"phase":"%%s","hosts":["%%s"],"exit_code":%%s,"finished_at":"%%s"}\n' "$phase" "$hostname" "$code" "$now" > "$tmp"
     fi
     mv -f "$tmp" "$status_path"
 }
@@ -470,7 +472,7 @@ func waitSlurmJob(runDir string, job slurmJobMetadata) JobResult {
 	var accountingDeadline time.Time
 	for {
 		if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
-			return JobResult{ID: job.JobID, Command: job.Command, ExitCode: status.ExitCode, Error: status.Error}
+			return jobResultFromStatus(job.JobID, job.Command, status)
 		}
 		active, err := slurmJobActive(job.SlurmJobID)
 		if err != nil {
@@ -479,7 +481,7 @@ func waitSlurmJob(runDir string, job slurmJobMetadata) JobResult {
 		if !active {
 			_, _ = os.ReadDir(jobDir)
 			if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
-				return JobResult{ID: job.JobID, Command: job.Command, ExitCode: status.ExitCode, Error: status.Error}
+				return jobResultFromStatus(job.JobID, job.Command, status)
 			}
 			if accountingDeadline.IsZero() {
 				accountingDeadline = time.Now().Add(slurmAccountingWait)
@@ -494,6 +496,10 @@ func waitSlurmJob(runDir string, job slurmJobMetadata) JobResult {
 		}
 		time.Sleep(time.Second)
 	}
+}
+
+func jobResultFromStatus(jobID string, command []string, status slurmStatus) JobResult {
+	return JobResult{ID: jobID, Command: command, ExitCode: status.ExitCode, Error: status.Error, Hosts: status.Hosts}
 }
 
 func loadSlurmStatus(path string) (slurmStatus, bool) {
