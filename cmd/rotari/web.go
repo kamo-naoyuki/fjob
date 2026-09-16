@@ -422,6 +422,7 @@ function routeParts(){const root=staticRootPath().split('/').filter(Boolean);ret
 function staticPath(path){const root=staticRootPath().replace(/\/$/,'');return path===root||path.startsWith(root+'/')?path:root+path}
 function rewriteStaticLinks(){document.querySelectorAll('a[href^="/"]').forEach(link=>{link.setAttribute('href',staticPath(link.getAttribute('href')))})}
 rewriteStaticLinks();
+new MutationObserver(rewriteStaticLinks).observe(document.body,{childList:true,subtree:true});
 </script>`, escapedState.String(), escapedLogs.String())
 	baseTemplate := webHTML()
 	staticTemplate := strings.ReplaceAll(baseTemplate, "location.pathname.split('/').filter(Boolean)", "routeParts()")
