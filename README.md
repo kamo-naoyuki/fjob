@@ -15,21 +15,9 @@ and recoverable.
 | --- | --- |
 | ![shell background jobs demo](https://kamo-naoyuki.github.io/rotari/demo-shell.gif) | ![rotari demo](https://kamo-naoyuki.github.io/rotari/demo-rotari.gif) |
 
-## Build and installation
+## Installation
 
-```sh
-go build -o rotari ./cmd/rotari
-```
-
-Check the version:
-
-```sh
-rotari version
-rotari --version
-```
-
-Prebuilt binaries for Linux and macOS are available from the GitHub Releases
-page. Go is only required when building from source or using `go install`.
+### Prebuilt binary
 
 Download the latest binary for your platform, make it executable, and put it
 somewhere on your `PATH`:
@@ -42,18 +30,37 @@ curl -fL "https://github.com/kamo-naoyuki/rotari/releases/latest/download/rotari
 install -m 755 /tmp/rotari ~/.local/bin/rotari
 ```
 
+Prebuilt binaries for Linux and macOS are available from the GitHub Releases
+page. Go is not required when using a prebuilt binary.
+
 Available binaries are `rotari-linux-amd64`, `rotari-linux-arm64`,
 `rotari-darwin-amd64`, and `rotari-darwin-arm64`. The latest release is also
 available from the [GitHub Releases](https://github.com/kamo-naoyuki/rotari/releases)
 page.
 
-With Go installed, you can install directly instead:
+Check the version:
+
+```sh
+rotari version
+rotari --version
+```
+
+### Build from source
+
+If you have Go installed, you can build rotari from source:
+
+```sh
+go build -o rotari ./cmd/rotari
+install -m 755 ./rotari ~/.local/bin/rotari
+```
+
+Alternatively, install the latest version directly with `go install`:
 
 ```sh
 go install github.com/kamo-naoyuki/rotari/cmd/rotari@latest
 ```
 
-### Shell completion
+## Shell completion
 
 Completion scripts are available for Bash and Zsh:
 
