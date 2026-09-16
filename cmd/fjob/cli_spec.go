@@ -202,10 +202,11 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "web",
 		Description: "serve the web status UI",
-		Usage:       "fjob web [--basedir DIR] [--queue-name NAME] [--host HOST] [--port PORT]",
+		Usage:       "fjob web [--basedir DIR] [--queue-name NAME] [--host HOST] [--port PORT] [--static-dir DIR]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "host", Description: "HTTP listen host", ValueName: "HOST"},
 			cliFlagSpec{Name: "port", Description: "HTTP listen port", ValueName: "PORT"},
+			cliFlagSpec{Name: "static-dir", Description: "generate a static web UI", ValueName: "DIR"},
 		),
 	},
 	{

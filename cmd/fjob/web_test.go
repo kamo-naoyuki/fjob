@@ -64,6 +64,53 @@ func TestLoadWebJobsIncludesCommandMetadata(t *testing.T) {
 	}
 }
 
+func TestLoadWebStateIncludesRunContextAndTimeline(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(paths.runsDir, "run-1")
+	queue := Queue{Commands: []QueuedCommand{{ID: "job-1", Command: []string{"true"}}}}
+	if err := writeJSON(paths.queueFile, queue); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(runDir, "commands.json"), queue); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(runDir, "context.json"), RunContext{CWD: "/work/project", Hostname: "node-a", StartedLoad: &LoadAverage{One: 1.25, Five: 1.5, Fifteen: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(runDir, "summary.json"), RunSummary{RunID: "run-1", Status: "finished", StartedAt: "2026-09-16T00:00:00Z", FinishedAt: "2026-09-16T00:00:03Z", Results: []JobResult{{ID: "job-1", ExitCode: 0}}}); err != nil {
+		t.Fatal(err)
+	}
+	jobDir := filepath.Join(runDir, "job-1")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "submitted_at"), []byte("2026-09-16T00:00:01Z\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "finished_at"), []byte("2026-09-16T00:00:02Z\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := loadWebState(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := state.Queues[0].Runs[0]
+	if run.Context.Hostname != "node-a" || run.Context.StartedLoad == nil || run.CWD != "/work/project" {
+		t.Fatalf("context = %#v, cwd = %q, want host/load/cwd", run.Context, run.CWD)
+	}
+	if run.Jobs[0].SubmittedAt != "2026-09-16T00:00:01Z" || run.Jobs[0].FinishedAt != "2026-09-16T00:00:02Z" {
+		t.Fatalf("job timestamps = %#v, want submitted and finished timestamps", run.Jobs[0])
+	}
+	if len(run.Timeline) != 3 || run.Timeline[1].Running != 1 || run.Timeline[2].Finished != 1 || run.Timeline[2].Success != 1 {
+		t.Fatalf("timeline = %#v, want pending, submitted, and successful finished transitions", run.Timeline)
+	}
+}
+
 func TestWriteRunContext(t *testing.T) {
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "default")

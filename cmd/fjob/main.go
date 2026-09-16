@@ -85,7 +85,16 @@ type RunSummary struct {
 }
 
 type RunContext struct {
-	CWD string `json:"cwd"`
+	CWD          string       `json:"cwd"`
+	Hostname     string       `json:"hostname,omitempty"`
+	StartedLoad  *LoadAverage `json:"started_load,omitempty"`
+	FinishedLoad *LoadAverage `json:"finished_load,omitempty"`
+}
+
+type LoadAverage struct {
+	One     float64 `json:"one"`
+	Five    float64 `json:"five"`
+	Fifteen float64 `json:"fifteen"`
 }
 
 func runStatus(exitCode int) string {
@@ -304,6 +313,10 @@ func cmdWorkerRun(args []string) int {
 	}
 
 	exitCode := executeMixedRun(paths, runID, runName, localConcurrency, batchMaxActive, retry, *executor, executorOptions, nil)
+	if err := finishRunContext(paths, runID); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to save run context: %v\n", err)
+		return 1
+	}
 	if err := finishRun(paths, runID, exitCode); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to finalize metadata: %v\n", err)
 		return 1
@@ -409,7 +422,40 @@ func launchAsyncRun(paths pathSet, queueName, runID, runName string, localConcur
 }
 
 func writeRunContext(paths pathSet, runID, cwd string) error {
-	return writeJSON(filepath.Join(paths.runsDir, runID, "context.json"), RunContext{CWD: cwd})
+	return writeJSON(filepath.Join(paths.runsDir, runID, "context.json"), captureRunContext(cwd))
+}
+
+func finishRunContext(paths pathSet, runID string) error {
+	path := filepath.Join(paths.runsDir, runID, "context.json")
+	context := RunContext{}
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &context)
+	}
+	context.FinishedLoad = readLoadAverage()
+	return writeJSON(path, context)
+}
+
+func captureRunContext(cwd string) RunContext {
+	hostname, _ := os.Hostname()
+	return RunContext{CWD: cwd, Hostname: hostname, StartedLoad: readLoadAverage()}
+}
+
+func readLoadAverage() *LoadAverage {
+	data, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return nil
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 3 {
+		return nil
+	}
+	one, oneErr := strconv.ParseFloat(fields[0], 64)
+	five, fiveErr := strconv.ParseFloat(fields[1], 64)
+	fifteen, fifteenErr := strconv.ParseFloat(fields[2], 64)
+	if oneErr != nil || fiveErr != nil || fifteenErr != nil {
+		return nil
+	}
+	return &LoadAverage{One: one, Five: five, Fifteen: fifteen}
 }
 
 func executeRun(paths pathSet, runID string, numParallel int) int {

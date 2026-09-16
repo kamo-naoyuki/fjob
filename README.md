@@ -1,6 +1,6 @@
 # fjob: File-based, flexible job runner for local and batch workloads
 
-[![Go CI](https://github.com/kamo-naoyuki/fjob/actions/workflows/ci.yml/badge.svg)](https://github.com/kamo-naoyuki/fjob/actions/workflows/ci.yml)
+[![Go CI](https://github.com/kamo-naoyuki/fjob/actions/workflows/ci.yml/badge.svg)](https://github.com/kamo-naoyuki/fjob/actions/workflows/ci.yml) [![web demo](https://img.shields.io/website?url=https%3A%2F%2Fkamo-naoyuki.github.io%2Ffjob%2F&label=web%20demo&style=flat)](https://kamo-naoyuki.github.io/fjob/)
 
 fjob is for the iterative loop behind computational experiments: queue many
 jobs, keep each run's commands and output, inspect failures, change only what
@@ -13,7 +13,7 @@ and recoverable.
 
 | Plain shell (background jobs) | fjob |
 | --- | --- |
-| ![shell background jobs demo](docs/demo-shell.gif) | ![fjob demo](docs/demo-fjob.gif) |
+| ![shell background jobs demo](https://kamo-naoyuki.github.io/fjob/demo-shell.gif) | ![fjob demo](https://kamo-naoyuki.github.io/fjob/demo-fjob.gif) |
 
 ## Build and installation
 
@@ -154,6 +154,9 @@ The selection options and queue overwrite confirmation used by `rerun` follow
 the same rules as `copy`.
 
 ## Local web UI
+
+See the [web demo](https://kamo-naoyuki.github.io/fjob/) for a read-only UI
+using generated example data.
 
 Start the local web status UI separately from the job runner:
 

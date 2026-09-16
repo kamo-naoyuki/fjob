@@ -1268,6 +1268,10 @@ func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMa
 			progress(serverResponse{OK: true, Progress: true, Message: message, JobID: result.ID, Completed: completed, Total: total, Succeeded: succeeded, Failed: failed})
 		}
 	})
+	if err := finishRunContext(paths, runID); err != nil {
+		_ = os.Remove(paths.lockFile)
+		return "", 1, err
+	}
 	if err := finishRun(paths, runID, exitCode); err != nil {
 		_ = os.Remove(paths.lockFile)
 		return "", 1, err

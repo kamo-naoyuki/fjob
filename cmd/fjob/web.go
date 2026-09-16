@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,9 +21,11 @@ const webDefaultPort = 8787
 
 type webRun struct {
 	RunSummary
-	Jobs    []webJob `json:"jobs"`
-	CWD     string   `json:"cwd,omitempty"`
-	Running bool     `json:"running"`
+	Jobs     []webJob           `json:"jobs"`
+	CWD      string             `json:"cwd,omitempty"`
+	Context  RunContext         `json:"context,omitempty"`
+	Timeline []webTimelinePoint `json:"timeline,omitempty"`
+	Running  bool               `json:"running"`
 }
 
 type webJob struct {
@@ -33,6 +37,17 @@ type webJob struct {
 	DependsOn       []string   `json:"depends_on,omitempty"`
 	Result          *JobResult `json:"result,omitempty"`
 	Origin          *JobOrigin `json:"origin,omitempty"`
+	SubmittedAt     string     `json:"submitted_at,omitempty"`
+	FinishedAt      string     `json:"finished_at,omitempty"`
+}
+
+type webTimelinePoint struct {
+	At       string `json:"at"`
+	Pending  int    `json:"pending"`
+	Running  int    `json:"running"`
+	Finished int    `json:"finished"`
+	Success  int    `json:"success"`
+	Failed   int    `json:"failed"`
 }
 
 type webQueueState struct {
@@ -90,6 +105,7 @@ func cmdWeb(args []string) int {
 	queueNameOption := cliString(fs, "queue-name", "")
 	host := cliString(fs, "host", "127.0.0.1")
 	port := cliInt(fs, "port", webDefaultPort)
+	staticDir := cliString(fs, "static-dir", "")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -101,6 +117,13 @@ func cmdWeb(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
 		return 1
+	}
+	if *staticDir != "" {
+		if err := generateStaticWeb(*staticDir, baseDir, *queueNameOption); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to generate static web: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 	handler := newWebHandler(baseDir, *queueNameOption)
 	server := &http.Server{Addr: *host + ":" + strconv.Itoa(*port), Handler: handler}
@@ -132,10 +155,10 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = writer.Write([]byte(webIndexHTML))
+		_, _ = writer.Write([]byte(webHTML()))
 	})
 	mux.HandleFunc("/api/state", func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet {
+			if request.Method != http.MethodGet {
 			methodNotAllowed(writer)
 			return
 		}
@@ -345,6 +368,98 @@ func loadWebState(baseDir, queueFilter string) (webState, error) {
 	return state, nil
 }
 
+func generateStaticWeb(outputDir, baseDir, queueFilter string) error {
+	state, err := loadWebState(baseDir, queueFilter)
+	if err != nil {
+		return err
+	}
+	logs := map[string]string{}
+	for _, queue := range state.Queues {
+		for _, run := range queue.Runs {
+			for _, job := range run.Jobs {
+				path := filepath.Join(baseDir, "queues", queue.QueueName, "runs", run.RunID, job.ID, "output")
+				data, readErr := os.ReadFile(path)
+				if readErr == nil {
+					logs[staticLogKey(queue.QueueName, run.RunID, job.ID)] = string(data)
+				}
+			}
+		}
+	}
+	stateJSON, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	logsJSON, err := json.Marshal(logs)
+	if err != nil {
+		return err
+	}
+	var escapedState, escapedLogs bytes.Buffer
+	json.HTMLEscape(&escapedState, stateJSON)
+	json.HTMLEscape(&escapedLogs, logsJSON)
+	bootstrap := fmt.Sprintf(`<script>
+window.__FJOB_STATIC_STATE__=%s;
+window.__FJOB_STATIC_LOGS__=%s;
+window.fetch=async function(input, init){
+  const request=new URL(input, window.location.href);
+  if(request.pathname.endsWith('/api/state')) return new Response(JSON.stringify(window.__FJOB_STATIC_STATE__), {headers:{'Content-Type':'application/json'}});
+  if(request.pathname.endsWith('/api/log')) {
+    const key=staticLogKey(request.searchParams.get('queue_name'), request.searchParams.get('run_id'), request.searchParams.get('job_id'));
+    return new Response(window.__FJOB_STATIC_LOGS__[key] || '', {headers:{'Content-Type':'text/plain'}});
+  }
+  return new Response('This is a read-only static demo.', {status:405});
+};
+function staticLogKey(queue, run, job){return [queue, run, job].join('/');}
+function staticRootPath(){const pathname=window.location.pathname;const parts=pathname.split('/').filter(Boolean);const queueIndex=parts.indexOf('queue');if(queueIndex>=0)return '/'+parts.slice(0,queueIndex).join('/');if(pathname.endsWith('/index.html'))return '/'+parts.slice(0,-1).join('/');if(pathname.endsWith('/'))return parts.length?'/'+parts.join('/'):'';return '/'+parts.slice(0,-1).join('/')}
+function routeParts(){const root=staticRootPath().split('/').filter(Boolean);return window.location.pathname.split('/').filter(Boolean).slice(root.length)}
+function staticPath(path){return staticRootPath().replace(/\/$/,'')+path}
+function rewriteStaticLinks(){document.querySelectorAll('a[href^="/queue/"]').forEach(link=>{link.setAttribute('href',staticPath(link.getAttribute('href')))})}
+</script>`, escapedState.String(), escapedLogs.String())
+	baseTemplate := webHTML()
+	staticTemplate := strings.ReplaceAll(baseTemplate, "location.pathname.split('/').filter(Boolean)", "routeParts()")
+	staticTemplate = strings.ReplaceAll(staticTemplate, "location.pathname!=='/'&&location.pathname!==''", "routeParts().length")
+	template := strings.Replace(staticTemplate, "<script>\nconst executorNames=", bootstrap+"<script>\nconst executorNames=", 1)
+	template = strings.Replace(template, "applyStatusColors()};window.addEventListener", "applyStatusColors();rewriteStaticLinks()};window.addEventListener", 1)
+	if template == baseTemplate {
+		return errors.New("web HTML script marker not found")
+	}
+	if err := os.RemoveAll(outputDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return err
+	}
+	if err := writeStaticWebPage(filepath.Join(outputDir, "index.html"), template); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, ".nojekyll"), nil, 0o644); err != nil {
+		return err
+	}
+	for _, queue := range state.Queues {
+		queuePath := filepath.Join(outputDir, "queue", url.PathEscape(queue.QueueName))
+		if err := writeStaticWebPage(filepath.Join(queuePath, "index.html"), template); err != nil {
+			return err
+		}
+		for _, run := range queue.Runs {
+			runPath := filepath.Join(queuePath, "run", url.PathEscape(run.RunID))
+			if err := writeStaticWebPage(filepath.Join(runPath, "index.html"), template); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func staticLogKey(queueName, runID, jobID string) string {
+	return queueName + "/" + runID + "/" + jobID
+}
+
+func writeStaticWebPage(path, contents string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(contents), 0o644)
+}
+
 func loadWebQueueState(paths pathSet) (webQueueState, error) {
 	queue, err := loadQueue(paths.queueFile)
 	if err != nil {
@@ -384,7 +499,7 @@ func loadWebQueueState(paths pathSet) (webQueueState, error) {
 		if data, contextErr := os.ReadFile(filepath.Join(paths.runsDir, runID, "context.json")); contextErr == nil {
 			_ = json.Unmarshal(data, &context)
 		}
-		state.Runs = append(state.Runs, webRun{RunSummary: summary, Jobs: jobs, CWD: context.CWD, Running: runID == state.RunningRunID})
+		state.Runs = append(state.Runs, webRun{RunSummary: summary, Jobs: jobs, CWD: context.CWD, Context: context, Timeline: buildWebTimeline(summary, jobs), Running: runID == state.RunningRunID})
 	}
 	sort.Slice(state.Runs, func(i, j int) bool { return state.Runs[i].RunID > state.Runs[j].RunID })
 	return state, nil
@@ -401,7 +516,7 @@ func loadWebJobs(runDir string, summary RunSummary) ([]webJob, error) {
 	}
 	jobs := make([]webJob, 0, len(commands.Commands))
 	for _, command := range commands.Commands {
-		job := webJob{ID: command.ID, Name: command.Name, Command: command.Command, Executor: command.Executor, ExecutorOptions: command.ExecutorOptions, DependsOn: command.DependsOn, Origin: command.Origin}
+		job := webJob{ID: command.ID, Name: command.Name, Command: command.Command, Executor: command.Executor, ExecutorOptions: command.ExecutorOptions, DependsOn: command.DependsOn, Origin: command.Origin, SubmittedAt: readJobTimestamp(runDir, command.ID, "submitted_at"), FinishedAt: readJobTimestamp(runDir, command.ID, "finished_at")}
 		if result, ok := results[command.ID]; ok {
 			job.Result = &result
 		}
@@ -413,9 +528,65 @@ func loadWebJobs(runDir string, summary RunSummary) ([]webJob, error) {
 			continue
 		}
 		resultCopy := result
-		jobs = append(jobs, webJob{ID: result.ID, Command: result.Command, Result: &resultCopy})
+		jobs = append(jobs, webJob{ID: result.ID, Command: result.Command, Result: &resultCopy, SubmittedAt: readJobTimestamp(runDir, result.ID, "submitted_at"), FinishedAt: readJobTimestamp(runDir, result.ID, "finished_at")})
 	}
 	return jobs, nil
+}
+
+func readJobTimestamp(runDir, jobID, name string) string {
+	data, err := os.ReadFile(filepath.Join(runDir, jobID, name))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func buildWebTimeline(summary RunSummary, jobs []webJob) []webTimelinePoint {
+	type event struct {
+		at       string
+		pending  int
+		running  int
+		finished int
+		success  int
+		failed   int
+	}
+	events := make([]event, 0, len(jobs)*2)
+	for _, job := range jobs {
+		if job.SubmittedAt != "" {
+			events = append(events, event{at: job.SubmittedAt, pending: -1, running: 1})
+		}
+		if job.FinishedAt != "" {
+			finished := event{at: job.FinishedAt, running: -1, finished: 1}
+			if job.Result != nil && job.Result.ExitCode == 0 {
+				finished.success = 1
+			} else {
+				finished.failed = 1
+			}
+			events = append(events, finished)
+		}
+	}
+	sort.Slice(events, func(i, j int) bool { return events[i].at < events[j].at })
+	points := []webTimelinePoint{{At: summary.StartedAt, Pending: len(jobs)}}
+	pending, running, finished, success, failed := len(jobs), 0, 0, 0, 0
+	for i := 0; i < len(events); {
+		at := events[i].at
+		event := event{at: at}
+		for i < len(events) && events[i].at == at {
+			event.pending += events[i].pending
+			event.running += events[i].running
+			event.finished += events[i].finished
+			event.success += events[i].success
+			event.failed += events[i].failed
+			i++
+		}
+		pending += event.pending
+		running += event.running
+		finished += event.finished
+		success += event.success
+		failed += event.failed
+		points = append(points, webTimelinePoint{At: event.at, Pending: pending, Running: running, Finished: finished, Success: success, Failed: failed})
+	}
+	return points
 }
 
 func validWebID(value string) bool {
@@ -431,6 +602,14 @@ func writeWebError(writer http.ResponseWriter, err error) {
 	http.Error(writer, err.Error(), http.StatusBadRequest)
 }
 
+func webHTML() string {
+	executorJSON, _ := json.Marshal(executorNames())
+	template := strings.Replace(webIndexHTML, "<script>\nlet state;", "<script>\nconst executorNames="+string(executorJSON)+";\nlet state;", 1)
+	return strings.Replace(template,
+		`<select class="executor-input"><option value="local">local</option><option value="slurm">slurm</option></select>`,
+		`<select class="executor-input">'+executorNames.map(name=>'<option value="'+esc(name)+'">'+esc(name)+'</option>').join('')+'</select>`, 1)
+}
+
 func methodNotAllowed(writer http.ResponseWriter) {
 	writer.WriteHeader(http.StatusMethodNotAllowed)
 }
@@ -443,6 +622,7 @@ const webIndexHTML = `<!doctype html>
 </style></head><body><main><header><div><h1>fjob</h1><div class="meta" id="location">loading...</div></div><div class="toolbar"><button onclick="refresh()">Refresh</button></div></header>
 <section><h2 id="page-title">All queues</h2><div class="summary" id="summary"></div></section><div id="app" class="empty">loading...</div><div id="output-modal" class="output-modal" style="display:none" onclick="if(event.target===this)closeOutputModal()"><div class="output-panel" onclick="event.stopPropagation()"><header><strong>Output</strong><button onclick="closeOutputModal()">Close</button></header><pre id="modal-log" class="log"></pre></div></div></main><script>
 let state;
+const expandedRunGraphics={};
 let selectedOutput='';
 let selectedLog=null;
 let followTimer=null;
@@ -501,6 +681,28 @@ function mergeActionColumns(){document.querySelectorAll('#app table.runs').forEa
 function normalizeJobActionHeaders(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const table=document.querySelector('#app table.runs');if(!table)return;const headers=table.querySelectorAll('thead th');if(headers.length>=2)headers[headers.length-2].textContent='Output'}
 function mergeActionColumns(){document.querySelectorAll('#app table.runs').forEach(table=>{const headerRow=table.querySelector('thead tr');const bodyRows=table.querySelectorAll('tbody tr');if(!headerRow||!bodyRows.length)return;const headers=headerRow.children;if(headers.length<2||headers[headers.length-1].textContent.trim()!=='Actions')return;const actionIndex=headers.length-1;const outputIndex=actionIndex-1;const label=headers[outputIndex].textContent.trim();if(label&&label!=='Output'&&label!=='Source output')return;headers[outputIndex].remove();bodyRows.forEach(row=>{const outputCell=row.children[outputIndex],actionCell=row.children[actionIndex];if(!outputCell||!actionCell)return;const nodes=[...outputCell.childNodes,...actionCell.childNodes].filter(node=>node.nodeType!==3||node.textContent.trim());actionCell.textContent='';nodes.forEach(node=>actionCell.append(node));outputCell.remove()})})}
 function labelJobActionHeaders(){document.querySelectorAll('#app table.runs').forEach(table=>{const headers=table.querySelectorAll('thead th');if(headers.length){headers[headers.length-1].textContent='Actions';headers[headers.length-1].dataset.sort=''}})}
-function styleActionColumns(){document.querySelectorAll('#app table.runs th:last-child,#app table.runs td:last-child').forEach(cell=>{cell.style.width='1%';cell.style.minWidth='0';cell.style.whiteSpace='nowrap';cell.style.textAlign='left'})}
-function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}const originalRender=render;render=function(){originalRender();enhancePage();enhanceQueueOverview();addQueueOverviewPathActions();const parts=location.pathname.split('/').filter(Boolean);if(parts[0]==='queue'&&!parts[2]){const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));if(queue){const commands=queue.queue.commands||[];addQueueEditors(queue,commands);enhanceQueueSourceContext(commands)}}addExecutionGuide();addDeleteRunButton();addPathTableActions();removeLegacyOutputBox();keepGlobalOutputBox();placeOutputBox();renameCopyButtons();labelEquivalentCommand();addRunJobStatusColumn();addRunningOutputButtons();addRunningCancelButtons();mergeActionColumns();labelJobActionHeaders();styleActionColumns();markJobHeaders();markLatestRun();enableTableSorting();restoreSelectedOutput();applyStatusColors()};window.addEventListener('popstate',render);refresh();setInterval(refresh,2000);
+function styleActionColumns(){moveActionColumnsLeft();document.querySelectorAll('#app table.runs th:first-child,#app table.runs td:first-child').forEach(cell=>{if(cell.textContent.trim()==='Actions'||cell.querySelector('button')){cell.style.width='1%';cell.style.minWidth='0';cell.style.whiteSpace='nowrap';cell.style.textAlign='left'}})}
+function addRunHeatmap(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(item=>item.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const app=document.getElementById('app');if(!run||!app||app.querySelector('.run-heatmap'))return;const section=document.createElement('section');section.className='run-heatmap';section.style.background='linear-gradient(135deg,rgba(30,48,58,.95),rgba(24,33,43,.92))';section.style.border='1px solid #385160';section.style.padding='18px';section.style.margin='16px 0 20px';const heading=document.createElement('div');heading.style.display='flex';heading.style.justifyContent='space-between';heading.style.alignItems='baseline';heading.style.gap='12px';const title=document.createElement('h2');title.textContent='Run heatmap';title.style.margin='0';const note=document.createElement('span');note.textContent='Click a tile to inspect the job';note.style.color='var(--muted)';note.style.fontSize='12px';heading.append(title,note);section.append(heading);const legend=document.createElement('div');legend.style.display='flex';legend.style.flexWrap='wrap';legend.style.gap='10px';legend.style.margin='10px 0 14px';const grid=document.createElement('div');grid.style.display='grid';grid.style.gridTemplateColumns='repeat(auto-fit,minmax(120px,1fr))';grid.style.gap='8px';const colors={success:['#1d6b52','#b4f0c8'],failed:['#8f3b47','#ffd2d2'],blocked:['#87502d','#ffe1b0'],running:['#80651e','#fff0ae'],pending:['#3a4a57','#cbd9e4']};['success','failed','blocked','running','pending'].forEach(status=>{const item=document.createElement('span');item.style.color=colors[status][1];item.style.fontSize='12px';const swatch=document.createElement('i');swatch.style.display='inline-block';swatch.style.width='10px';swatch.style.height='10px';swatch.style.marginRight='5px';swatch.style.background=colors[status][0];swatch.style.border='1px solid '+colors[status][1];item.append(swatch,status);legend.append(item)});section.append(legend,grid);(run.jobs||[]).forEach((job,index)=>{const result=job.result;const status=!result?(run.running?'running':'pending'):result.error==='blocked by failed dependency'?'blocked':result.exit_code===0?'success':'failed';const tile=document.createElement('button');tile.type='button';tile.title=(job.name||job.id)+' - '+status;tile.style.display='flex';tile.style.flexDirection='column';tile.style.alignItems='flex-start';tile.style.gap='2px';tile.style.minHeight='68px';tile.style.padding='10px';tile.style.border='1px solid '+colors[status][1];tile.style.borderRadius='4px';tile.style.background=colors[status][0];tile.style.color=colors[status][1];tile.style.textAlign='left';tile.style.overflow='hidden';const name=document.createElement('strong');name.textContent=job.name||job.id;name.style.maxWidth='100%';name.style.overflow='hidden';name.style.textOverflow='ellipsis';name.style.whiteSpace='nowrap';const detail=document.createElement('span');detail.textContent=status+(result&&result.exit_code!==undefined?' / exit '+result.exit_code:'');detail.style.fontSize='12px';detail.style.opacity='.9';tile.append(name,detail);tile.onclick=()=>{const row=document.querySelectorAll('#app table.runs tbody tr')[index];if(row){row.scrollIntoView({behavior:'smooth',block:'center'});row.style.outline='2px solid '+colors[status][1];setTimeout(()=>row.style.outline='',1200)}};grid.append(tile)});const table=app.querySelector('table.runs');if(table)app.insertBefore(section,table);else app.prepend(section)}
+function addRunStatistics(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(item=>item.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const app=document.getElementById('app');if(!run||!app||app.querySelector('.run-statistics'))return;const counts={success:0,failed:0,blocked:0,running:0,pending:0};(run.jobs||[]).forEach(job=>{const result=job.result;const status=!result?(run.running?'running':'pending'):result.error==='blocked by failed dependency'?'blocked':result.exit_code===0?'success':'failed';counts[status]++});const total=(run.jobs||[]).length;const completed=counts.success+counts.failed;const successRate=completed?Math.round(counts.success/completed*100):0;const colors={success:['#1d6b52','#b4f0c8'],failed:['#8f3b47','#ffd2d2'],blocked:['#87502d','#ffe1b0'],running:['#80651e','#fff0ae'],pending:['#3a4a57','#cbd9e4']};const section=document.createElement('section');section.className='run-statistics';section.style.background='linear-gradient(135deg,rgba(30,48,58,.95),rgba(24,33,43,.92))';section.style.border='1px solid #385160';section.style.padding='18px';section.style.margin='16px 0 20px';const heading=document.createElement('div');heading.style.display='flex';heading.style.justifyContent='space-between';heading.style.alignItems='baseline';heading.style.gap='12px';const title=document.createElement('h2');title.textContent='Run statistics';title.style.margin='0';const note=document.createElement('span');note.textContent=total+' jobs';note.style.color='var(--muted)';note.style.fontSize='12px';heading.append(title,note);const metrics=document.createElement('div');metrics.style.display='grid';metrics.style.gridTemplateColumns='repeat(auto-fit,minmax(140px,1fr))';metrics.style.gap='12px';metrics.style.margin='16px 0';[['Success rate',successRate+'%'],['Succeeded',counts.success],['Failed',counts.failed],['In progress',counts.running],['Pending',counts.pending]].forEach(([label,value])=>{const metric=document.createElement('div');metric.style.borderLeft='3px solid #385160';metric.style.paddingLeft='10px';const valueElement=document.createElement('strong');valueElement.textContent=value;valueElement.style.display='block';valueElement.style.fontSize='22px';const labelElement=document.createElement('span');labelElement.textContent=label;labelElement.style.color='var(--muted)';labelElement.style.fontSize='12px';metric.append(valueElement,labelElement);metrics.append(metric)});const bar=document.createElement('div');bar.style.display='flex';bar.style.height='14px';bar.style.overflow='hidden';bar.style.borderRadius='3px';bar.title='Job status distribution';['success','failed','blocked','running','pending'].forEach(status=>{if(!counts[status])return;const segment=document.createElement('span');segment.style.width=(counts[status]/Math.max(total,1)*100)+'%';segment.style.background=colors[status][0];segment.title=status+': '+counts[status];bar.append(segment)});const legend=document.createElement('div');legend.style.display='flex';legend.style.flexWrap='wrap';legend.style.gap='12px';legend.style.marginTop='10px';['success','failed','blocked','running','pending'].forEach(status=>{if(!counts[status])return;const item=document.createElement('span');item.textContent=status+' '+counts[status];item.style.color=colors[status][1];item.style.fontSize='12px';legend.append(item)});section.append(heading,metrics,bar,legend);const table=app.querySelector('table.runs');if(table)app.insertBefore(section,table);else app.prepend(section)}
+function addRunEnvironment(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(item=>item.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const app=document.getElementById('app');if(!run||!app||app.querySelector('.run-environment'))return;const context=run.context||{};const load=value=>value?Number(value.one).toFixed(2)+' / '+Number(value.five).toFixed(2)+' / '+Number(value.fifteen).toFixed(2):'-';const section=document.createElement('section');section.className='run-environment';section.style.background='linear-gradient(135deg,rgba(25,45,49,.95),rgba(24,33,43,.92))';section.style.border='1px solid #3d5f62';section.style.padding='18px';section.style.margin='16px 0 20px';section.innerHTML='<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px"><h2 style="margin:0">Run environment</h2><span class="meta">load average: 1 / 5 / 15 min</span></div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:14px"><div style="border:1px solid var(--line);background:rgba(10,16,21,.45);padding:12px"><div class="meta">Host</div><strong>'+esc(context.hostname||'-')+'</strong></div><div style="border:1px solid var(--line);background:rgba(10,16,21,.45);padding:12px"><div class="meta">Start load</div><strong>'+esc(load(context.started_load))+'</strong></div><div style="border:1px solid var(--line);background:rgba(10,16,21,.45);padding:12px"><div class="meta">Finish load</div><strong>'+esc(load(context.finished_load))+'</strong></div></div>';const stats=app.querySelector('.run-statistics');if(stats)stats.after(section);else app.prepend(section)}
+function addJobTimeline(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(item=>item.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const app=document.getElementById('app');if(!run||!app||app.querySelector('.job-timeline'))return;const points=(run.timeline||[]).filter(point=>point.at);if(points.length<2)return;const times=points.map(point=>Date.parse(point.at)).filter(Number.isFinite);if(!times.length)return;const start=Math.min(...times),end=Math.max(...times),span=Math.max(1,end-start);const max=Math.max(1,...points.flatMap(point=>[point.pending||0,point.running||0,point.success||0,point.failed||0]));const x=point=>40+(Date.parse(point.at)-start)/span*500;const y=value=>170-(value/max)*130;const line=key=>points.map(point=>x(point).toFixed(1)+','+y(point[key]||0).toFixed(1)).join(' ');const label=value=>new Date(value).toLocaleTimeString();const section=document.createElement('section');section.className='job-timeline';section.style.background='linear-gradient(135deg,rgba(29,39,49,.95),rgba(20,29,38,.92))';section.style.border='1px solid #385160';section.style.padding='18px';section.style.margin='16px 0 20px';section.innerHTML='<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px"><h2 style="margin:0">Job timeline</h2><span class="meta">'+esc(label(start))+' - '+esc(label(end))+'</span></div><svg viewBox="0 0 580 210" role="img" aria-label="job count timeline" style="width:100%;height:auto;margin-top:10px;display:block"><g stroke="#2d3a47" stroke-width="1"><line x1="40" y1="170" x2="540" y2="170"/><line x1="40" y1="40" x2="40" y2="170"/></g><g fill="#94a3b3" font-size="11"><text x="8" y="44">'+max+'</text><text x="16" y="174">0</text><text x="40" y="194">'+esc(label(start))+'</text><text x="460" y="194">'+esc(label(end))+'</text></g><polyline fill="none" stroke="#94a3b3" stroke-width="3" points="'+line('pending')+'"/><polyline fill="none" stroke="#f3c969" stroke-width="3" points="'+line('running')+'"/><polyline fill="none" stroke="#63d297" stroke-width="3" points="'+line('success')+'"/><polyline fill="none" stroke="#ff7c7c" stroke-width="3" points="'+line('failed')+'"/></svg><div class="summary" style="gap:16px"><span style="color:#94a3b3">pending</span><span style="color:#f3c969">running</span><span style="color:#63d297">success</span><span style="color:#ff7c7c">failed</span></div>';const env=app.querySelector('.run-environment');if(env)env.after(section);else app.prepend(section)}
+function addJobTimeline(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(item=>item.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const app=document.getElementById('app');if(!run||!app||app.querySelector('.job-timeline'))return;const counts={success:0,failed:0,blocked:0,running:0,pending:0};(run.jobs||[]).forEach(job=>{const result=job.result;const status=!result?(run.running?'running':'pending'):result.error==='blocked by failed dependency'?'blocked':result.exit_code===0?'success':'failed';counts[status]++});const total=Math.max(1,(run.jobs||[]).length);const colors={success:'#63d297',failed:'#ff7c7c',blocked:'#ff9f68',running:'#f3c969',pending:'#94a3b3'};const section=document.createElement('section');section.className='job-timeline';section.style.background='linear-gradient(135deg,rgba(29,39,49,.95),rgba(20,29,38,.92))';section.style.border='1px solid #385160';section.style.padding='18px';section.style.margin='16px 0 20px';const heading=document.createElement('div');heading.style.display='flex';heading.style.justifyContent='space-between';heading.style.alignItems='baseline';heading.style.gap='12px';const title=document.createElement('h2');title.textContent='Job timeline';title.style.margin='0';const note=document.createElement('span');note.textContent=(run.jobs||[]).length+' jobs';note.className='meta';heading.append(title,note);const bar=document.createElement('div');bar.style.display='flex';bar.style.height='22px';bar.style.margin='16px 0 12px';bar.style.overflow='hidden';bar.style.borderRadius='3px';bar.title='Job status distribution';const legend=document.createElement('div');legend.style.display='flex';legend.style.flexWrap='wrap';legend.style.gap='12px';['success','failed','blocked','running','pending'].forEach(status=>{if(!counts[status])return;const segment=document.createElement('span');segment.style.width=(counts[status]/total*100)+'%';segment.style.background=colors[status];segment.title=status+': '+counts[status];bar.append(segment);const item=document.createElement('span');item.textContent=status+' '+counts[status]+' ('+Math.round(counts[status]/total*100)+'%)';item.style.color=colors[status];item.style.fontSize='12px';legend.append(item)});section.append(heading,bar,legend);const env=app.querySelector('.run-environment');if(env)env.after(section);else app.prepend(section)}
+function addJobTimeline(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(item=>item.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const app=document.getElementById('app');if(!run||!app||app.querySelector('.job-timeline'))return;const points=(run.timeline||[]).filter(point=>point.at);if(!points.length)return;const colors={pending:'#94a3b3',running:'#f3c969',success:'#63d297',failed:'#ff7c7c'};const keys=['pending','running','success','failed'];const section=document.createElement('section');section.className='job-timeline';section.style.background='linear-gradient(135deg,rgba(29,39,49,.95),rgba(20,29,38,.92))';section.style.border='1px solid #385160';section.style.padding='18px';section.style.margin='16px 0 20px';const heading=document.createElement('div');heading.style.display='flex';heading.style.justifyContent='space-between';heading.style.alignItems='baseline';const title=document.createElement('h2');title.textContent='Job timeline';title.style.margin='0';const note=document.createElement('span');note.className='meta';note.textContent=points.length+' time points';heading.append(title,note);const chart=document.createElement('div');chart.style.display='grid';chart.style.gap='7px';chart.style.marginTop='14px';points.forEach(point=>{const row=document.createElement('div');row.style.display='grid';row.style.gridTemplateColumns='92px 1fr';row.style.alignItems='center';row.style.gap='10px';const label=document.createElement('span');label.className='meta';label.textContent=new Date(point.at).toLocaleTimeString();const bar=document.createElement('div');bar.style.display='flex';bar.style.height='16px';bar.style.overflow='hidden';bar.style.borderRadius='3px';bar.title=keys.map(key=>key+': '+(point[key]||0)).join(' | ');const total=keys.reduce((sum,key)=>sum+(point[key]||0),0)||1;keys.forEach(key=>{const count=point[key]||0;if(!count)return;const segment=document.createElement('span');segment.style.width=count/total*100+'%';segment.style.background=colors[key];bar.append(segment)});row.append(label,bar);chart.append(row)});const legend=document.createElement('div');legend.style.display='flex';legend.style.flexWrap='wrap';legend.style.gap='18px';legend.style.marginTop='12px';keys.forEach(key=>{const item=document.createElement('span');item.textContent=key;item.style.color=colors[key];item.style.borderLeft='3px solid '+colors[key];item.style.paddingLeft='8px';legend.append(item)});section.append(heading,chart,legend);const env=app.querySelector('.run-environment');if(env)env.after(section);else app.prepend(section)}
+function addJobTimeline(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(item=>item.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const app=document.getElementById('app');const points=(run&&run.timeline||[]).filter(point=>point.at);if(!run||!app||app.querySelector('.job-timeline')||!points.length)return;const colors={pending:'#94a3b3',running:'#f3c969',success:'#63d297',failed:'#ff7c7c'};const keys=['pending','running','success','failed'];const total=Math.max(1,(run.jobs||[]).length);const section=document.createElement('section');section.className='job-timeline';section.style.background='linear-gradient(135deg,rgba(29,39,49,.95),rgba(20,29,38,.92))';section.style.border='1px solid #385160';section.style.padding='18px';section.style.margin='16px 0 20px';const heading=document.createElement('div');heading.style.display='flex';heading.style.alignItems='baseline';const title=document.createElement('h2');title.textContent='Job timeline';title.style.margin='0';const note=document.createElement('span');note.className='meta';note.style.marginLeft='auto';note.textContent='time → / share ↑';heading.append(title,note);const plot=document.createElement('div');plot.style.display='flex';plot.style.alignItems='flex-end';plot.style.gap='8px';plot.style.height='190px';plot.style.marginTop='14px';plot.style.padding='8px 8px 0 34px';plot.style.borderLeft='1px solid var(--line)';plot.style.borderBottom='1px solid var(--line)';points.forEach(point=>{const column=document.createElement('div');column.style.flex='1 1 0';column.style.minWidth='18px';column.style.height='100%';column.style.display='flex';column.style.flexDirection='column';column.style.justifyContent='flex-end';const bar=document.createElement('div');bar.style.display='flex';bar.style.flexDirection='column-reverse';bar.style.height='100%';bar.style.justifyContent='flex-start';bar.title=keys.map(key=>key+': '+(point[key]||0)).join(' | ');keys.forEach(key=>{const count=point[key]||0;if(!count)return;const segment=document.createElement('span');segment.style.height=count/total*100+'%';segment.style.background=colors[key];segment.style.minHeight='2px';bar.append(segment)});const label=document.createElement('span');label.className='meta';label.style.fontSize='10px';label.style.textAlign='center';label.style.marginTop='5px';label.textContent=new Date(point.at).toLocaleTimeString();column.append(bar,label);plot.append(column)});const legend=document.createElement('div');legend.style.display='flex';legend.style.flexWrap='wrap';legend.style.gap='18px';legend.style.marginTop='12px';keys.forEach(key=>{const item=document.createElement('span');item.textContent=key;item.style.color=colors[key];item.style.borderLeft='3px solid '+colors[key];item.style.paddingLeft='8px';legend.append(item)});section.append(heading,plot,legend);const env=app.querySelector('.run-environment');if(env)env.after(section);else app.prepend(section)}
+function collapseRunGraphics(){document.querySelectorAll('.run-statistics,.run-environment').forEach(section=>{const content=section.children[1];if(content){content.style.display='grid';content.style.gridTemplateColumns=section.classList.contains('run-statistics')?'repeat(5,minmax(0,1fr))':'repeat(3,minmax(0,1fr))';content.style.gap='12px'}});document.querySelectorAll('.run-statistics,.run-environment,.job-timeline').forEach(section=>{if(section.dataset.collapsible)return;section.dataset.collapsible='true';const heading=section.firstElementChild;if(!heading)return;const key=section.className;const button=document.createElement('button');button.type='button';button.style.marginRight='8px';button.setAttribute('aria-expanded',String(!!expandedRunGraphics[key]));const apply=expanded=>{[...section.children].slice(1).forEach((child,index)=>{const isTimelinePlot=section.classList.contains('job-timeline')&&index===0;child.style.display=expanded?(isTimelinePlot?'flex':(index===0&&(section.classList.contains('run-statistics')||section.classList.contains('run-environment'))?'grid':'')):'none'});button.setAttribute('aria-expanded',String(expanded));button.textContent=expanded?'-':'+';expandedRunGraphics[key]=expanded};button.onclick=()=>apply(!expandedRunGraphics[key]);heading.style.display='flex';heading.style.alignItems='center';heading.insertBefore(button,heading.firstChild);apply(!!expandedRunGraphics[key])})}
+function addJobTimeline(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(item=>item.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const app=document.getElementById('app');const points=(run&&run.timeline||[]).filter(point=>point.at);if(!run||!app||app.querySelector('.job-timeline')||!points.length)return;const colors={pending:'#94a3b3',running:'#f3c969',success:'#63d297',failed:'#ff7c7c'};const keys=['pending','running','success','failed'];const total=Math.max(1,(run.jobs||[]).length);const section=document.createElement('section');section.className='job-timeline';section.style.background='linear-gradient(135deg,rgba(29,39,49,.95),rgba(20,29,38,.92))';section.style.border='1px solid #385160';section.style.padding='18px';section.style.margin='16px 0 20px';const heading=document.createElement('div');heading.style.display='flex';heading.style.alignItems='baseline';const title=document.createElement('h2');title.textContent='Job timeline';title.style.margin='0';const note=document.createElement('span');note.className='meta';note.style.marginLeft='auto';note.textContent='time → / share ↑';heading.append(title,note);const plot=document.createElement('div');plot.className='timeline-plot';plot.style.display='flex';plot.style.alignItems='flex-end';plot.style.gap='10px';plot.style.height='190px';plot.style.marginTop='14px';plot.style.padding='8px 8px 0 34px';plot.style.borderLeft='1px solid var(--line)';plot.style.borderBottom='1px solid var(--line)';points.forEach(point=>{const column=document.createElement('div');column.style.flex='1 1 0';column.style.minWidth='24px';column.style.height='100%';column.style.display='flex';column.style.flexDirection='column';column.style.justifyContent='flex-end';const bar=document.createElement('div');bar.className='timeline-bar';bar.style.display='flex';bar.style.flexDirection='column-reverse';bar.style.height='100%';bar.style.justifyContent='flex-start';bar.title=keys.map(key=>key+': '+(point[key]||0)).join(' | ');keys.forEach(key=>{const count=point[key]||0;if(!count)return;const segment=document.createElement('span');segment.style.height=count/total*100+'%';segment.style.background=colors[key];segment.style.minHeight='2px';bar.append(segment)});const label=document.createElement('span');label.className='meta';label.style.fontSize='10px';label.style.textAlign='center';label.style.marginTop='5px';label.textContent=new Date(point.at).toLocaleTimeString();column.append(bar,label);plot.append(column)});const legend=document.createElement('div');legend.style.display='flex';legend.style.flexWrap='wrap';legend.style.gap='18px';legend.style.marginTop='12px';keys.forEach(key=>{const item=document.createElement('span');item.textContent=key;item.style.display='inline-flex';item.style.color=colors[key];item.style.borderLeft='3px solid '+colors[key];item.style.paddingLeft='8px';legend.append(item)});section.append(heading,plot,legend);const env=app.querySelector('.run-environment');if(env)env.after(section);else app.prepend(section)}
+function moveActionColumnsLeft(){document.querySelectorAll('#app table.runs').forEach(table=>{const headerRow=table.querySelector('thead tr');if(!headerRow)return;const actionHeader=[...headerRow.children].find(header=>header.textContent.trim()==='Actions');if(!actionHeader)return;headerRow.insertBefore(actionHeader,headerRow.firstChild);table.querySelectorAll('tbody tr').forEach(row=>{const actionCell=[...row.children].find(cell=>cell.querySelector('button'));if(actionCell)row.insertBefore(actionCell,row.firstChild)})})}
+function spaceGraphicLegends(){document.querySelectorAll('.run-statistics > div:last-child,.job-timeline > div:last-child').forEach(legend=>{legend.style.display='flex';legend.style.flexWrap='wrap';legend.style.columnGap='24px';legend.style.rowGap='8px';legend.querySelectorAll('span').forEach(item=>{const failed=item.textContent.trim().startsWith('failed');if(failed){item.style.color='#ff7c7c'}item.style.display='inline-flex';item.style.whiteSpace='nowrap';item.style.borderLeft='3px solid '+item.style.color;item.style.paddingLeft='10px';item.style.paddingRight='8px';item.style.marginRight='4px'})})}
+function showTimelineBar(){document.querySelectorAll('.job-timeline').forEach(section=>{const bar=section.children[1];if(bar)bar.style.display='flex'})}
+function renderJobTimelineScratch(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(item=>item.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const app=document.getElementById('app');if(!run||!app||app.querySelector('.job-timeline'))return;const points=run.timeline||[];const keys=['pending','running','success','failed'];const colors={pending:'#94a3b3',running:'#f3c969',success:'#63d297',failed:'#ff7c7c'};const total=Math.max(1,(run.jobs||[]).length);const section=document.createElement('section');section.className='job-timeline';section.style.background='linear-gradient(135deg,rgba(29,39,49,.95),rgba(20,29,38,.92))';section.style.border='1px solid #385160';section.style.padding='18px';section.style.margin='16px 0 20px';const heading=document.createElement('div');heading.style.display='flex';heading.style.alignItems='baseline';const title=document.createElement('h2');title.textContent='Job timeline';title.style.margin='0';const note=document.createElement('span');note.className='meta';note.style.marginLeft='auto';note.textContent='time → / share ↑';heading.append(title,note);const plot=document.createElement('div');plot.className='timeline-plot';plot.style.display='flex';plot.style.alignItems='flex-end';plot.style.gap='10px';plot.style.height='190px';plot.style.overflowX='auto';plot.style.marginTop='14px';plot.style.padding='8px 12px 0 34px';plot.style.borderLeft='1px solid var(--line)';plot.style.borderBottom='1px solid var(--line)';points.forEach(point=>{const column=document.createElement('div');column.style.flex='0 0 28px';column.style.width='28px';column.style.height='100%';column.style.display='flex';column.style.flexDirection='column';column.style.justifyContent='flex-end';const bar=document.createElement('div');bar.className='timeline-bar';bar.style.display='flex';bar.style.flexDirection='column-reverse';bar.style.height='100%';bar.title=keys.map(key=>key+': '+(point[key]||0)).join(' | ');keys.forEach(key=>{const count=point[key]||0;if(!count)return;const segment=document.createElement('span');segment.style.height=count/total*100+'%';segment.style.background=colors[key];segment.style.minHeight='2px';bar.append(segment)});const label=document.createElement('span');label.className='meta';label.style.fontSize='10px';label.style.textAlign='center';label.style.marginTop='5px';label.textContent=point.at?new Date(point.at).toLocaleTimeString():'-';column.append(bar,label);plot.append(column)});const legend=document.createElement('div');legend.style.display='flex';legend.style.flexWrap='wrap';legend.style.gap='18px';legend.style.marginTop='12px';keys.forEach(key=>{const item=document.createElement('span');item.textContent=key;item.style.display='inline-flex';item.style.color=colors[key];item.style.borderLeft='3px solid '+colors[key];item.style.paddingLeft='8px';legend.append(item)});section.append(heading,plot,legend);const env=app.querySelector('.run-environment');if(env)env.after(section);else app.prepend(section)}
+function renderJobTimelineScratch(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(item=>item.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const app=document.getElementById('app');if(!run||!app||app.querySelector('.job-timeline'))return;const points=run.timeline||[];const keys=['pending','running','success','failed'];const colors={pending:'#94a3b3',running:'#f3c969',success:'#63d297',failed:'#ff7c7c'};const total=Math.max(1,(run.jobs||[]).length);const width=Math.max(560,points.length*100+70),height=260,left=42,top=18,right=14,bottom=58,plotWidth=width-left-right,plotHeight=height-top-bottom;const section=document.createElement('section');section.className='job-timeline';section.style.background='linear-gradient(135deg,rgba(29,39,49,.95),rgba(20,29,38,.92))';section.style.border='1px solid #385160';section.style.padding='18px';section.style.margin='16px 0 20px';const heading=document.createElement('div');heading.style.display='flex';heading.style.alignItems='baseline';const title=document.createElement('h2');title.textContent='Job timeline';title.style.margin='0';const note=document.createElement('span');note.className='meta';note.style.marginLeft='auto';note.textContent='time → / share ↑';heading.append(title,note);const chart=document.createElement('div');chart.style.overflowX='auto';chart.style.marginTop='14px';const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 '+width+' '+height);svg.setAttribute('role','img');svg.setAttribute('aria-label','Job timeline chart');svg.style.display='block';svg.style.width=width+'px';svg.style.height=height+'px';const line=(x1,y1,x2,y2,color='#2d3a47',dash='')=>{const element=document.createElementNS('http://www.w3.org/2000/svg','line');Object.entries({x1,y1,x2,y2,stroke:color,'stroke-width':'1'}).forEach(([key,value])=>element.setAttribute(key,value));if(dash)element.setAttribute('stroke-dasharray',dash);svg.append(element)};const text=(x,y,value,anchor='end')=>{const element=document.createElementNS('http://www.w3.org/2000/svg','text');element.setAttribute('x',x);element.setAttribute('y',y);element.setAttribute('fill','#94a3b3');element.setAttribute('font-size','11');element.setAttribute('text-anchor',anchor);element.textContent=value;svg.append(element)};[0,50,100].forEach(percent=>{const y=top+plotHeight-(percent/100*plotHeight);line(left,y,width-right,y,'#2d3a47',percent?'4 4':'');text(left-7,y+4,percent+'%')});line(left,top,left,top+plotHeight,'#94a3b3');line(left,top+plotHeight,width-right,top+plotHeight,'#94a3b3');points.forEach((point,index)=>{const x=left+((index+0.5)/Math.max(points.length,1))*plotWidth;let y=top+plotHeight;keys.forEach(key=>{const count=point[key]||0;if(!count)return;const segmentHeight=count/total*plotHeight;y-=segmentHeight;const rect=document.createElementNS('http://www.w3.org/2000/svg','rect');rect.setAttribute('x',x-14);rect.setAttribute('y',y);rect.setAttribute('width',28);rect.setAttribute('height',segmentHeight);rect.setAttribute('fill',colors[key]);rect.setAttribute('rx','2');rect.setAttribute('title',key+': '+count);svg.append(rect)});line(x,top+plotHeight,x,top+plotHeight+4,'#94a3b3');text(x,height-24,point.at?new Date(point.at).toLocaleTimeString():'-', 'middle')});text(width/2,height-4,'time','middle');const yLabel=document.createElementNS('http://www.w3.org/2000/svg','text');yLabel.setAttribute('x','12');yLabel.setAttribute('y',height/2);yLabel.setAttribute('fill','#94a3b3');yLabel.setAttribute('font-size','11');yLabel.setAttribute('text-anchor','middle');yLabel.setAttribute('transform','rotate(-90 12 '+height/2+')');yLabel.textContent='share';svg.append(yLabel);chart.append(svg);const legend=document.createElement('div');legend.style.display='flex';legend.style.flexWrap='wrap';legend.style.gap='18px';legend.style.marginTop='10px';keys.forEach(key=>{const item=document.createElement('span');item.textContent=key;item.style.display='inline-flex';item.style.color=colors[key];item.style.borderLeft='3px solid '+colors[key];item.style.paddingLeft='8px';legend.append(item)});section.append(heading,chart,legend);const env=app.querySelector('.run-environment');if(env)env.after(section);else app.prepend(section)}
+function syncTimelineBar(){}
+function fixTimelineBarWidths(){document.querySelectorAll('.timeline-plot').forEach(plot=>{plot.style.display='flex';plot.style.flexDirection='row';plot.style.flexWrap='nowrap';plot.style.alignItems='flex-end';plot.style.overflowX='auto';plot.style.height='230px';plot.style.paddingBottom='46px'});document.querySelectorAll('.timeline-plot>div').forEach(column=>{column.style.flex='0 0 92px';column.style.width='92px';column.style.minWidth='92px';column.style.height='180px';const bar=column.querySelector('.timeline-bar');if(bar){bar.style.width='28px';bar.style.height='160px';bar.style.flex='0 0 160px';bar.style.marginLeft='auto';bar.style.marginRight='auto'}const label=column.querySelector('.timeline-bar+span');if(label){label.style.display='block';label.style.width='92px';label.style.whiteSpace='nowrap';label.style.textAlign='center';label.style.transform='none';label.style.position='static';label.style.fontSize='10px'}})}
+function alignTimelineHeading(){document.querySelectorAll('.job-timeline>div:first-child').forEach(heading=>{heading.style.paddingLeft='0'})}
+function alignGraphicHeadings(){document.querySelectorAll('.run-statistics>div:first-child,.run-environment>div:first-child,.job-timeline>div:first-child').forEach(heading=>{heading.style.display='flex';heading.style.justifyContent='flex-start';heading.style.alignItems='center';const title=heading.querySelector('h2');const note=heading.querySelector('.meta');if(title)title.style.margin='0';if(note)note.style.marginLeft='auto'})}
+function fixTimelineLegendColors(){const colors={pending:'#94a3b3',running:'#f3c969',success:'#63d297',failed:'#ff7c7c'};document.querySelectorAll('.job-timeline span').forEach(item=>{const key=item.textContent.trim();if(colors[key]){item.style.color=colors[key];item.style.borderLeftColor=colors[key]}})}
+function fixRunStatisticsColors(){const colors={succeeded:'#63d297',failed:'#ff7c7c','in progress':'#f3c969',pending:'#94a3b3'};document.querySelectorAll('.run-statistics strong').forEach(value=>{const metric=value.parentElement;const label=metric?metric.textContent.toLowerCase():'';const key=Object.keys(colors).find(name=>label.includes(name));if(key)value.style.color=colors[key]});document.querySelectorAll('.run-statistics .meta,.run-statistics div span').forEach(label=>{label.style.color='var(--muted)'})}
+function simplifyRunStatistics(){document.querySelectorAll('.run-statistics').forEach(section=>{[...section.children].slice(1).forEach(child=>{child.style.display='none'})})}
+const originalEnhancePage=enhancePage;enhancePage=function(){originalEnhancePage();addRunStatistics();addRunEnvironment();renderJobTimelineScratch();spaceGraphicLegends();simplifyRunStatistics();fixTimelineBarWidths();syncTimelineBar();collapseRunGraphics();alignTimelineHeading();alignGraphicHeadings()}
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}const originalRender=render;render=function(){originalRender();enhancePage();enhanceQueueOverview();addQueueOverviewPathActions();const parts=location.pathname.split('/').filter(Boolean);if(parts[0]==='queue'&&!parts[2]){const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));if(queue){const commands=queue.queue.commands||[];addQueueEditors(queue,commands);enhanceQueueSourceContext(commands)}}addExecutionGuide();addDeleteRunButton();addPathTableActions();removeLegacyOutputBox();keepGlobalOutputBox();placeOutputBox();renameCopyButtons();labelEquivalentCommand();addRunJobStatusColumn();addRunningOutputButtons();addRunningCancelButtons();mergeActionColumns();labelJobActionHeaders();styleActionColumns();markJobHeaders();markLatestRun();enableTableSorting();restoreSelectedOutput();applyStatusColors();fixRunStatisticsColors();fixTimelineLegendColors()};window.addEventListener('popstate',render);refresh();setInterval(refresh,2000);
 </script></body></html>`
