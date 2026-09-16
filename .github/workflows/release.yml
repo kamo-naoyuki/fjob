@@ -41,13 +41,13 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o "fjob-${{ matrix.goos }}-${{ matrix.goarch }}" ./cmd/fjob
+        run: go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o "rotari-${{ matrix.goos }}-${{ matrix.goarch }}" ./cmd/rotari
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: fjob-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: fjob-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: rotari-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: rotari-${{ matrix.goos }}-${{ matrix.goarch }}
 
   release:
     name: Publish release
@@ -58,7 +58,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: fjob-*
+          pattern: rotari-*
           merge-multiple: true
 
       - name: Publish GitHub release

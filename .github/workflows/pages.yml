@@ -52,7 +52,7 @@ jobs:
       - name: Generate terminal demos
         run: |
           docs/generate-demos.sh
-          cp docs/demo-shell.gif docs/demo-fjob.gif docs/web-demo/
+          cp docs/demo-shell.gif docs/demo-rotari.gif docs/web-demo/
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

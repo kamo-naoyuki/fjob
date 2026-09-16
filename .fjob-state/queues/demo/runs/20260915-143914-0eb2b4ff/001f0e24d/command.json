@@ -1,0 +1,9 @@
+{
+  "id": "001f0e24d",
+  "command": [
+    "sh",
+    "-c",
+    "sleep 1; echo preparation job"
+  ],
+  "name": "prepare"
+}

@@ -1,0 +1,16 @@
+{
+  "run_id": "20260915-085551-02457771",
+  "status": "finished",
+  "started_at": "2026-09-15T08:56:53Z",
+  "finished_at": "2026-09-15T08:56:53Z",
+  "exit_code": 0,
+  "results": [
+    {
+      "id": "e2b1d670e",
+      "exit_code": 0,
+      "command": [
+        "./stream-output.sh"
+      ]
+    }
+  ]
+}

@@ -395,7 +395,7 @@ func printChangeHints(paths pathSet, queue Queue, jobs []JobSpec) {
 		fmt.Printf("    fjob change --basedir %s --queue-name %s %s --depends-on <job-name>\n", paths.baseDir, paths.queueName, selector)
 	}
 	fmt.Println("\n" + cyan("Rerun:"))
-	fmt.Printf("    fjob rerun --failed --basedir %s --queue-name %s\n", paths.baseDir, paths.queueName)
+	fmt.Printf("    fjob retry --basedir %s --queue-name %s\n", paths.baseDir, paths.queueName)
 }
 
 func showQueue(paths pathSet, queue Queue) int {
@@ -706,10 +706,30 @@ func loadRunJobSpecs(runDir string) map[string]JobSpec {
 	return specs
 }
 
+// loadRunOrigin returns the Origin recorded for jobID in runDir's
+// commands.json, if any. Carried-forward jobs (see planRerunSelection) are
+// not re-executed, so their output only exists under the origin run/job.
+func loadRunOrigin(runDir, jobID string) *JobOrigin {
+	queue, err := loadQueue(filepath.Join(runDir, "commands.json"))
+	if err != nil {
+		return nil
+	}
+	for _, command := range queue.Commands {
+		if command.ID == jobID {
+			return command.Origin
+		}
+	}
+	return nil
+}
+
 func showJob(writer io.Writer, paths pathSet, runID, jobID string) int {
 	jobDir := filepath.Join(paths.runsDir, runID, jobID)
 	runDir := filepath.Dir(jobDir)
 	if info, err := os.Stat(jobDir); err != nil || !info.IsDir() {
+		if origin := loadRunOrigin(runDir, jobID); origin != nil {
+			fmt.Fprintf(writer, "%s carried forward from run %s (no re-execution)\n\n", cyan("Note:"), origin.RunID)
+			return showJob(writer, paths, origin.RunID, origin.JobID)
+		}
 		fmt.Fprintf(os.Stderr, "job %q not found in run %q\n", jobID, runID)
 		return 1
 	}
@@ -863,6 +883,44 @@ func showRunLogs(writer io.Writer, paths pathSet, runID string, failedOnly bool)
 		}
 		fmt.Fprintln(writer)
 	}
+
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		seen[entry.Name()] = true
+	}
+	queue, queueErr := loadQueue(filepath.Join(runDir, "commands.json"))
+	if queueErr == nil {
+		for _, command := range queue.Commands {
+			if seen[command.ID] || command.Origin == nil {
+				continue
+			}
+			// Carried forward from a previous run: it was not re-executed
+			// here, so read its output from the origin run/job instead.
+			if failedOnly && command.Origin.Status != "failed" {
+				continue
+			}
+			header := fmt.Sprintf("=== Job: %s", command.ID)
+			if command.Name != "" {
+				header += fmt.Sprintf(" (Name: %s)", command.Name)
+			}
+			header += fmt.Sprintf(" [carried forward from run %s: %s] ===", command.Origin.RunID, command.Origin.Status)
+			fmt.Fprintln(writer, cyan(header))
+			fmt.Fprintf(writer, "Command: %s\n", strings.Join(command.Command, " "))
+			originDir := filepath.Join(paths.runsDir, command.Origin.RunID, command.Origin.JobID)
+			fmt.Fprintf(writer, "Output path: %s\n", filepath.Join(originDir, "output"))
+			output, err := os.ReadFile(filepath.Join(originDir, "output"))
+			if err == nil && len(output) > 0 {
+				fmt.Fprintln(writer, "--- Log Output ---")
+				fmt.Fprint(writer, string(output))
+				if !strings.HasSuffix(string(output), "\n") {
+					fmt.Fprintln(writer)
+				}
+			} else {
+				fmt.Fprintln(writer, "(No output log)")
+			}
+			fmt.Fprintln(writer)
+		}
+	}
 	return 0
 }
 
@@ -871,6 +929,16 @@ func followJobLog(writer io.Writer, paths pathSet, runID, jobID string) int {
 	outputPath := filepath.Join(jobDir, "output")
 	output, err := os.ReadFile(outputPath)
 	if err != nil {
+		if origin := loadRunOrigin(filepath.Join(paths.runsDir, runID), jobID); origin != nil {
+			// Carried forward: it already finished under the origin run, so
+			// there is nothing new to follow, just print its output once.
+			fmt.Fprintf(writer, "%s carried forward from run %s (no re-execution)\n\n", cyan("Note:"), origin.RunID)
+			originOutput, readErr := os.ReadFile(filepath.Join(paths.runsDir, origin.RunID, origin.JobID, "output"))
+			if readErr == nil {
+				_, _ = writer.Write(originOutput)
+			}
+			return 0
+		}
 		fmt.Fprintf(os.Stderr, "failed to read job output: %v\n", err)
 		return 1
 	}

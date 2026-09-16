@@ -1,0 +1,11 @@
+{
+  "backend": "slurm",
+  "job_id": "f6f3314e6",
+  "command": [
+    "sh",
+    "-c",
+    "echo failing local job; exit 1"
+  ],
+  "slurm_job_id": "19220918",
+  "submitted_at": "2026-09-15T07:15:56Z"
+}

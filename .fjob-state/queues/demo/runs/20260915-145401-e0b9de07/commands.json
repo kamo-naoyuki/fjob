@@ -1,0 +1,37 @@
+{
+  "commands": [
+    {
+      "id": "e97f2d0d2",
+      "command": [
+        "sh",
+        "-c",
+        "sleep 1; echo preparation job"
+      ],
+      "name": "prepare"
+    },
+    {
+      "id": "0dceb6e3f",
+      "command": [
+        "sh",
+        "-c",
+        "sleep 2; echo Slurm job"
+      ],
+      "name": "slurm-job",
+      "depends_on": [
+        "prepare"
+      ]
+    },
+    {
+      "id": "40dc3792f",
+      "command": [
+        "sh",
+        "-c",
+        "echo failing local job; exit 1"
+      ],
+      "name": "failing-job",
+      "depends_on": [
+        "prepare"
+      ]
+    }
+  ]
+}

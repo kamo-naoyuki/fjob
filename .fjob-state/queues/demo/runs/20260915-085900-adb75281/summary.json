@@ -1,0 +1,16 @@
+{
+  "run_id": "20260915-085900-adb75281",
+  "status": "finished",
+  "started_at": "2026-09-15T09:00:00Z",
+  "finished_at": "2026-09-15T09:00:00Z",
+  "exit_code": 0,
+  "results": [
+    {
+      "id": "0bd309948",
+      "exit_code": 0,
+      "command": [
+        "./stream-output.sh"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "cwd": "/data/store3/kamo/bgjob/jobq",
+  "hostname": "ttgh4",
+  "started_load": {
+    "one": 0.39,
+    "five": 0.2,
+    "fifteen": 0.22
+  },
+  "finished_load": {
+    "one": 0.39,
+    "five": 0.2,
+    "fifteen": 0.22
+  }
+}

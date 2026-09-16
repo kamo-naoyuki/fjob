@@ -1,0 +1,45 @@
+{
+  "default_executor": "slurm",
+  "default_executor_options": [
+    " --cpus-per-task=2"
+  ],
+  "commands": [
+    {
+      "id": "0dab8a19c",
+      "command": [
+        "sh",
+        "-c",
+        "sleep 1; echo preparation job"
+      ],
+      "name": "prepare"
+    },
+    {
+      "id": "aee849a7a",
+      "command": [
+        "sh",
+        "-c",
+        "sleep 2; echo Slurm job"
+      ],
+      "executor": "slurm",
+      "executor_options": [
+        " --cpus-per-task=2"
+      ],
+      "name": "slurm-job",
+      "depends_on": [
+        "prepare"
+      ]
+    },
+    {
+      "id": "e7150011a",
+      "command": [
+        "sh",
+        "-c",
+        "echo failing local job; exit 1"
+      ],
+      "name": "failing-job",
+      "depends_on": [
+        "prepare"
+      ]
+    }
+  ]
+}

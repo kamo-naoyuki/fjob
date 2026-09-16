@@ -1,0 +1,11 @@
+{
+  "executor": "slurm",
+  "job_id": "aee849a7a",
+  "command": [
+    "sh",
+    "-c",
+    "sleep 2; echo Slurm job"
+  ],
+  "slurm_job_id": "19221603",
+  "submitted_at": "2026-09-15T14:57:34Z"
+}

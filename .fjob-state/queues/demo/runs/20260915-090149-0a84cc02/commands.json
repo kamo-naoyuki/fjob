@@ -1,0 +1,15 @@
+{
+  "default_backend": "slurm",
+  "default_sbatch_options": [
+    " --cpus-per-task=2"
+  ],
+  "commands": [
+    {
+      "id": "fe15b0137",
+      "command": [
+        "./stream-output.sh"
+      ],
+      "name": "stream"
+    }
+  ]
+}

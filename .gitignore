@@ -1,6 +1,6 @@
-# Go build artifacts and local fjob state
-/fjob
-/.fjob-state/
+# Go build artifacts and local rotari state
+/rotari
+/.rotari-state/
 /jobq
 /.jobq-state/
 /.example-state*/

@@ -1,0 +1,12 @@
+{
+  "id": "2ed08782a",
+  "command": [
+    "sh",
+    "-c",
+    "sleep 2; echo Slurm job"
+  ],
+  "name": "slurm-job",
+  "depends_on": [
+    "prepare"
+  ]
+}

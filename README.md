@@ -1,8 +1,8 @@
-# fjob: File-based, flexible job runner for local and batch workloads
+# rotari: File-based, flexible job runner for local and batch workloads
 
-[![Go CI](https://github.com/kamo-naoyuki/fjob/actions/workflows/ci.yml/badge.svg)](https://github.com/kamo-naoyuki/fjob/actions/workflows/ci.yml) [![web demo](https://img.shields.io/website?url=https%3A%2F%2Fkamo-naoyuki.github.io%2Ffjob%2F&label=web%20demo&style=flat)](https://kamo-naoyuki.github.io/fjob/)
+[![Go CI](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml/badge.svg)](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml) [![web demo](https://img.shields.io/website?url=https%3A%2F%2Fkamo-naoyuki.github.io%2Frotari%2F&label=web%20demo&style=flat)](https://kamo-naoyuki.github.io/rotari/)
 
-fjob is for the iterative loop behind computational experiments: queue many
+rotari is for the iterative loop behind computational experiments: queue many
 jobs, keep each run's commands and output, inspect failures, change only what
 needs fixing, and run it again without losing the previous history.
 
@@ -11,21 +11,21 @@ local and scheduler-backed jobs (Slurm, PBS, or LSF), or debugging a batch repea
 terminal into a pile of background processes, each run stays named, inspectable,
 and recoverable.
 
-| Plain shell (background jobs) | fjob |
+| Plain shell (background jobs) | rotari |
 | --- | --- |
-| ![shell background jobs demo](https://kamo-naoyuki.github.io/fjob/demo-shell.gif) | ![fjob demo](https://kamo-naoyuki.github.io/fjob/demo-fjob.gif) |
+| ![shell background jobs demo](https://kamo-naoyuki.github.io/rotari/demo-shell.gif) | ![rotari demo](https://kamo-naoyuki.github.io/rotari/demo-rotari.gif) |
 
 ## Build and installation
 
 ```sh
-go build -o fjob ./cmd/fjob
+go build -o rotari ./cmd/rotari
 ```
 
 Check the version:
 
 ```sh
-fjob version
-fjob --version
+rotari version
+rotari --version
 ```
 
 Prebuilt binaries for Linux and macOS are available from the GitHub Releases
@@ -37,20 +37,20 @@ somewhere on your `PATH`:
 ```sh
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
-curl -fL "https://github.com/kamo-naoyuki/fjob/releases/latest/download/fjob-${os}-${arch}" \
-  -o /tmp/fjob
-install -m 755 /tmp/fjob ~/.local/bin/fjob
+curl -fL "https://github.com/kamo-naoyuki/rotari/releases/latest/download/rotari-${os}-${arch}" \
+  -o /tmp/rotari
+install -m 755 /tmp/rotari ~/.local/bin/rotari
 ```
 
-Available binaries are `fjob-linux-amd64`, `fjob-linux-arm64`,
-`fjob-darwin-amd64`, and `fjob-darwin-arm64`. The latest release is also
-available from the [GitHub Releases](https://github.com/kamo-naoyuki/fjob/releases)
+Available binaries are `rotari-linux-amd64`, `rotari-linux-arm64`,
+`rotari-darwin-amd64`, and `rotari-darwin-arm64`. The latest release is also
+available from the [GitHub Releases](https://github.com/kamo-naoyuki/rotari/releases)
 page.
 
 With Go installed, you can install directly instead:
 
 ```sh
-go install github.com/kamo-naoyuki/fjob/cmd/fjob@latest
+go install github.com/kamo-naoyuki/rotari/cmd/rotari@latest
 ```
 
 ### Shell completion
@@ -59,35 +59,35 @@ Completion scripts are available for Bash and Zsh:
 
 ```sh
 # Install for the default shell reported by $SHELL
-fjob completion install
+rotari completion install
 
 # Select the shell explicitly when running a nested shell
-fjob completion install bash
-fjob completion install zsh
+rotari completion install bash
+rotari completion install zsh
 ```
 
 The completion is generated from the CLI metadata used by the program, and
 covers subcommands, command options, executor values, run selection values, and
 the `server` subcommands. `completion install` updates the shell configuration
-idempotently; it does not duplicate an existing fjob completion block. Start a
+idempotently; it does not duplicate an existing rotari completion block. Start a
 new shell after installation, or source the shell configuration to apply it to
 the current shell.
 
-For manual setup, `fjob completion bash` and `fjob completion zsh` print the
+For manual setup, `rotari completion bash` and `rotari completion zsh` print the
 raw completion scripts.
 
 ## Quick start
 
 ```sh
-fjob check --queue-name build
-fjob add --queue-name build --job-name build make
-fjob add --queue-name build --name unit-tests go test ./...
-fjob run --queue-name build --run-name unit-build
+rotari check --queue-name build
+rotari add --queue-name build --job-name build make
+rotari add --queue-name build --name unit-tests go test ./...
+rotari run --queue-name build --run-name unit-build
 ```
 
 `add` adds a command. `run` executes the queued commands and waits for
 completion. The queue name can be supplied with `--queue-name`,
-`FJOB_QUEUE_NAME`, or omitted. When omitted, if only one queue exists in the state directory, it will be automatically selected; if multiple queues exist, you will be prompted to specify one.
+`ROTARI_QUEUE_NAME`, or omitted. When omitted, if only one queue exists in the state directory, it will be automatically selected; if multiple queues exist, you will be prompted to specify one.
 Use `--job-name NAME` (or its `--name NAME` alias) to label a submitted job.
 Use `--run-name NAME` to label a run; the generated run ID remains available for
 unambiguous paths and commands.
@@ -95,73 +95,81 @@ Use `--depends-on NAME` to make a job wait for a named prerequisite. Repeat the
 option to specify multiple prerequisites:
 
 ```sh
-fjob add --job-name prepare ./prepare.sh
-fjob add --job-name train --depends-on prepare ./train.sh
-fjob run
+rotari add --job-name prepare ./prepare.sh
+rotari add --job-name train --depends-on prepare ./train.sh
+rotari run
 ```
 
 Jobs without dependencies run in parallel. Dependencies must refer to named
 jobs in the same queue; unknown jobs and dependency cycles are rejected before
 the run starts. If a prerequisite fails, dependent jobs are recorded as
 `blocked` and are not executed. Retries rerun only failed jobs, not jobs that
-already succeeded. `fjob rerun --failed` likewise reruns failed job bodies
+already succeeded. `rotari retry` likewise reruns failed and
+unfinished job bodies
 without rerunning successful prerequisites.
 
 The typical debug loop is deliberately short:
 
 ```sh
-fjob show --queue-name build --failed-logs
-fjob change --queue-name build --job-name train -- ./train-v2.sh
-fjob rerun --queue-name build --failed
+rotari show --queue-name build --failed-logs
+rotari change --queue-name build --job-name train -- ./train-v2.sh
+rotari retry --queue-name build
 ```
 
-The failed output remains attached to the old run, while the changed job is
-run as a new attempt. This makes it practical to keep debugging until the
-experiment is complete without rerunning work that already succeeded.
+Jobs that already succeeded are not re-executed; they are carried forward into
+the new run with their previous result and a link back to the original output,
+so the whole run (old successes and freshly retried jobs) shows up together on
+one run page. This makes it practical to keep debugging until the experiment
+is complete without rerunning work that already succeeded.
 
 Copy jobs from a previous run into the current queue without executing them:
 
 ```sh
-fjob copy --queue-name build --run-id RUN_ID --failed
-fjob change --queue-name build --job-name unit-tests -- go test ./...
-fjob run --queue-name build --retry 2
+rotari copy --queue-name build --run-id RUN_ID --failed --unfinished
+rotari change --queue-name build --job-name unit-tests -- go test ./...
+rotari run --queue-name build --retry 2
 ```
 
-`copy` creates new job IDs and keeps dependencies between copied jobs. If the
-queue is non-empty, the CLI asks for confirmation before replacing it; use
-`--append` to add copied jobs or `--overwrite` to replace it without asking.
-Selection options include `--failed`, `--unfinished`,
-`--success`, `--nonsuccess`, and repeated `--job-id`.
+`copy` creates new job IDs only if they would collide with jobs already in the
+destination queue; otherwise the source job ID is kept, and dependencies
+between copied jobs are preserved. If the queue is non-empty, the CLI asks for
+confirmation before replacing it; use `--append` to add copied jobs or
+`--overwrite` to replace it without asking. Selection options include
+`--failed`, `--unfinished`, `--success`, and repeated `--job-id`.
 Copied jobs remain pending in the new queue. Their source run, source job,
 source status, and original working directory are retained as metadata so the
 original output can be inspected without copying it.
 
-`rerun` is the shorthand for copying selected jobs from the latest run into
-the queue and then running that new queue. For example:
+`run` (and its aliases `retry` and, with explicit filters, `run --failed`
+etc.) can also select jobs directly from a run instead of the live queue.
+`--run-id ID` repopulates the queue from that run first, equivalent to
+`copy --run-id ID --overwrite` followed by `run`; result filters
+(`--failed`/`--unfinished`/`--success`/`--job-id`) then decide which of those
+jobs are actually re-executed. Jobs that don't match the filter but already
+finished in the reference run (the given `--run-id`, or the latest run when
+`--run-id` is omitted) are carried forward instead of re-executed. For
+example:
 
 ```sh
-fjob copy --queue-name build --run-id RUN_ID --failed
-fjob run --queue-name build
+rotari run --queue-name build --run-id RUN_ID --failed
 ```
 
 is equivalent to:
 
 ```sh
-fjob rerun --queue-name build --failed
+rotari copy --queue-name build --run-id RUN_ID --overwrite
+rotari run --queue-name build --failed
 ```
-
-The selection options and queue overwrite confirmation used by `rerun` follow
-the same rules as `copy`.
 
 ## Local web UI
 
-See the [web demo](https://kamo-naoyuki.github.io/fjob/) for a read-only UI
+See the [web demo](https://kamo-naoyuki.github.io/rotari/) for a read-only UI
 using generated example data.
 
 Start the local web status UI separately from the job runner:
 
 ```sh
-fjob web
+rotari web
 ```
 
 Open `http://127.0.0.1:8787` in a browser. By default, the web server shows all
@@ -177,12 +185,12 @@ Stopping the web server does not stop the runner or any jobs.
 Build and run the included example:
 
 ```sh
-go build -o fjob ./cmd/fjob
+go build -o rotari ./cmd/rotari
 ./example.sh demo
 ```
 
 The example includes local and Slurm jobs in one queue. Set
-`FJOB_ASYNC=true` to use async mode.
+`ROTARI_ASYNC=true` to use async mode.
 
 ## Queue, runs, and state
 
@@ -192,16 +200,16 @@ batch into one run ID and stores its snapshot, logs, and results separately.
 ```mermaid
 flowchart LR
   subgraph current[Current batch]
-    prepare([fjob add]) -->|job: prepare| queue[(queue.json)]
-    train([fjob add]) -->|job: train| queue
+    prepare([rotari add]) -->|job: prepare| queue[(queue.json)]
+    train([rotari add]) -->|job: train| queue
   end
 
-  queue --> start([fjob run])
+  queue --> start([rotari run])
   start --> snapshot[(runs/run-id/commands.json)]
   snapshot --> summary[(runs/run-id/summary.json)]
   snapshot --> output[(runs/run-id/job-id/output)]
   start --> cleared[(queue.json: empty)]
-  next([fjob add]) -->|next job| nextQueue[(queue.json: next batch)]
+  next([rotari add]) -->|next job| nextQueue[(queue.json: next batch)]
 
   classDef command fill:#1d4ed8,stroke:#1e3a8a,color:#ffffff
   class prepare,train,start,next command
@@ -226,7 +234,7 @@ The state directory mirrors this lifecycle:
 Each submitted command has a stable job ID. `run` saves the complete command
 snapshot under `runs/<run-id>/`, together with a summary and each job's log.
 After it finishes, the queue is emptied, while the run can be inspected or used
-with selections such as `fjob rerun --failed`. The next `add` starts a new batch while
+with selections such as `rotari retry`. The next `add` starts a new batch while
 keeping the previous run history. Use `delete` to remove saved run logs
 explicitly. Use `run --async` when an experiment should continue after the
 terminal returns.
@@ -235,20 +243,20 @@ terminal returns.
 
 | Variable | Purpose |
 | --- | --- |
-| `FJOB_BASEDIR` | Base directory for queue state. Overridden by `--basedir`. |
-| `FJOB_QUEUE_NAME` | Default queue name. Overridden by `--queue-name`. |
-| `FJOB_MASTERDIR` | Directory used by `fjob server list` to find supervisors. |
-| `XDG_STATE_HOME` | Base location used when `FJOB_BASEDIR` or `FJOB_MASTERDIR` is not set. |
+| `ROTARI_BASEDIR` | Base directory for queue state. Overridden by `--basedir`. |
+| `ROTARI_QUEUE_NAME` | Default queue name. Overridden by `--queue-name`. |
+| `ROTARI_MASTERDIR` | Directory used by `rotari server list` to find supervisors. |
+| `XDG_STATE_HOME` | Base location used when `ROTARI_BASEDIR` or `ROTARI_MASTERDIR` is not set. |
 
 The resolution order for the state directory is:
 1. `--basedir` option
-2. `FJOB_BASEDIR` environment variable
-3. `./.fjob-state` (if it exists in the current directory)
-4. Default location (`$XDG_STATE_HOME/fjob` or `~/.local/state/fjob`)
+2. `ROTARI_BASEDIR` environment variable
+3. `./.rotari-state` (if it exists in the current directory)
+4. Default location (`$XDG_STATE_HOME/rotari` or `~/.local/state/rotari`)
 
 The resolution logic for the queue name when `--queue-name` is omitted is:
 1. `--queue-name` option
-2. `FJOB_QUEUE_NAME` environment variable
+2. `ROTARI_QUEUE_NAME` environment variable
 3. Automatically select if exactly one queue exists in the state directory
 4. Default queue name (`default`) if no queues exist yet (if multiple queues exist, an error will prompt you to specify one)
 
@@ -256,20 +264,20 @@ The included `example.sh` also supports:
 
 | Variable | Purpose |
 | --- | --- |
-| `FJOB_SLURM_OPTIONS` | Common Slurm options used by the example, such as `-p short`. |
-| `FJOB_ASYNC` | Set to `true` to run the example asynchronously; defaults to `false`. |
+| `ROTARI_SLURM_OPTIONS` | Common Slurm options used by the example, such as `-p short`. |
+| `ROTARI_ASYNC` | Set to `true` to run the example asynchronously; defaults to `false`. |
 
 ## Slurm
 
 Executor and Slurm options can be set per command:
 
 ```sh
-fjob add --queue-name build make
-fjob add --queue-name build \
+rotari add --queue-name build make
+rotari add --queue-name build \
   --executor slurm \
   --executor-option="-p short --cpus-per-task=2" \
   ./heavy-test.sh
-fjob run --queue-name build --local-concurrency 4 --batch-concurrency 8 --retry 2
+rotari run --queue-name build --local-concurrency 4 --batch-concurrency 8 --retry 2
 ```
 
 Local and scheduler-backed commands may be mixed in the same queue. Use
@@ -280,8 +288,8 @@ Use `--retry -1` to retry failed jobs indefinitely.
 ## Async runs
 
 ```sh
-fjob run --queue-name build --async
-fjob wait --queue-name build
+rotari run --queue-name build --async
+rotari wait --queue-name build
 ```
 
 The async start message prints commands for checking status and cancelling the
@@ -289,20 +297,20 @@ run. `wait` returns the overall run exit code.
 
 An async run is started as a detached process in a new session (`setsid`), so
 it keeps running even if the terminal that launched it is closed. Use
-`fjob wait` from any terminal (or later) to block on the run, and
-`fjob cancel` to stop it.
+`rotari wait` from any terminal (or later) to block on the run, and
+`rotari cancel` to stop it.
 
 ## Inspect and recover
 
 To inspect the latest run or list all runs:
 
 ```sh
-fjob show --queue-name build
-fjob show --queue-name build --runs
-fjob show --queue-name build --failed
-fjob show --queue-name build --job-id JOB_ID
-fjob show --queue-name build --logs
-fjob show --queue-name build --failed-logs
+rotari show --queue-name build
+rotari show --queue-name build --runs
+rotari show --queue-name build --failed
+rotari show --queue-name build --job-id JOB_ID
+rotari show --queue-name build --logs
+rotari show --queue-name build --failed-logs
 ```
 
 `--logs` prints the output log for every job in the selected run.
@@ -315,26 +323,52 @@ When output is a terminal, log views (including `--job-id`) longer than 24
 lines open in `$PAGER` (or `less -R` by default). Use `--no-pager` to print
 directly; piped and redirected output is always printed directly.
 
-Run selected jobs from the latest run:
+Run selected jobs from the latest run, carrying forward everything else:
 
 ```sh
-fjob rerun --queue-name build --failed
-fjob rerun --queue-name build --unfinished
-fjob rerun --queue-name build --success
-fjob rerun --queue-name build --nonsuccess
-fjob rerun --queue-name build --job-id JOB_ID
+rotari run --queue-name build --failed
+rotari run --queue-name build --unfinished
+rotari run --queue-name build --success
+rotari run --queue-name build --failed --unfinished
+rotari run --queue-name build --job-id JOB_ID
+rotari retry --queue-name build
 ```
 
-`--job-id` may be repeated to rerun selected jobs. It is mutually exclusive
-with the result filters above.
+The result filters select which jobs are actually re-executed:
+
+| Option | Executed jobs |
+| --- | --- |
+| `--failed` | Finished jobs with a non-zero exit code. |
+| `--unfinished` | Jobs without a completed result. |
+| `--success` | Finished jobs with exit code zero. |
+| `--failed --unfinished` | Failed or unfinished jobs. |
+
+Result filters and job IDs may be combined; jobs matching any selected filter
+or ID are executed. Jobs that do not match but already have a finished result
+in the reference run (the latest run, or the run given by `--run-id`) are
+carried forward: they are not re-executed, and their previous result and
+output remain visible on the new run's page. Jobs that neither match nor have
+a previous result are simply left unfinished.
+For example, `--failed --unfinished` re-executes failed or unfinished jobs
+while carrying forward everything that already succeeded; `rotari retry` is
+shorthand for `rotari run --failed --unfinished`.
+
+Use `--failed --unfinished` when a run may have been interrupted and you want to
+recover everything that did not complete successfully. `--job-id` selects
+specific jobs by ID instead of filtering by result.
+
+`--job-id` may be repeated to select jobs to execute. It is mutually exclusive
+with the result filters above. `--run-id ID` changes the reference run used
+for both the queue snapshot and the result filters; see the earlier section
+for details.
 
 Prepare a modified batch from the latest run without changing its history:
 
 ```sh
-fjob change --job-name train --executor local
-fjob change --job-name train --executor-option="-p gpu"
-fjob change --job-name train --depends-on prepare -- ./train-v2.sh
-fjob rerun --failed
+rotari change --job-name train --executor local
+rotari change --job-name train --executor-option="-p gpu"
+rotari change --job-name train --depends-on prepare -- ./train-v2.sh
+rotari retry
 ```
 
 `change` requires exactly one target selector: `--job-id ID` or
@@ -347,8 +381,8 @@ batch. If the queue is empty, the latest run snapshot is restored first. Use
 Remove jobs from the current batch without affecting saved run history:
 
 ```sh
-fjob remove --queue-name build --job-name train
-fjob remove --queue-name build --job-id JOB_ID --job-id OTHER_JOB_ID
+rotari remove --queue-name build --job-name train
+rotari remove --queue-name build --job-id JOB_ID --job-id OTHER_JOB_ID
 ```
 
 If the queue is empty, `remove` restores the latest run snapshot first. Use
@@ -359,8 +393,8 @@ another queued job depends on is rejected.
 Stop running jobs without stopping the supervisor:
 
 ```sh
-fjob cancel --queue-name build
-fjob cancel --queue-name build --job-id JOB_ID
+rotari cancel --queue-name build
+rotari cancel --queue-name build --job-id JOB_ID
 ```
 
 `--job-id` is optional. Without it, all running jobs in the queue are
@@ -370,9 +404,9 @@ option may be repeated. `--job-id` cannot be used with `--wait`.
 Temporarily suspend and resume running jobs:
 
 ```sh
-fjob suspend --queue-name build
-fjob suspend --queue-name build --job-id JOB_ID
-fjob resume --queue-name build --job-id JOB_ID
+rotari suspend --queue-name build
+rotari suspend --queue-name build --job-id JOB_ID
+rotari resume --queue-name build --job-id JOB_ID
 ```
 
 Without `--job-id`, all currently running jobs are affected. Repeat `--job-id`
@@ -382,8 +416,8 @@ to control selected jobs. Local jobs use `SIGSTOP`/`SIGCONT`; Slurm jobs use
 Delete saved run logs while keeping queued commands:
 
 ```sh
-fjob delete --queue-name build
-fjob delete --queue-name build --run-id RUN_ID
+rotari delete --queue-name build
+rotari delete --queue-name build --run-id RUN_ID
 ```
 
 `--run-id` removes only the specified run. Without it, all saved run logs are removed.
@@ -393,28 +427,26 @@ The commands affect the current batch and saved run history differently:
 
 ```mermaid
 flowchart LR
-  add([fjob add]) --> queue[(queue.json)]
-  change([fjob change]) --> queue
-  remove([fjob remove]) -->|remove selected jobs| queue
+  add([rotari add]) --> queue[(queue.json)]
+  change([rotari change]) --> queue
+  remove([rotari remove]) -->|remove selected jobs| queue
 
-  queue --> run([fjob run])
+  queue --> run([rotari run])
   run --> active((running jobs))
   run --> history[(runs/<run-id>/)]
   run -->|empty after start| queue
-  history --> copy([fjob copy])
-  copy -->|selected jobs| queue
-  history --> rerun([fjob rerun])
-  rerun -.->|copy selected jobs, then run| queue
-  rerun --> run
-  cancel([fjob cancel]) -->|stop selected/all| active
-  suspend([fjob suspend]) -->|pause selected/all| active
-  resume([fjob resume]) -->|continue selected/all| active
-  delete([fjob delete]) -->|delete saved runs| history
+  history --> copy([rotari copy])
+  copy -->|all jobs| queue
+  run -.->|--run-id: copy, then select/carry forward| queue
+  cancel([rotari cancel]) -->|stop selected/all| active
+  suspend([rotari suspend]) -->|pause selected/all| active
+  resume([rotari resume]) -->|continue selected/all| active
+  delete([rotari delete]) -->|delete saved runs| history
 
   classDef edit fill:#1d4ed8,stroke:#1e3a8a,color:#ffffff
   classDef control fill:#0f766e,stroke:#115e59,color:#ffffff
   classDef destructive fill:#b91c1c,stroke:#7f1d1d,color:#ffffff
-  class add,change,run,copy,rerun edit
+  class add,change,run,copy edit
   class suspend,resume control
   class remove,cancel,delete destructive
 ```
@@ -425,7 +457,7 @@ The supervisor starts automatically when a run needs it and stops after the
 run finishes. These commands are mainly useful for inspection and cleanup:
 
 ```sh
-fjob server status
-fjob server list
-fjob server shutdown
+rotari server status
+rotari server list
+rotari server shutdown
 ```

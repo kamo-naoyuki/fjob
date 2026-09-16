@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Records docs/demo-shell.gif and docs/demo-fjob.gif using asciinema + agg.
+# Records docs/demo-shell.gif and docs/demo-rotari.gif using asciinema + agg.
 #
 # Requirements:
 #   - asciinema (Python package): pip install --user asciinema
@@ -37,20 +37,20 @@ fi
 
 require_command agg
 
-cols=${FJOB_DEMO_COLS:-90}
-rows=${FJOB_DEMO_ROWS:-24}
-font_size=${FJOB_DEMO_FONT_SIZE:-14}
-theme=${FJOB_DEMO_THEME:-monokai}
+cols=${ROTARI_DEMO_COLS:-90}
+rows=${ROTARI_DEMO_ROWS:-24}
+font_size=${ROTARI_DEMO_FONT_SIZE:-14}
+theme=${ROTARI_DEMO_THEME:-monokai}
 
-# Build fjob into a directory that comes first on PATH, alongside fake
+# Build rotari into a directory that comes first on PATH, alongside fake
 # `make`/`go` stand-ins so both demos print identical, deterministic output.
 bin_dir="${work_dir}/bin"
 mkdir -p "${bin_dir}"
-if [[ -x "${repo_dir}/fjob" ]]; then
-    cp "${repo_dir}/fjob" "${bin_dir}/fjob"
+if [[ -x "${repo_dir}/rotari" ]]; then
+    cp "${repo_dir}/rotari" "${bin_dir}/rotari"
 else
     require_command go
-    (cd "${repo_dir}" && go build -o "${bin_dir}/fjob" ./cmd/fjob)
+    (cd "${repo_dir}" && go build -o "${bin_dir}/rotari" ./cmd/rotari)
 fi
 
 # Fake `go` binary: `go test ./...` fails once per working directory, then
@@ -145,22 +145,22 @@ sleep 3.0
 EOF
 chmod +x "${shell_demo}"
 
-# --- fjob demo: add, run, show, and re-run only the failed job ----------
+# --- rotari demo: add, run, show, and re-run only the failed job ----------
 
-fjob_work_dir="${work_dir}/fjob-demo"
-mkdir -p "${fjob_work_dir}"
-cat > "${fjob_work_dir}/Makefile" <<'EOF'
+rotari_work_dir="${work_dir}/rotari-demo"
+mkdir -p "${rotari_work_dir}"
+cat > "${rotari_work_dir}/Makefile" <<'EOF'
 build:
 	@echo make
 EOF
 
-fjob_demo="${work_dir}/fjob-demo.sh"
-cat > "${fjob_demo}" <<EOF
+rotari_demo="${work_dir}/rotari-demo.sh"
+cat > "${rotari_demo}" <<EOF
 #!/usr/bin/env bash
 set -uo pipefail
 export PATH="${bin_dir}:\$PATH"
-export FJOB_BASEDIR="${work_dir}/fdemo-state"
-cd "${fjob_work_dir}"
+export ROTARI_BASEDIR="${work_dir}/fdemo-state"
+cd "${rotari_work_dir}"
 
 type_line() {
     local text="\$1"
@@ -181,41 +181,41 @@ note() {
 
 # capture output, then reveal it line by line so the reader can follow along
 run_slow() {
-    "\$@" > "${work_dir}/fjob-cmdout.txt" 2>&1
+    "\$@" > "${work_dir}/rotari-cmdout.txt" 2>&1
     local code=\$?
     while IFS= read -r line; do
         printf '%s\n' "\$line"
         sleep 0.18
-    done < "${work_dir}/fjob-cmdout.txt"
+    done < "${work_dir}/rotari-cmdout.txt"
     return \$code
 }
 
-type_line 'fjob add make'
-fjob add make
+type_line 'rotari add make'
+rotari add make
 sleep 1.0
 
-type_line 'fjob add go test ./...'
-fjob add go test ./...
+type_line 'rotari add go test ./...'
+rotari add go test ./...
 sleep 1.0
 
-type_line 'fjob run'
-run_slow fjob run
-job_id=\$(grep -m1 '^  Job:' "${work_dir}/fjob-cmdout.txt" | awk '{print \$2}')
+type_line 'rotari run'
+run_slow rotari run
+job_id=\$(grep -m1 '^  Job:' "${work_dir}/rotari-cmdout.txt" | awk '{print \$2}')
 sleep 1.5
 
-note "fjob already knows exactly which job failed"
-type_line "fjob show --job-id \${job_id}"
-run_slow fjob show --job-id "\${job_id}"
+note "rotari already knows exactly which job failed"
+type_line "rotari show --job-id \${job_id}"
+run_slow rotari show --job-id "\${job_id}"
 sleep 2.0
 
 note "fix the bug, then re-run only the failed job"
-type_line 'fjob rerun --failed'
-run_slow fjob rerun --failed
+type_line 'rotari retry'
+run_slow rotari retry
 sleep 3.5
 EOF
-chmod +x "${fjob_demo}"
+chmod +x "${rotari_demo}"
 
 record demo-shell "${shell_demo}"
-record demo-fjob "${fjob_demo}"
+record demo-rotari "${rotari_demo}"
 
-echo "done: ${output_dir}/demo-shell.gif ${output_dir}/demo-fjob.gif"
+echo "done: ${output_dir}/demo-shell.gif ${output_dir}/demo-rotari.gif"

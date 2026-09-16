@@ -1,0 +1,12 @@
+{
+  "id": "40dc3792f",
+  "command": [
+    "sh",
+    "-c",
+    "echo failing local job; exit 1"
+  ],
+  "name": "failing-job",
+  "depends_on": [
+    "prepare"
+  ]
+}

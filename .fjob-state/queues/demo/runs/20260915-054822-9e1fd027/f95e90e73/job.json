@@ -1,0 +1,11 @@
+{
+  "backend": "slurm",
+  "job_id": "f95e90e73",
+  "command": [
+    "sh",
+    "-c",
+    "sleep 1; echo preparation job"
+  ],
+  "slurm_job_id": "19220780",
+  "submitted_at": "2026-09-15T05:48:22Z"
+}

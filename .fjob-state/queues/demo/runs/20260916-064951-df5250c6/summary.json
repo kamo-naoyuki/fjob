@@ -1,0 +1,34 @@
+{
+  "run_id": "20260916-064951-df5250c6",
+  "status": "failed",
+  "started_at": "2026-09-16T06:49:51Z",
+  "finished_at": "2026-09-16T06:49:51Z",
+  "exit_code": 1,
+  "results": [
+    {
+      "id": "315704608",
+      "exit_code": 1,
+      "error": "sbatch: exec: \"sbatch\": executable file not found in $PATH: "
+    },
+    {
+      "id": "dd8f2a414",
+      "exit_code": 1,
+      "error": "blocked by failed dependency",
+      "command": [
+        "sh",
+        "-c",
+        "sleep 2; echo Slurm job"
+      ]
+    },
+    {
+      "id": "7b7df1f04",
+      "exit_code": 1,
+      "error": "blocked by failed dependency",
+      "command": [
+        "sh",
+        "-c",
+        "echo failing local job; exit 1"
+      ]
+    }
+  ]
+}

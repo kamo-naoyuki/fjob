@@ -1,0 +1,36 @@
+{
+  "run_id": "20260915-055100-8d71d2da",
+  "status": "failed",
+  "started_at": "2026-09-15T05:51:06Z",
+  "finished_at": "2026-09-15T05:51:06Z",
+  "exit_code": 1,
+  "results": [
+    {
+      "id": "56b4115cb",
+      "exit_code": 0,
+      "command": [
+        "sh",
+        "-c",
+        "sleep 1; echo preparation job"
+      ]
+    },
+    {
+      "id": "a887321c2",
+      "exit_code": 0,
+      "command": [
+        "sh",
+        "-c",
+        "sleep 2; echo Slurm job"
+      ]
+    },
+    {
+      "id": "837d941cc",
+      "exit_code": 1,
+      "command": [
+        "sh",
+        "-c",
+        "echo failing local job; exit 1"
+      ]
+    }
+  ]
+}
