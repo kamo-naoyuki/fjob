@@ -100,7 +100,7 @@ jobs:
             -- sh -c 'printf "fjob scheduler integration\\n"'
           "${fjob[@]}" run --basedir /state --queue-name integration \
             --batch-concurrency 1
-          run_id="$(docker exec --user "$SCHEDULER_USER" "$SCHEDULER_CONTAINER" find /state/queues/integration/runs -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' | sort | tail -1)"
+          run_id="$(docker exec --user "$SCHEDULER_USER" "$SCHEDULER_CONTAINER" find /state/queues/integration/runs -mindepth 1 -maxdepth 1 -type d -print | sed 's#^.*/##' | sort | tail -1)"
           "${fjob[@]}" show --basedir /state --queue-name integration --run-id "$run_id" --logs
 
       - name: Stop scheduler
