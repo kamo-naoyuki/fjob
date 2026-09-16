@@ -23,18 +23,26 @@ const jobIDLen = 9
 const defaultQueueName = "default"
 
 type Queue struct {
-	DefaultBackend       string          `json:"default_backend,omitempty"`
-	DefaultSbatchOptions []string        `json:"default_sbatch_options,omitempty"`
-	Commands             []QueuedCommand `json:"commands"`
+	DefaultExecutor        string          `json:"default_executor,omitempty"`
+	DefaultExecutorOptions []string        `json:"default_executor_options,omitempty"`
+	Commands               []QueuedCommand `json:"commands"`
 }
 
 type QueuedCommand struct {
-	ID            string   `json:"id"`
-	Command       []string `json:"command"`
-	Backend       string   `json:"backend,omitempty"`
-	SbatchOptions []string `json:"sbatch_options,omitempty"`
-	Name          string   `json:"name,omitempty"`
-	DependsOn     []string `json:"depends_on,omitempty"`
+	ID              string     `json:"id"`
+	Command         []string   `json:"command"`
+	Executor        string     `json:"executor,omitempty"`
+	ExecutorOptions []string   `json:"executor_options,omitempty"`
+	Name            string     `json:"name,omitempty"`
+	DependsOn       []string   `json:"depends_on,omitempty"`
+	Origin          *JobOrigin `json:"origin,omitempty"`
+}
+
+type JobOrigin struct {
+	RunID  string `json:"run_id"`
+	JobID  string `json:"job_id"`
+	Status string `json:"status,omitempty"`
+	CWD    string `json:"cwd,omitempty"`
 }
 
 type Meta struct {
@@ -51,12 +59,12 @@ type LockInfo struct {
 }
 
 type JobSpec struct {
-	ID            string   `json:"id"`
-	Command       []string `json:"command"`
-	Backend       string   `json:"backend,omitempty"`
-	SbatchOptions []string `json:"sbatch_options,omitempty"`
-	Name          string   `json:"name,omitempty"`
-	DependsOn     []string `json:"depends_on,omitempty"`
+	ID              string   `json:"id"`
+	Command         []string `json:"command"`
+	Executor        string   `json:"executor,omitempty"`
+	ExecutorOptions []string `json:"executor_options,omitempty"`
+	Name            string   `json:"name,omitempty"`
+	DependsOn       []string `json:"depends_on,omitempty"`
 }
 
 type JobResult struct {
@@ -68,6 +76,7 @@ type JobResult struct {
 
 type RunSummary struct {
 	RunID      string      `json:"run_id"`
+	RunName    string      `json:"run_name,omitempty"`
 	Status     string      `json:"status"`
 	StartedAt  string      `json:"started_at"`
 	FinishedAt string      `json:"finished_at"`
@@ -75,11 +84,22 @@ type RunSummary struct {
 	Results    []JobResult `json:"results"`
 }
 
+type RunContext struct {
+	CWD string `json:"cwd"`
+}
+
 func runStatus(exitCode int) string {
 	if exitCode == 0 {
 		return "finished"
 	}
 	return "failed"
+}
+
+func formatRunLabel(runID, runName string) string {
+	if runName == "" {
+		return runID
+	}
+	return fmt.Sprintf("%s (%s)", runName, runID)
 }
 
 func main() {
@@ -102,20 +122,32 @@ func run(args []string) int {
 		return cmdCheck(args[1:])
 	case "cancel":
 		return cmdCancel(args[1:])
-	case "clear":
-		return cmdClear(args[1:])
+	case "suspend":
+		return cmdJobSignal(args[1:], "suspend")
+	case "resume":
+		return cmdJobSignal(args[1:], "resume")
+	case "delete", "clear":
+		return cmdDelete(args[1:])
 	case "change":
 		return cmdChange(args[1:])
+	case "remove":
+		return cmdRemove(args[1:])
 	case "show":
 		return cmdShow(args[1:])
 	case "wait":
 		return cmdWait(args[1:])
 	case "run":
 		return cmdRun(args[1:])
-	case "submit":
-		return cmdSubmit(args[1:])
+	case "rerun":
+		return cmdRerun(args[1:])
+	case "add":
+		return cmdAdd(args[1:])
+	case "copy":
+		return cmdCopy(args[1:])
 	case "server":
 		return cmdServer(args[1:])
+	case "web":
+		return cmdWeb(args[1:])
 	case "completion":
 		return cmdCompletion(args[1:])
 	case "__complete":
@@ -228,31 +260,37 @@ func cmdWorkerRun(args []string) int {
 	fs := flag.NewFlagSet("__worker-run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	basedir := cliString(fs, "basedir", "")
-	backend := cliString(fs, "backend", "")
-	var sbatchOptions stringSliceFlag
-	cliValue(fs, &sbatchOptions, "sbatch-option")
+	executor := cliString(fs, "executor", "")
+	var executorOptions stringSliceFlag
+	cliValue(fs, &executorOptions, "executor-option")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to parse worker args: %v\n", err)
 		return 1
 	}
 	left := fs.Args()
-	if len(left) != 5 {
-		fmt.Fprintln(os.Stderr, "usage: fjob __worker-run [--basedir DIR] <queue_name> <run_id> <local_concurrency> <slurm_max_active> <retry>")
+	if len(left) != 7 {
+		fmt.Fprintln(os.Stderr, "usage: fjob __worker-run [--basedir DIR] <queue_name> <run_id> <run_name> <local_concurrency> <batch_max_active> <retry> <cwd>")
 		return 1
 	}
 	queueName := left[0]
 	runID := left[1]
-	localConcurrency, err := strconv.Atoi(left[2])
-	slurmMaxActive, slurmErr := strconv.Atoi(left[3])
-	retry, retryErr := strconv.Atoi(left[4])
-	if err != nil || slurmErr != nil || retryErr != nil || localConcurrency < 1 || slurmMaxActive < 1 || retry < -1 {
-		fmt.Fprintf(os.Stderr, "invalid run options: local=%s slurm=%s retry=%s\n", left[2], left[3], left[4])
+	runName := left[2]
+	localConcurrency, err := strconv.Atoi(left[3])
+	batchMaxActive, batchErr := strconv.Atoi(left[4])
+	retry, retryErr := strconv.Atoi(left[5])
+	cwd := left[6]
+	if err != nil || batchErr != nil || retryErr != nil || localConcurrency < 1 || batchMaxActive < 1 || retry < -1 {
+		fmt.Fprintf(os.Stderr, "invalid run options: local=%s batch=%s retry=%s\n", left[2], left[3], left[4])
 		return 1
 	}
 
 	paths, err := resolvePaths(*basedir, queueName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to resolve paths: %v\n", err)
+		return 1
+	}
+	if err := writeRunContext(paths, runID, cwd); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to save run context: %v\n", err)
 		return 1
 	}
 
@@ -265,7 +303,7 @@ func cmdWorkerRun(args []string) int {
 		return 1
 	}
 
-	exitCode := executeMixedRun(paths, runID, localConcurrency, slurmMaxActive, retry, *backend, sbatchOptions, nil)
+	exitCode := executeMixedRun(paths, runID, runName, localConcurrency, batchMaxActive, retry, *executor, executorOptions, nil)
 	if err := finishRun(paths, runID, exitCode); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to finalize metadata: %v\n", err)
 		return 1
@@ -308,7 +346,7 @@ func finishRun(paths pathSet, runID string, exitCode int) error {
 	return nil
 }
 
-func launchAsyncRun(paths pathSet, queueName, runID string, localConcurrency, slurmMaxActive, retry int, backend string, sbatchOptions []string) int {
+func launchAsyncRun(paths pathSet, queueName, runID, runName string, localConcurrency, batchMaxActive, retry int, executor string, executorOptions []string, cwd string) int {
 	if err := acquireLock(paths.lockFile, LockInfo{PID: os.Getpid(), RunID: runID, StartedAt: nowRFC3339()}); err != nil {
 		fmt.Fprintf(os.Stderr, "queue '%s' is running; run is not allowed: %v\n", queueName, err)
 		return 1
@@ -323,6 +361,11 @@ func launchAsyncRun(paths pathSet, queueName, runID string, localConcurrency, sl
 		fmt.Fprintf(os.Stderr, "failed to update metadata: %v\n", err)
 		return 1
 	}
+	if err := writeRunContext(paths, runID, cwd); err != nil {
+		_ = os.Remove(paths.lockFile)
+		fmt.Fprintf(os.Stderr, "failed to save run context: %v\n", err)
+		return 1
+	}
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -335,13 +378,13 @@ func launchAsyncRun(paths pathSet, queueName, runID string, localConcurrency, sl
 	if paths.baseDirExplicit {
 		childArgs = append(childArgs, "--basedir", paths.baseDir)
 	}
-	if backend != "" {
-		childArgs = append(childArgs, "--backend", backend)
+	if executor != "" {
+		childArgs = append(childArgs, "--executor", executor)
 	}
-	for _, option := range sbatchOptions {
-		childArgs = append(childArgs, "--sbatch-option", option)
+	for _, option := range executorOptions {
+		childArgs = append(childArgs, "--executor-option", option)
 	}
-	childArgs = append(childArgs, queueName, runID, strconv.Itoa(localConcurrency), strconv.Itoa(slurmMaxActive), strconv.Itoa(retry))
+	childArgs = append(childArgs, queueName, runID, runName, strconv.Itoa(localConcurrency), strconv.Itoa(batchMaxActive), strconv.Itoa(retry), cwd)
 
 	cmd := exec.Command(exe, childArgs...)
 	cmd.Stdout = os.Stdout
@@ -363,6 +406,10 @@ func launchAsyncRun(paths pathSet, queueName, runID string, localConcurrency, sl
 
 	fmt.Printf("submitted queue=%s run_id=%s pid=%d\n", queueName, runID, cmd.Process.Pid)
 	return 0
+}
+
+func writeRunContext(paths pathSet, runID, cwd string) error {
+	return writeJSON(filepath.Join(paths.runsDir, runID, "context.json"), RunContext{CWD: cwd})
 }
 
 func executeRun(paths pathSet, runID string, numParallel int) int {
@@ -396,7 +443,6 @@ func executeRun(paths pathSet, runID string, numParallel int) int {
 	sem := make(chan struct{}, numParallel)
 	results := make(chan JobResult, len(jobs))
 	var wg sync.WaitGroup
-
 	for _, job := range jobs {
 		wg.Add(1)
 		go func(j JobSpec) {
@@ -485,6 +531,9 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 	if err := os.WriteFile(filepath.Join(jobDir, "submitted_at"), []byte(nowRFC3339()+"\n"), 0o644); err != nil {
 		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
+	if jobCancellationRequested(jobDir) {
+		return recordCancelledJob(jobDir, job)
+	}
 
 	logPath := filepath.Join(jobDir, "output")
 	logf, err := os.Create(logPath)
@@ -532,6 +581,25 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 	return JobResult{ID: job.ID, Command: job.Command, ExitCode: exitCode}
 }
 
+func jobCancellationRequested(jobDir string) bool {
+	_, err := os.Stat(filepath.Join(jobDir, "cancelled"))
+	return err == nil
+}
+
+func recordCancelledJob(jobDir string, job JobSpec) JobResult {
+	message := "cancelled before start"
+	_ = os.MkdirAll(jobDir, 0o755)
+	_ = writeJSON(filepath.Join(jobDir, "command.json"), job)
+	if job.Name != "" {
+		_ = os.WriteFile(filepath.Join(jobDir, "name"), []byte(job.Name+"\n"), 0o644)
+	}
+	_ = os.WriteFile(filepath.Join(jobDir, "submitted_at"), []byte(nowRFC3339()+"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(jobDir, "output"), []byte(message+"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte("143\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(jobDir, "finished_at"), []byte(nowRFC3339()+"\n"), 0o644)
+	return JobResult{ID: job.ID, Command: job.Command, ExitCode: 143, Error: message}
+}
+
 func queueToJobs(commands []QueuedCommand) []JobSpec {
 	jobs := make([]JobSpec, 0, len(commands))
 	for _, queued := range commands {
@@ -540,7 +608,7 @@ func queueToJobs(commands []QueuedCommand) []JobSpec {
 		}
 		jobs = append(jobs, JobSpec{
 			ID: queued.ID, Command: queued.Command, Name: queued.Name,
-			Backend: queued.Backend, SbatchOptions: queued.SbatchOptions, DependsOn: queued.DependsOn,
+			Executor: queued.Executor, ExecutorOptions: queued.ExecutorOptions, DependsOn: queued.DependsOn,
 		})
 	}
 	return jobs
@@ -710,26 +778,6 @@ func acquireStateLock(lockPath string) (func(), error) {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
 	}, nil
-}
-
-func cleanupHistory(queueDir string) error {
-	entries, err := os.ReadDir(queueDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if name == "running.lock" || name == "state.lock" {
-			continue
-		}
-		if err := os.RemoveAll(filepath.Join(queueDir, name)); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func acquireLock(lockPath string, info LockInfo) error {

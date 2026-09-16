@@ -23,11 +23,73 @@ type slurmStatus struct {
 }
 
 type slurmJobMetadata struct {
-	Backend     string   `json:"backend"`
+	Executor    string   `json:"executor"`
 	JobID       string   `json:"job_id"`
 	Command     []string `json:"command"`
 	SlurmJobID  string   `json:"slurm_job_id"`
 	SubmittedAt string   `json:"submitted_at"`
+}
+
+// slurmExecutor submits jobs to Slurm via sbatch and tracks them through
+// squeue/sacct. See submitSlurmJob and waitSlurmJob for the details.
+type slurmExecutor struct{}
+
+func (slurmExecutor) Name() string { return "slurm" }
+
+func (slurmExecutor) Submit(runDir string, job JobSpec, options []string) (JobHandle, error) {
+	metadata, err := submitSlurmJob(runDir, job, options)
+	if err != nil {
+		return JobHandle{}, err
+	}
+	return JobHandle{Job: job, Native: metadata.SlurmJobID}, nil
+}
+
+func (slurmExecutor) Wait(runDir string, handle JobHandle) JobResult {
+	metadata := slurmJobMetadata{
+		Executor:   "slurm",
+		JobID:      handle.Job.ID,
+		Command:    handle.Job.Command,
+		SlurmJobID: handle.Native,
+	}
+	return waitSlurmJob(runDir, metadata)
+}
+
+func (slurmExecutor) Suspend(jobDir string) error {
+	return slurmExecutor{}.scontrol(jobDir, "suspend")
+}
+
+func (slurmExecutor) Resume(jobDir string) error {
+	return slurmExecutor{}.scontrol(jobDir, "resume")
+}
+
+func (slurmExecutor) Cancel(jobDir string) error {
+	data, err := os.ReadFile(filepath.Join(jobDir, "job.json"))
+	if err != nil {
+		return fmt.Errorf("job is not running")
+	}
+	var metadata slurmJobMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return fmt.Errorf("invalid Slurm metadata: %w", err)
+	}
+	if _, err := runSlurmCommand("scancel", metadata.SlurmJobID); err != nil {
+		return fmt.Errorf("scancel %s: %w", metadata.SlurmJobID, err)
+	}
+	return nil
+}
+
+func (slurmExecutor) scontrol(jobDir, command string) error {
+	data, err := os.ReadFile(filepath.Join(jobDir, "job.json"))
+	if err != nil {
+		return fmt.Errorf("job is not running")
+	}
+	var metadata slurmJobMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return fmt.Errorf("invalid Slurm metadata: %w", err)
+	}
+	if _, err := runSlurmCommand("scontrol", command, metadata.SlurmJobID); err != nil {
+		return fmt.Errorf("scontrol %s %s: %w", command, metadata.SlurmJobID, err)
+	}
+	return nil
 }
 
 const slurmAccountingWait = 60 * time.Second
@@ -44,7 +106,7 @@ func (flag *stringSliceFlag) Set(value string) error {
 	return nil
 }
 
-func executeSlurmRun(paths pathSet, runID string, maxActive int, sbatchOptions []string) (int, int, int) {
+func executeSlurmRun(paths pathSet, runID string, maxActive int, executorOptions []string) (int, int, int) {
 	if maxActive < 1 {
 		fmt.Fprintln(os.Stderr, "slurm max active must be >= 1")
 		return 1, 0, 0
@@ -79,12 +141,12 @@ func executeSlurmRun(paths pathSet, runID string, maxActive int, sbatchOptions [
 		batch := jobs[start:end]
 		batchMetadata := make([]slurmJobMetadata, 0, len(batch))
 		for _, job := range batch {
-			jobOptions := sbatchOptions
+			jobOptions := executorOptions
 			if len(jobOptions) == 0 {
-				jobOptions = job.SbatchOptions
+				jobOptions = job.ExecutorOptions
 			}
 			if len(jobOptions) == 0 {
-				jobOptions = queue.DefaultSbatchOptions
+				jobOptions = queue.DefaultExecutorOptions
 			}
 			jobMetadata, err := submitSlurmJob(runDir, job, jobOptions)
 			if err != nil {
@@ -193,13 +255,13 @@ func finishSlurmRun(paths pathSet, runID string, meta Meta, exitCode int) error 
 	return nil
 }
 
-func runSlurmServerSync(baseDir, queueName string, maxActive int, sbatchOptions []string) (string, int, error) {
+func runSlurmServerSync(baseDir, queueName string, maxActive int, executorOptions []string) (string, int, error) {
 	paths, runID, meta, release, err := prepareSlurmRun(baseDir, queueName)
 	if err != nil {
 		return "", 1, err
 	}
 	release()
-	exitCode, successCount, failedCount := executeSlurmRun(paths, runID, maxActive, sbatchOptions)
+	exitCode, successCount, failedCount := executeSlurmRun(paths, runID, maxActive, executorOptions)
 	if err := finishSlurmRun(paths, runID, meta, exitCode); err != nil {
 		return "", 1, err
 	}
@@ -214,14 +276,14 @@ func runSlurmServerSync(baseDir, queueName string, maxActive int, sbatchOptions 
 	return message, exitCode, nil
 }
 
-func startSlurmServerRun(baseDir, queueName string, maxActive int, sbatchOptions []string, onDone func()) (string, error) {
+func startSlurmServerRun(baseDir, queueName string, maxActive int, executorOptions []string, onDone func()) (string, error) {
 	paths, runID, meta, release, err := prepareSlurmRun(baseDir, queueName)
 	if err != nil {
 		return "", err
 	}
 	release()
 	go func() {
-		exitCode, _, _ := executeSlurmRun(paths, runID, maxActive, sbatchOptions)
+		exitCode, _, _ := executeSlurmRun(paths, runID, maxActive, executorOptions)
 		_ = finishSlurmRun(paths, runID, meta, exitCode)
 		if onDone != nil {
 			onDone()
@@ -232,7 +294,7 @@ func startSlurmServerRun(baseDir, queueName string, maxActive int, sbatchOptions
 		queueName, runID, runDir, paths.baseDir, queueName, runID, paths.baseDir, queueName), nil
 }
 
-func submitSlurmJob(runDir string, job JobSpec, sbatchOptions []string) (slurmJobMetadata, error) {
+func submitSlurmJob(runDir string, job JobSpec, executorOptions []string) (slurmJobMetadata, error) {
 	jobDir := filepath.Join(runDir, job.ID)
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		return slurmJobMetadata{}, err
@@ -241,7 +303,7 @@ func submitSlurmJob(runDir string, job JobSpec, sbatchOptions []string) (slurmJo
 		return slurmJobMetadata{}, err
 	}
 	wrapperPath := filepath.Join(jobDir, "slurm-wrapper.sh")
-	if err := os.WriteFile(wrapperPath, []byte(slurmWrapper(job.Command, jobDir)), 0o755); err != nil {
+	if err := os.WriteFile(wrapperPath, []byte(statusWrapperScript(job.Command, jobDir)), 0o755); err != nil {
 		return slurmJobMetadata{}, err
 	}
 	outputPath := filepath.Join(jobDir, "output")
@@ -252,7 +314,7 @@ func submitSlurmJob(runDir string, job JobSpec, sbatchOptions []string) (slurmJo
 	showCommand := fmt.Sprintf("fjob show --basedir %s --queue-name %s --run-id %s --job-id %s",
 		shellQuote(baseDir), shellQuote(queueName), shellQuote(runID), shellQuote(job.ID))
 	args := []string{"--parsable", "--job-name=" + showCommand, "--output=" + outputPath, "--error=" + outputPath}
-	expandedOptions, err := expandSbatchOptions(sbatchOptions)
+	expandedOptions, err := expandShellOptions(executorOptions)
 	if err != nil {
 		return slurmJobMetadata{}, err
 	}
@@ -267,7 +329,7 @@ func submitSlurmJob(runDir string, job JobSpec, sbatchOptions []string) (slurmJo
 		return slurmJobMetadata{}, errors.New("sbatch returned an empty job id")
 	}
 	metadata := slurmJobMetadata{
-		Backend: "slurm", JobID: job.ID, Command: job.Command,
+		Executor: "slurm", JobID: job.ID, Command: job.Command,
 		SlurmJobID: slurmJobID, SubmittedAt: nowRFC3339(),
 	}
 	if err := writeJSON(filepath.Join(jobDir, "job.json"), metadata); err != nil {
@@ -277,7 +339,10 @@ func submitSlurmJob(runDir string, job JobSpec, sbatchOptions []string) (slurmJo
 	return metadata, nil
 }
 
-func slurmWrapper(command []string, jobDir string) string {
+// statusWrapperScript wraps command in a shell script that records phase and
+// exit code to status.json, so any poll-based executor (Slurm, PBS, ...) can
+// determine the final result even if the scheduler's own accounting lags.
+func statusWrapperScript(command []string, jobDir string) string {
 	statusPath := filepath.Join(jobDir, "status.json")
 	quoted := make([]string, 0, len(command))
 	for _, arg := range command {
@@ -314,12 +379,14 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
-func expandSbatchOptions(options []string) ([]string, error) {
+// expandShellOptions splits shell-quoted option strings (e.g. "-p short --cpus-per-task=2")
+// into individual CLI arguments. Shared by any executor that accepts free-form option strings.
+func expandShellOptions(options []string) ([]string, error) {
 	expanded := make([]string, 0, len(options))
 	for _, option := range options {
 		words, err := splitShellWords(option)
 		if err != nil {
-			return nil, fmt.Errorf("invalid sbatch option %q: %w", option, err)
+			return nil, fmt.Errorf("invalid executor option %q: %w", option, err)
 		}
 		expanded = append(expanded, words...)
 	}
@@ -400,7 +467,7 @@ func splitShellWords(input string) ([]string, error) {
 func waitSlurmJob(runDir string, job slurmJobMetadata) JobResult {
 	jobDir := filepath.Join(runDir, job.JobID)
 	statusPath := filepath.Join(jobDir, "status.json")
-	deadline := time.Now().Add(slurmAccountingWait)
+	var accountingDeadline time.Time
 	for {
 		if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
 			return JobResult{ID: job.JobID, Command: job.Command, ExitCode: status.ExitCode, Error: status.Error}
@@ -410,11 +477,18 @@ func waitSlurmJob(runDir string, job slurmJobMetadata) JobResult {
 			return JobResult{ID: job.JobID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 		}
 		if !active {
+			_, _ = os.ReadDir(jobDir)
+			if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
+				return JobResult{ID: job.JobID, Command: job.Command, ExitCode: status.ExitCode, Error: status.Error}
+			}
+			if accountingDeadline.IsZero() {
+				accountingDeadline = time.Now().Add(slurmAccountingWait)
+			}
 			if exitCode, state, ok := slurmAccounting(job.SlurmJobID); ok {
 				_ = writeJSON(statusPath, slurmStatus{Phase: state, ExitCode: exitCode, FinishedAt: nowRFC3339()})
 				return JobResult{ID: job.JobID, Command: job.Command, ExitCode: exitCode, Error: state}
 			}
-			if time.Now().After(deadline) {
+			if time.Now().After(accountingDeadline) {
 				return JobResult{ID: job.JobID, Command: job.Command, ExitCode: 1, Error: "Slurm accounting result and wrapper status are unavailable"}
 			}
 		}

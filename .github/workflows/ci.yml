@@ -28,7 +28,6 @@ jobs:
 
       - name: Check formatting
         run: |
-          export PATH="/home/kamo/work/go/bin:$PATH"
           test -z "$(gofmt -l .)"
 
       - name: Run vet

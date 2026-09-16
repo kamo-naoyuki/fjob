@@ -97,11 +97,11 @@ func formatRunCompletion(paths pathSet, runID string, summary RunSummary) string
 	}
 	message := fmt.Sprintf("%s\n  Queue: %s\n  Run: %s\n  Status: %s\n  Exit code: %d\n  Success: %d\n  Failed: %d\n  Directory: %s\n",
 		title,
-		paths.queueName, runID, summary.Status, summary.ExitCode, successCount, failedCount, runDir)
+		paths.queueName, formatRunLabel(runID, summary.RunName), summary.Status, summary.ExitCode, successCount, failedCount, runDir)
 	if failedCount > 0 {
 		message += fmt.Sprintf("\nInspect run:\n  fjob show --basedir %s --queue-name %s --run-id %s\n\nSee failed job output below.\n\nFailed job output:\n%s",
 			paths.baseDir, paths.queueName, runID, failedJobHints(paths, runID, summary.Results))
-		message += fmt.Sprintf("\nRerun failed jobs:\n  fjob run --basedir %s --queue-name %s --failed\n", paths.baseDir, paths.queueName)
+		message += fmt.Sprintf("\nRerun failed jobs:\n  fjob rerun --basedir %s --queue-name %s --failed\n", paths.baseDir, paths.queueName)
 	}
 	return message
 }

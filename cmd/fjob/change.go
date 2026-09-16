@@ -17,10 +17,10 @@ func cmdChange(args []string) int {
 	runID := cliString(fs, "run-id", "")
 	jobID := cliString(fs, "job-id", "")
 	jobName := cliString(fs, "job-name", "")
-	backend := cliString(fs, "backend", "")
-	var sbatchOptions stringSliceFlag
-	cliValue(fs, &sbatchOptions, "sbatch-option")
-	clearSbatchOptions := cliBool(fs, "clear-sbatch-options", false)
+	executor := cliString(fs, "executor", "")
+	var executorOptions stringSliceFlag
+	cliValue(fs, &executorOptions, "executor-option")
+	clearExecutorOptions := cliBool(fs, "clear-executor-options", false)
 	setJobName := cliString(fs, "set-job-name", "")
 	var dependsOn stringSliceFlag
 	cliValue(fs, &dependsOn, "depends-on")
@@ -29,9 +29,9 @@ func cmdChange(args []string) int {
 		return 1
 	}
 	if (*jobID == "" && *jobName == "") || (*jobID != "" && *jobName != "") ||
-		(len(fs.Args()) == 0 && *backend == "" && len(sbatchOptions) == 0 && !*clearSbatchOptions &&
+		(len(fs.Args()) == 0 && *executor == "" && len(executorOptions) == 0 && !*clearExecutorOptions &&
 			*setJobName == "" && len(dependsOn) == 0 && !*clearDependsOn) ||
-		(*backend != "" && *backend != "local" && *backend != "slurm") {
+		(*executor != "" && !isKnownExecutor(*executor)) {
 		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("change"))
 		return 1
 	}
@@ -46,8 +46,8 @@ func cmdChange(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	message, err := changeBatch(baseDir, queueName, *runID, *jobID, *jobName, *backend,
-		sbatchOptions, *clearSbatchOptions, *setJobName, dependsOn, *clearDependsOn, fs.Args())
+	message, err := changeBatch(baseDir, queueName, *runID, *jobID, *jobName, *executor,
+		executorOptions, *clearExecutorOptions, *setJobName, dependsOn, *clearDependsOn, fs.Args())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -56,8 +56,8 @@ func cmdChange(args []string) int {
 	return 0
 }
 
-func changeBatch(baseDir, queueName, requestedRunID, requestedJobID, requestedJobName, backend string,
-	sbatchOptions []string, clearSbatchOptions bool, setJobName string, dependsOn []string,
+func changeBatch(baseDir, queueName, requestedRunID, requestedJobID, requestedJobName, executor string,
+	executorOptions []string, clearExecutorOptions bool, setJobName string, dependsOn []string,
 	clearDependsOn bool, command []string) (string, error) {
 	paths, err := resolvePaths(baseDir, queueName)
 	if err != nil {
@@ -102,13 +102,13 @@ func changeBatch(baseDir, queueName, requestedRunID, requestedJobID, requestedJo
 		return "", fmt.Errorf("job not found")
 	}
 	changed := &queue.Commands[jobIndex]
-	if backend != "" {
-		changed.Backend = backend
+	if executor != "" {
+		changed.Executor = executor
 	}
-	if len(sbatchOptions) > 0 || clearSbatchOptions {
-		changed.SbatchOptions = append([]string(nil), sbatchOptions...)
+	if len(executorOptions) > 0 || clearExecutorOptions {
+		changed.ExecutorOptions = append([]string(nil), executorOptions...)
 	}
-	if setJobName != "" {
+	if setJobName != "" && setJobName != changed.Name {
 		for index, job := range queueToJobs(queue.Commands) {
 			if index != jobIndex && job.Name == setJobName {
 				return "", fmt.Errorf("job name %q is already in use", setJobName)

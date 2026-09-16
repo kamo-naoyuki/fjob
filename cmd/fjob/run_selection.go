@@ -6,11 +6,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 )
 
 var errNoPreviousRun = errors.New("no previous run")
 
-func prepareRunSelection(baseDir, queueName, selection string) (int, error) {
+func prepareRerunSelection(baseDir, queueName, selection string, jobIDs []string) (int, error) {
+	return prepareRunSelection(baseDir, queueName, selection, jobIDs)
+}
+
+func prepareRunSelection(baseDir, queueName, selection string, jobIDs []string) (int, error) {
 	paths, err := resolvePaths(baseDir, queueName)
 	if err != nil {
 		return 0, err
@@ -63,6 +69,10 @@ func prepareRunSelection(baseDir, queueName, selection string) (int, error) {
 	}
 	selected := make([]QueuedCommand, 0)
 	selectedNames := make(map[string]bool)
+	requestedJobIDs := make(map[string]bool, len(jobIDs))
+	for _, jobID := range jobIDs {
+		requestedJobIDs[jobID] = true
+	}
 	for _, job := range queueToJobs(snapshot.Commands) {
 		exitCode, finished := results[job.ID]
 		include := false
@@ -75,15 +85,26 @@ func prepareRunSelection(baseDir, queueName, selection string) (int, error) {
 			include = !finished
 		case "nonsuccess":
 			include = !finished || exitCode != 0
+		case "job-id":
+			include = requestedJobIDs[job.ID]
+			delete(requestedJobIDs, job.ID)
 		default:
 			return 0, fmt.Errorf("unknown run selection: %s", selection)
 		}
 		if include {
 			selectedNames[job.Name] = true
 			selected = append(selected, QueuedCommand{
-				ID: job.ID, Command: job.Command, Backend: job.Backend, SbatchOptions: job.SbatchOptions, Name: job.Name, DependsOn: job.DependsOn,
+				ID: job.ID, Command: job.Command, Executor: job.Executor, ExecutorOptions: job.ExecutorOptions, Name: job.Name, DependsOn: job.DependsOn,
 			})
 		}
+	}
+	if len(requestedJobIDs) > 0 {
+		missing := make([]string, 0, len(requestedJobIDs))
+		for jobID := range requestedJobIDs {
+			missing = append(missing, jobID)
+		}
+		sort.Strings(missing)
+		return 0, fmt.Errorf("job IDs not found in selected batch: %s", strings.Join(missing, ", "))
 	}
 	if len(selected) == 0 {
 		return 0, fmt.Errorf("last run has no jobs matching --%s", selection)
@@ -103,6 +124,10 @@ func prepareRunSelection(baseDir, queueName, selection string) (int, error) {
 	if err := writeJSON(paths.queueFile, snapshot); err != nil {
 		return 0, fmt.Errorf("failed to prepare selected jobs: %w", err)
 	}
-	fmt.Printf("selected jobs=%d/%d queue=%s filter=--%s run=%s\n", selectedCount, totalJobs, queueName, selection, meta.LastRunID)
+	filter := "--" + selection
+	if selection == "job-id" {
+		filter = "--job-id"
+	}
+	fmt.Printf("selected jobs=%d/%d queue=%s filter=%s run=%s\n", selectedCount, totalJobs, queueName, filter, meta.LastRunID)
 	return len(selected), nil
 }

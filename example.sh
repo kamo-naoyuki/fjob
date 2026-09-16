@@ -6,7 +6,7 @@ PATH="${script_dir}:${PATH}"
 export PATH
 export FJOB_BASEDIR=${FJOB_BASEDIR:-"${script_dir}/.fjob-state"}
 export FJOB_QUEUE_NAME=${FJOB_QUEUE_NAME:-${1:-demo}}
-slurm_options=${FJOB_SLURM_OPTIONS:-}
+executor_options=${FJOB_EXECUTOR_OPTIONS:-}
 async=${FJOB_ASYNC:-false}
 
 if ! command -v fjob >/dev/null 2>&1; then
@@ -17,17 +17,17 @@ fi
 
 fjob check
 
-# Mix local and Slurm jobs in one queue. Slurm options are attached per job.
+# Mix local and Slurm jobs in one queue. Executor options are attached per job.
 # The two jobs after prepare can run in parallel with each other.
-fjob submit --job-name prepare sh -c 'sleep 1; echo preparation job'
-fjob submit --job-name slurm-job --depends-on prepare \
-    --backend slurm --sbatch-option "${slurm_options} --cpus-per-task=2" \
+fjob add --job-name prepare sh -c 'sleep 1; echo preparation job'
+fjob add --job-name slurm-job --depends-on prepare \
+    --executor slurm --executor-option "${executor_options} --cpus-per-task=2" \
     sh -c 'sleep 2; echo Slurm job'
-fjob submit --job-name failing-job --depends-on prepare \
+fjob add --job-name failing-job --depends-on prepare \
     sh -c 'echo failing local job; exit 1'
 
-# Run with separate local and Slurm concurrency limits.
-run_args=(--local-concurrency 2 --slurm-max-active 2 --retry 1)
+# Run with separate local and batch- executor concurrency limits.
+run_args=(--local-concurrency 2 --batch-concurrency 2 --retry 1)
 if [[ "${async}" == true ]]; then
     run_args+=(--async)
 elif [[ "${async}" != false ]]; then

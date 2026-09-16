@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActive, retry int, requestedBackend string, sbatchOptions []string, progress func(JobResult, int, int, int, int)) int {
+func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, batchMaxActive, retry int, requestedExecutor string, executorOptions []string, progress func(JobResult, int, int, int, int)) int {
 	queue, err := loadQueue(paths.queueFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load queue: %v\n", err)
@@ -82,7 +82,7 @@ func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActi
 			if len(ready) == 0 {
 				break
 			}
-			waveResults := executeMixedAttempt(runDir, queue, ready, localConcurrency, slurmMaxActive, requestedBackend, sbatchOptions)
+			waveResults := executeMixedAttempt(runDir, queue, ready, localConcurrency, batchMaxActive, requestedExecutor, executorOptions)
 			for _, result := range waveResults {
 				finalResults[result.ID] = result
 			}
@@ -120,7 +120,7 @@ func executeMixedRun(paths pathSet, runID string, localConcurrency, slurmMaxActi
 		}
 	}
 
-	summary := RunSummary{RunID: runID, Status: "finished", StartedAt: nowRFC3339(), FinishedAt: nowRFC3339(), Results: make([]JobResult, 0, len(jobs))}
+	summary := RunSummary{RunID: runID, RunName: runName, Status: "finished", StartedAt: nowRFC3339(), FinishedAt: nowRFC3339(), Results: make([]JobResult, 0, len(jobs))}
 	for _, job := range jobs {
 		result := finalResults[job.ID]
 		summary.Results = append(summary.Results, result)
@@ -154,78 +154,40 @@ func removeFinishedJobs(jobs []JobSpec, results map[string]JobResult) []JobSpec 
 	return remaining
 }
 
-func executeMixedAttempt(runDir string, queue Queue, jobs []JobSpec, localConcurrency, slurmMaxActive int, requestedBackend string, sbatchOptions []string) []JobResult {
-	defaultBackend := requestedBackend
-	if defaultBackend == "" {
-		defaultBackend = queue.DefaultBackend
+func executeMixedAttempt(runDir string, queue Queue, jobs []JobSpec, localConcurrency, batchMaxActive int, requestedExecutor string, executorOptions []string) []JobResult {
+	defaultExecutor := requestedExecutor
+	if defaultExecutor == "" {
+		defaultExecutor = queue.DefaultExecutor
 	}
-	if defaultBackend == "" {
-		defaultBackend = "local"
+	if defaultExecutor == "" {
+		defaultExecutor = "local"
 	}
-	localJobs := make([]JobSpec, 0)
-	slurmJobs := make([]JobSpec, 0)
+	grouped := make(map[string][]JobSpec)
 	for _, job := range jobs {
-		jobBackend := job.Backend
-		if jobBackend == "" {
-			jobBackend = defaultBackend
+		jobExecutor := job.Executor
+		if jobExecutor == "" {
+			jobExecutor = defaultExecutor
 		}
-		if jobBackend == "slurm" {
-			slurmJobs = append(slurmJobs, job)
-		} else {
-			localJobs = append(localJobs, job)
-		}
+		grouped[jobExecutor] = append(grouped[jobExecutor], job)
 	}
 
 	results := make(chan JobResult, len(jobs))
 	var workers sync.WaitGroup
-	workers.Add(2)
-	go func() {
-		defer workers.Done()
-		sem := make(chan struct{}, localConcurrency)
-		var jobsWait sync.WaitGroup
-		for _, job := range localJobs {
-			jobsWait.Add(1)
-			go func(job JobSpec) {
-				defer jobsWait.Done()
-				sem <- struct{}{}
-				results <- runOneJob(runDir, job)
-				<-sem
-			}(job)
+	for executorName, executorJobs := range grouped {
+		executor, ok := lookupExecutor(executorName)
+		if !ok {
+			for _, job := range executorJobs {
+				results <- JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: fmt.Sprintf("unsupported executor: %s", executorName)}
+			}
+			continue
 		}
-		jobsWait.Wait()
-	}()
-	go func() {
-		defer workers.Done()
-		for start := 0; start < len(slurmJobs); start += slurmMaxActive {
-			end := start + slurmMaxActive
-			if end > len(slurmJobs) {
-				end = len(slurmJobs)
-			}
-			metadata := make([]slurmJobMetadata, 0, end-start)
-			for _, job := range slurmJobs[start:end] {
-				options := job.SbatchOptions
-				if len(options) == 0 {
-					options = sbatchOptions
-				}
-				if len(options) == 0 {
-					options = queue.DefaultSbatchOptions
-				}
-				submitted, err := submitSlurmJob(runDir, job, options)
-				if err != nil {
-					results <- JobResult{ID: job.ID, ExitCode: 1, Error: err.Error()}
-					continue
-				}
-				metadata = append(metadata, submitted)
-			}
-			for _, job := range metadata {
-				result := waitSlurmJob(runDir, job)
-				if result.ExitCode != 0 {
-					fmt.Printf("%s\n", red(fmt.Sprintf("fail job=%s exit=%d command=%s", result.ID, result.ExitCode, strings.Join(result.Command, " "))))
-				}
-				results <- result
-			}
+		workers.Add(1)
+		if executorName == "local" {
+			go runLocalLane(&workers, runDir, executor, executorJobs, localConcurrency, results)
+		} else {
+			go runBatchLane(&workers, runDir, queue, executor, executorJobs, batchMaxActive, executorOptions, results)
 		}
-	}()
+	}
 	workers.Wait()
 	close(results)
 	collected := make([]JobResult, 0, len(jobs))
@@ -233,6 +195,69 @@ func executeMixedAttempt(runDir string, queue Queue, jobs []JobSpec, localConcur
 		collected = append(collected, result)
 	}
 	return collected
+}
+
+// runLocalLane runs jobs concurrently up to concurrency, used for the local
+// executor where jobs are cheap OS subprocesses rather than scheduler batches.
+func runLocalLane(workers *sync.WaitGroup, runDir string, executor JobExecutor, jobs []JobSpec, concurrency int, results chan<- JobResult) {
+	defer workers.Done()
+	sem := make(chan struct{}, concurrency)
+	var jobsWait sync.WaitGroup
+	for _, job := range jobs {
+		jobsWait.Add(1)
+		go func(job JobSpec) {
+			defer jobsWait.Done()
+			sem <- struct{}{}
+			handle, err := executor.Submit(runDir, job, nil)
+			if err != nil {
+				results <- JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
+			} else {
+				results <- executor.Wait(runDir, handle)
+			}
+			<-sem
+		}(job)
+	}
+	jobsWait.Wait()
+}
+
+// runBatchLane submits jobs to a scheduler-style executor (Slurm, PBS, ...) in
+// waves of at most maxActive concurrently-tracked jobs.
+func runBatchLane(workers *sync.WaitGroup, runDir string, queue Queue, executor JobExecutor, jobs []JobSpec, maxActive int, executorOptions []string, results chan<- JobResult) {
+	defer workers.Done()
+	for start := 0; start < len(jobs); start += maxActive {
+		end := start + maxActive
+		if end > len(jobs) {
+			end = len(jobs)
+		}
+		handles := make([]JobHandle, 0, end-start)
+		for _, job := range jobs[start:end] {
+			jobDir := filepath.Join(runDir, job.ID)
+			if jobCancellationRequested(jobDir) {
+				results <- recordCancelledJob(jobDir, job)
+				continue
+			}
+			options := job.ExecutorOptions
+			if len(options) == 0 {
+				options = executorOptions
+			}
+			if len(options) == 0 {
+				options = queue.DefaultExecutorOptions
+			}
+			handle, err := executor.Submit(runDir, job, options)
+			if err != nil {
+				results <- JobResult{ID: job.ID, ExitCode: 1, Error: err.Error()}
+				continue
+			}
+			handles = append(handles, handle)
+		}
+		for _, handle := range handles {
+			result := executor.Wait(runDir, handle)
+			if result.ExitCode != 0 {
+				fmt.Printf("%s\n", red(fmt.Sprintf("fail job=%s exit=%d command=%s", result.ID, result.ExitCode, strings.Join(result.Command, " "))))
+			}
+			results <- result
+		}
+	}
 }
 
 func summarizeResults(results map[string]JobResult) (int, int, int) {

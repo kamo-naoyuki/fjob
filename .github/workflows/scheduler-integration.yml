@@ -1,0 +1,101 @@
+name: Scheduler integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      executor:
+        description: Scheduler executor to test
+        required: true
+        type: choice
+        options:
+          - slurm
+          - pbs
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Start scheduler
+        shell: bash
+        run: |
+          set -euo pipefail
+          container="fjob-${{ inputs.executor }}"
+          state_dir="${RUNNER_TEMP}/fjob-scheduler-${{ inputs.executor }}"
+          rm -rf "$state_dir"
+          mkdir -p "$state_dir"
+          chmod 0777 "$state_dir"
+
+          if [[ "${{ inputs.executor }}" == slurm ]]; then
+            docker run --detach --name "$container" --hostname slurmctl \
+              --interactive --tty \
+              --cap-add SYS_ADMIN \
+              --volume "$GITHUB_WORKSPACE:/workspace" \
+              --volume "$state_dir:/state" \
+              giovtorres/docker-centos7-slurm:latest
+            scheduler_user=root
+          else
+            docker run --detach --name "$container" \
+              --cap-add SYS_RESOURCE \
+              --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+              --volume "$state_dir:/state" \
+              naoso5/test-openpbs:latest
+            scheduler_user=testuser
+          fi
+
+          echo "SCHEDULER_CONTAINER=$container" >> "$GITHUB_ENV"
+          echo "SCHEDULER_USER=$scheduler_user" >> "$GITHUB_ENV"
+
+      - name: Wait for scheduler
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..60}; do
+            if [[ "${{ inputs.executor }}" == slurm ]]; then
+              if docker exec "$SCHEDULER_CONTAINER" sinfo >/dev/null 2>&1; then
+                exit 0
+              fi
+            elif docker inspect --format='{{.State.Health.Status}}' "$SCHEDULER_CONTAINER" 2>/dev/null | grep -qx healthy && \
+              docker exec --user "$SCHEDULER_USER" "$SCHEDULER_CONTAINER" qstat -Bf >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs "$SCHEDULER_CONTAINER"
+          exit 1
+
+      - name: Run unit tests
+        run: go test ./...
+
+      - name: Build fjob
+        run: go build -o fjob ./cmd/fjob
+
+      - name: Run scheduler smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          fjob=(docker exec --user "$SCHEDULER_USER" "$SCHEDULER_CONTAINER" /workspace/fjob)
+          "${fjob[@]}" add --basedir /state --queue-name integration \
+            --executor "${{ inputs.executor }}" \
+            --job-name smoke \
+            -- sh -c 'printf "fjob scheduler integration\\n"'
+          "${fjob[@]}" run --basedir /state --queue-name integration \
+            --batch-concurrency 1
+          run_id="$(docker exec --user "$SCHEDULER_USER" "$SCHEDULER_CONTAINER" find /state/queues/integration/runs -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' | sort | tail -1)"
+          "${fjob[@]}" show --basedir /state --queue-name integration --run-id "$run_id" --logs
+
+      - name: Stop scheduler
+        if: always()
+        shell: bash
+        run: docker rm --force "$SCHEDULER_CONTAINER" 2>/dev/null || true

@@ -20,8 +20,7 @@ repos:
 
       - id: gofmt-check
         name: gofmt check
-        entry: >
-          bash -c 'export PATH="/home/kamo/work/go/bin:$PATH"; test -z "$(gofmt -l .)"'
+        entry: bash -c 'test -z "$(gofmt -l .)"'
         language: system
         pass_filenames: false
 

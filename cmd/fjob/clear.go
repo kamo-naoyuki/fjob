@@ -5,18 +5,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
-func cmdClear(args []string) int {
-	fs := flag.NewFlagSet("clear", flag.ContinueOnError)
+func cmdDelete(args []string) int {
+	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	basedir := cliString(fs, "basedir", "")
 	queueNameOption := cliString(fs, "queue-name", "")
+	runIDOption := cliString(fs, "run-id", "")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 	if len(fs.Args()) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("clear"))
+		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("delete"))
 		return 1
 	}
 
@@ -55,23 +57,109 @@ func cmdClear(args []string) int {
 		return 1
 	}
 
-	if err := os.RemoveAll(paths.runsDir); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to clear run history: %v\n", err)
-		return 1
+	if *runIDOption == "" {
+		if err := os.RemoveAll(paths.runsDir); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to clear run history: %v\n", err)
+			return 1
+		}
+	} else {
+		if filepath.Base(*runIDOption) != *runIDOption || *runIDOption == "." || *runIDOption == ".." {
+			fmt.Fprintf(os.Stderr, "run %q not found\n", *runIDOption)
+			return 1
+		}
+		runDir := filepath.Join(paths.runsDir, *runIDOption)
+		info, err := os.Stat(runDir)
+		if err != nil || !info.IsDir() {
+			fmt.Fprintf(os.Stderr, "run %q not found\n", *runIDOption)
+			return 1
+		}
+		if err := os.RemoveAll(runDir); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to clear run %q: %v\n", *runIDOption, err)
+			return 1
+		}
 	}
 	meta, err := loadMeta(paths.metaFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load metadata: %v\n", err)
 		return 1
 	}
-	meta.LastRunID = ""
-	meta.LastRunExitCode = 0
+	if *runIDOption == "" || meta.LastRunID == *runIDOption {
+		meta.LastRunID = latestRunID(paths.runsDir)
+		if meta.LastRunID == "" {
+			meta.LastRunExitCode = 0
+		}
+	}
 	meta.Phase = "collecting"
 	meta.UpdatedAt = nowRFC3339()
 	if err := writeJSON(paths.metaFile, meta); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to update metadata: %v\n", err)
 		return 1
 	}
-	fmt.Printf("%s\n", green(fmt.Sprintf("cleared logs queue=%s directory=%s", queueName, filepath.Join(paths.queueDir, "runs"))))
+	if *runIDOption == "" {
+		fmt.Printf("%s\n", green(fmt.Sprintf("cleared logs queue=%s directory=%s", queueName, filepath.Join(paths.queueDir, "runs"))))
+	} else {
+		fmt.Printf("%s\n", green(fmt.Sprintf("cleared logs queue=%s run=%s", queueName, *runIDOption)))
+	}
 	return 0
+}
+
+func latestRunID(runsDir string) string {
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		return ""
+	}
+	latestID := ""
+	var latestTime time.Time
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || (latestID != "" && !info.ModTime().After(latestTime)) {
+			continue
+		}
+		latestID = entry.Name()
+		latestTime = info.ModTime()
+	}
+	return latestID
+}
+
+func clearRunHistory(baseDir, queueName, runID string) error {
+	paths, err := resolvePaths(baseDir, queueName)
+	if err != nil {
+		return err
+	}
+	release, err := acquireStateLock(paths.stateLockFile)
+	if err != nil {
+		return fmt.Errorf("failed to lock queue: %w", err)
+	}
+	defer release()
+	running, err := isRunning(paths.lockFile)
+	if err != nil {
+		return err
+	}
+	if running {
+		return fmt.Errorf("queue %q is running; clear is not allowed", queueName)
+	}
+	if filepath.Base(runID) != runID || runID == "." || runID == ".." {
+		return fmt.Errorf("run %q not found", runID)
+	}
+	runDir := filepath.Join(paths.runsDir, runID)
+	info, err := os.Stat(runDir)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("run %q not found", runID)
+	}
+	if err := os.RemoveAll(runDir); err != nil {
+		return fmt.Errorf("failed to clear run %q: %w", runID, err)
+	}
+	meta, err := loadMeta(paths.metaFile)
+	if err != nil {
+		return err
+	}
+	if meta.LastRunID == runID {
+		meta.LastRunID = latestRunID(paths.runsDir)
+	}
+	meta.Phase = "collecting"
+	meta.UpdatedAt = nowRFC3339()
+	return writeJSON(paths.metaFile, meta)
 }
