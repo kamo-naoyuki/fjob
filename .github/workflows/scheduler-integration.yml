@@ -1,6 +1,10 @@
 name: Scheduler integration
 
 on:
+  push:
+    paths:
+      - "**"
+      - ".github/workflows/scheduler-integration.yml"
   workflow_dispatch:
     inputs:
       executor:
@@ -16,7 +20,11 @@ permissions:
 
 jobs:
   integration:
+    name: ${{ matrix.executor }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        executor: ${{ fromJSON(inputs.executor && format('["{0}"]', inputs.executor) || '["slurm", "pbs"]') }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -31,13 +39,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          container="fjob-${{ inputs.executor }}"
-          state_dir="${RUNNER_TEMP}/fjob-scheduler-${{ inputs.executor }}"
+          container="fjob-${{ matrix.executor }}"
+          state_dir="${RUNNER_TEMP}/fjob-scheduler-${{ matrix.executor }}"
           rm -rf "$state_dir"
           mkdir -p "$state_dir"
           chmod 0777 "$state_dir"
 
-          if [[ "${{ inputs.executor }}" == slurm ]]; then
+          if [[ "${{ matrix.executor }}" == slurm ]]; then
             docker run --detach --name "$container" --hostname slurmctl \
               --interactive --tty \
               --cap-add SYS_ADMIN \
@@ -62,7 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in {1..60}; do
-            if [[ "${{ inputs.executor }}" == slurm ]]; then
+            if [[ "${{ matrix.executor }}" == slurm ]]; then
               if docker exec "$SCHEDULER_CONTAINER" sinfo >/dev/null 2>&1; then
                 exit 0
               fi
@@ -79,7 +87,7 @@ jobs:
         run: go test ./...
 
       - name: Build fjob
-        run: go build -o fjob ./cmd/fjob
+        run: CGO_ENABLED=0 go build -o fjob ./cmd/fjob
 
       - name: Run scheduler smoke test
         shell: bash
@@ -87,7 +95,7 @@ jobs:
           set -euo pipefail
           fjob=(docker exec --user "$SCHEDULER_USER" "$SCHEDULER_CONTAINER" /workspace/fjob)
           "${fjob[@]}" add --basedir /state --queue-name integration \
-            --executor "${{ inputs.executor }}" \
+            --executor "${{ matrix.executor }}" \
             --job-name smoke \
             -- sh -c 'printf "fjob scheduler integration\\n"'
           "${fjob[@]}" run --basedir /state --queue-name integration \
