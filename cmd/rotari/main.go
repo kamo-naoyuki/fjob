@@ -56,6 +56,7 @@ type LockInfo struct {
 	PID       int    `json:"pid"`
 	RunID     string `json:"run_id"`
 	StartedAt string `json:"started_at"`
+	Host      string `json:"host,omitempty"`
 }
 
 type JobSpec struct {
@@ -137,6 +138,8 @@ func run(args []string) int {
 		return cmdJobSignal(args[1:], "resume")
 	case "delete", "clear":
 		return cmdDelete(args[1:])
+	case "unlock":
+		return cmdUnlock(args[1:])
 	case "change":
 		return cmdChange(args[1:])
 	case "remove":
@@ -423,7 +426,14 @@ func launchAsyncRun(paths pathSet, queueName, runID, runName string, localConcur
 		return 1
 	}
 
-	if err := writeJSON(paths.lockFile, LockInfo{PID: cmd.Process.Pid, RunID: runID, StartedAt: nowRFC3339()}); err != nil {
+	host, err := os.Hostname()
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = os.Remove(paths.lockFile)
+		fmt.Fprintf(os.Stderr, "failed to determine lock host: %v\n", err)
+		return 1
+	}
+	if err := writeJSON(paths.lockFile, LockInfo{PID: cmd.Process.Pid, RunID: runID, StartedAt: nowRFC3339(), Host: host}); err != nil {
 		_ = cmd.Process.Kill()
 		_ = os.Remove(paths.lockFile)
 		fmt.Fprintf(os.Stderr, "failed to update lock with child pid: %v\n", err)
@@ -827,14 +837,28 @@ func writeJSON(path string, v any) error {
 	return os.Rename(tmpName, path)
 }
 
+const stateLockTimeout = 30 * time.Second
+
 func acquireStateLock(lockPath string) (func(), error) {
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
-		return nil, err
+	deadline := time.Now().Add(stateLockTimeout)
+	for {
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			f.Close()
+			return nil, err
+		}
+		if time.Now().After(deadline) {
+			f.Close()
+			return nil, fmt.Errorf("timed out waiting %s for state lock", stateLockTimeout)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	return func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
@@ -843,6 +867,13 @@ func acquireStateLock(lockPath string) (func(), error) {
 }
 
 func acquireLock(lockPath string, info LockInfo) error {
+	if info.Host == "" {
+		host, err := os.Hostname()
+		if err != nil {
+			return fmt.Errorf("determine lock host: %w", err)
+		}
+		info.Host = host
+	}
 	running, err := isRunning(lockPath)
 	if err != nil {
 		return err
@@ -865,22 +896,24 @@ func acquireLock(lockPath string, info LockInfo) error {
 }
 
 func isRunning(lockPath string) (bool, error) {
-	b, err := os.ReadFile(lockPath)
+	lock, err := loadLockInfo(lockPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
 		}
-		return false, err
-	}
-
-	var lock LockInfo
-	if err := json.Unmarshal(b, &lock); err != nil {
 		if removeErr := os.Remove(lockPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			return false, removeErr
 		}
 		return false, nil
 	}
 
+	localHost, err := os.Hostname()
+	if err != nil {
+		return false, fmt.Errorf("determine local host: %w", err)
+	}
+	if lock.Host == "" || lock.Host != localHost {
+		return true, nil
+	}
 	if lock.PID <= 0 || !processAlive(lock.PID) {
 		if removeErr := os.Remove(lockPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			return false, removeErr
@@ -889,6 +922,18 @@ func isRunning(lockPath string) (bool, error) {
 	}
 
 	return true, nil
+}
+
+func loadLockInfo(lockPath string) (LockInfo, error) {
+	b, err := os.ReadFile(lockPath)
+	if err != nil {
+		return LockInfo{}, err
+	}
+	var lock LockInfo
+	if err := json.Unmarshal(b, &lock); err != nil {
+		return LockInfo{}, err
+	}
+	return lock, nil
 }
 
 func processAlive(pid int) bool {

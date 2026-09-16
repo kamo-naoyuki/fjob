@@ -74,6 +74,12 @@ var cliCommandSpecs = []cliCommandSpec{
 		Flags:       append(commonCLIFlags(), cliFlagSpec{Name: "run-id", Description: "delete only the specified run", ValueName: "ID"}),
 	},
 	{
+		Name:        "unlock",
+		Description: "remove a confirmed stale run lock",
+		Usage:       "rotari unlock [--basedir DIR] [--queue-name NAME] --run-id ID",
+		Flags:       append(commonCLIFlags(), cliFlagSpec{Name: "run-id", Description: "run ID recorded in the stale lock", ValueName: "ID"}),
+	},
+	{
 		Name:        "change",
 		Description: "change a job in the current or previous batch",
 		Usage:       "rotari change [--basedir DIR] [--queue-name NAME] [--run-id ID] [--job-id ID|--job-name NAME] [--executor EXECUTOR] [--executor-option OPTION] [--clear-executor-options] [--set-job-name NAME] [--depends-on NAME] [--clear-depends-on] [-- command ...]",

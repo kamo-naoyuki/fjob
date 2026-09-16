@@ -1,15 +1,19 @@
-# rotari: File-based, flexible job runner for local and batch workloads
+# Rotari: File-based, flexible job runner for local and batch workloads
 
 [![Go CI](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml/badge.svg)](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml) [![web demo](https://img.shields.io/website?url=https%3A%2F%2Fkamo-naoyuki.github.io%2Frotari%2F&label=web%20demo&style=flat)](https://kamo-naoyuki.github.io/rotari/)
 
-rotari is for the iterative loop behind computational experiments: queue many
-jobs, keep each run's commands and output, inspect failures, change only what
-needs fixing, and run it again without losing the previous history.
+Rotari is a tool for the loop that recurs throughout computational
+experiments: run jobs, check their logs and results, fix only the parts
+that failed, and run it again. Local execution and scheduler-backed
+execution (Slurm, PBS, LSF) share the same queue, including dependencies
+that span across them, and each job's command, status, and log are managed
+together per run.
 
-It is useful when a researcher is sweeping parameters, running a mixture of
-local and scheduler-backed jobs (Slurm, PBS, or LSF), or debugging a batch repeatedly. Instead of turning a
-terminal into a pile of background processes, each run stays named, inspectable,
-and recoverable.
+If you're comparing this to a workflow engine like Snakemake or Nextflow:
+those are well suited to describing complex pipelines centered on inputs,
+outputs, and data flow. Rotari targets a different need — trying out
+different, ad-hoc commands, tracking the execution record as you go, and
+rerunning only what failed.
 
 | Plain shell (background jobs) | rotari |
 | --- | --- |
@@ -470,3 +474,30 @@ rotari server status
 rotari server list
 rotari server shutdown
 ```
+
+## Shared filesystem locking
+
+Multiple hosts may use the same queue when they share the same state directory
+(`--basedir` or `ROTARI_BASEDIR`) on an NFS filesystem. Queue updates such as
+`add`, `change`, `remove`, `copy`, `run`, and `delete` are serialized with an
+advisory file lock. NFSv4 servers and clients must be configured to support
+file locking. rotari waits up to 30 seconds when another update holds this
+lock, then returns an error; it does not remove the advisory lock file because
+doing so cannot release an active `flock` lock safely.
+
+An active run is recorded in `running.lock` with its run ID, PID, and host.
+On the host that started the run, rotari removes the lock automatically when
+the PID is no longer alive. A lock created on another host is always treated as
+active: rotari cannot reliably determine whether a remote PID is still alive.
+
+If a remote host has failed and the run is confirmed stopped, remove its stale
+run lock explicitly. First find the run ID, then unlock that exact run:
+
+```sh
+rotari show --queue-name build --runs
+rotari unlock --queue-name build --run-id RUN_ID
+```
+
+`unlock` checks that the current lock belongs to the supplied run ID before it
+removes it. Do not use it while the remote run could still be executing; doing
+so can allow a second run for the same queue.
