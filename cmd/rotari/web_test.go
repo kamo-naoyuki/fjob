@@ -149,6 +149,25 @@ func TestLoadWebStateIncludesRunContextAndTimeline(t *testing.T) {
 	}
 }
 
+func TestBuildWebTimelineCountsCarriedResultsAtStart(t *testing.T) {
+	summary := RunSummary{StartedAt: "2026-09-16T00:00:00Z"}
+	jobs := []webJob{
+		{ID: "carried-success", Result: &JobResult{ID: "carried-success", ExitCode: 0}},
+		{ID: "rerun-failed", SubmittedAt: "2026-09-16T00:00:01Z", FinishedAt: "2026-09-16T00:00:02Z", Result: &JobResult{ID: "rerun-failed", ExitCode: 1}},
+	}
+
+	timeline := buildWebTimeline(summary, jobs)
+	if len(timeline) != 3 {
+		t.Fatalf("timeline = %#v, want start, submitted, and finished points", timeline)
+	}
+	if timeline[0].Pending != 1 || timeline[0].Finished != 1 || timeline[0].Success != 1 {
+		t.Fatalf("timeline start = %#v, want carried success counted as finished at start", timeline[0])
+	}
+	if timeline[2].Pending != 0 || timeline[2].Finished != 2 || timeline[2].Success != 1 || timeline[2].Failed != 1 {
+		t.Fatalf("timeline end = %#v, want one carried success and one executed failure", timeline[2])
+	}
+}
+
 func TestWriteRunContext(t *testing.T) {
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "default")

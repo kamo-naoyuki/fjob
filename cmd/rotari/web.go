@@ -562,7 +562,18 @@ func buildWebTimeline(summary RunSummary, jobs []webJob) []webTimelinePoint {
 		failed   int
 	}
 	events := make([]event, 0, len(jobs)*2)
+	initial := webTimelinePoint{At: summary.StartedAt}
 	for _, job := range jobs {
+		if job.Result != nil && job.SubmittedAt == "" && job.FinishedAt == "" {
+			initial.Finished++
+			if job.Result.ExitCode == 0 {
+				initial.Success++
+			} else {
+				initial.Failed++
+			}
+			continue
+		}
+		initial.Pending++
 		if job.SubmittedAt != "" {
 			events = append(events, event{at: job.SubmittedAt, pending: -1, running: 1})
 		}
@@ -577,8 +588,8 @@ func buildWebTimeline(summary RunSummary, jobs []webJob) []webTimelinePoint {
 		}
 	}
 	sort.Slice(events, func(i, j int) bool { return events[i].at < events[j].at })
-	points := []webTimelinePoint{{At: summary.StartedAt, Pending: len(jobs)}}
-	pending, running, finished, success, failed := len(jobs), 0, 0, 0, 0
+	points := []webTimelinePoint{initial}
+	pending, running, finished, success, failed := initial.Pending, initial.Running, initial.Finished, initial.Success, initial.Failed
 	for i := 0; i < len(events); {
 		at := events[i].at
 		event := event{at: at}
