@@ -158,7 +158,7 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 		_, _ = writer.Write([]byte(webHTML()))
 	})
 	mux.HandleFunc("/api/state", func(writer http.ResponseWriter, request *http.Request) {
-			if request.Method != http.MethodGet {
+		if request.Method != http.MethodGet {
 			methodNotAllowed(writer)
 			return
 		}
