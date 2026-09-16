@@ -421,6 +421,7 @@ function staticRootPath(){const pathname=window.location.pathname;const parts=pa
 function routeParts(){const root=staticRootPath().split('/').filter(Boolean);return window.location.pathname.split('/').filter(Boolean).slice(root.length)}
 function staticPath(path){return staticRootPath().replace(/\/$/,'')+path}
 function rewriteStaticLinks(){document.querySelectorAll('a[href^="/"]').forEach(link=>{link.setAttribute('href',staticPath(link.getAttribute('href')))})}
+rewriteStaticLinks();
 </script>`, escapedState.String(), escapedLogs.String())
 	baseTemplate := webHTML()
 	staticTemplate := strings.ReplaceAll(baseTemplate, "location.pathname.split('/').filter(Boolean)", "routeParts()")

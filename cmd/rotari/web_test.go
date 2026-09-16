@@ -78,6 +78,13 @@ func TestGenerateStaticWebIncludesCLIDocs(t *testing.T) {
 	if !strings.Contains(string(data), "rotari CLI") || !strings.Contains(string(data), "../") {
 		t.Fatalf("static docs page = %q", string(data))
 	}
+	index, err := os.ReadFile(filepath.Join(outputDir, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(index), "rewriteStaticLinks();") {
+		t.Fatal("static web page does not rewrite links before rendering")
+	}
 }
 
 func TestLoadWebJobsIncludesCommandMetadata(t *testing.T) {
