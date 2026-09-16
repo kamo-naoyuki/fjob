@@ -569,6 +569,9 @@ func failedJobHints(paths pathSet, runID string, results []JobResult) string {
 			continue
 		}
 		seen[result.ID] = true
+		if hints.Len() > 0 {
+			hints.WriteString("  ----\n")
+		}
 		fmt.Fprintf(&hints, "  Job: %s\n  Command: %s\n  Show output:\n    rotari show --basedir %s --queue-name %s --run-id %s --job-id %s\n",
 			result.ID, strings.Join(result.Command, " "), paths.baseDir, paths.queueName, runID, result.ID)
 	}
