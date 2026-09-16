@@ -1,7 +1,0 @@
-{
-  "id": "e2b1d670e",
-  "command": [
-    "./stream-output.sh"
-  ],
-  "name": "stream"
-}

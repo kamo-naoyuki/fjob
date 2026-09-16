@@ -1,9 +1,0 @@
-{
-  "backend": "slurm",
-  "job_id": "0bd309948",
-  "command": [
-    "./stream-output.sh"
-  ],
-  "slurm_job_id": "19221000",
-  "submitted_at": "2026-09-15T08:59:00Z"
-}

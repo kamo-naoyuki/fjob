@@ -1,7 +1,0 @@
-{
-  "default_executor": "slurm",
-  "default_executor_options": [
-    " --cpus-per-task=2"
-  ],
-  "commands": null
-}
