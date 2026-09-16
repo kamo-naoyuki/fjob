@@ -280,9 +280,9 @@ The included `example.sh` also supports:
 | `ROTARI_SLURM_OPTIONS` | Common Slurm options used by the example, such as `-p short`. |
 | `ROTARI_ASYNC` | Set to `true` to run the example asynchronously; defaults to `false`. |
 
-## Slurm
+## Scheduler
 
-Executor and Slurm options can be set per command:
+Executor and scheduler options can be set per command:
 
 ```sh
 rotari add --queue-name build make
@@ -294,7 +294,7 @@ rotari run --queue-name build --local-concurrency 4 --batch-concurrency 8 --retr
 ```
 
 Local and scheduler-backed commands may be mixed in the same queue. Use
-`--local-concurrency` for local jobs and `--batch-concurrency` for Slurm jobs.
+`--local-concurrency` for local jobs and `--batch-concurrency` for scheduler jobs.
 Use `--retry N` to retry failed jobs up to N additional times.
 Use `--retry -1` to retry failed jobs indefinitely.
 
