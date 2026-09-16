@@ -212,7 +212,7 @@ func copyRunToQueue(baseDir, queueName, runID, selection string, jobIDs []string
 				originStatus = "success"
 			}
 		}
-		selected[index].Origin = &JobOrigin{RunID: runID, JobID: sourceJobID, Status: originStatus, CWD: originCWD}
+		selected[index].Origin = &JobOrigin{RunID: runID, JobID: sourceJobID, Status: originStatus, CWD: originCWD, SubmittedAt: readJobTimestamp(sourceRunDir, sourceJobID, "submitted_at"), FinishedAt: readJobTimestamp(sourceRunDir, sourceJobID, "finished_at")}
 	}
 	if !appendJobs {
 		queue.Commands = nil

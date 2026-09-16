@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -39,10 +41,12 @@ type QueuedCommand struct {
 }
 
 type JobOrigin struct {
-	RunID  string `json:"run_id"`
-	JobID  string `json:"job_id"`
-	Status string `json:"status,omitempty"`
-	CWD    string `json:"cwd,omitempty"`
+	RunID       string `json:"run_id"`
+	JobID       string `json:"job_id"`
+	Status      string `json:"status,omitempty"`
+	CWD         string `json:"cwd,omitempty"`
+	SubmittedAt string `json:"submitted_at,omitempty"`
+	FinishedAt  string `json:"finished_at,omitempty"`
 }
 
 type Meta struct {
@@ -91,12 +95,18 @@ type RunContext struct {
 	Hostname     string       `json:"hostname,omitempty"`
 	StartedLoad  *LoadAverage `json:"started_load,omitempty"`
 	FinishedLoad *LoadAverage `json:"finished_load,omitempty"`
+	LoadSamples  []LoadSample `json:"load_samples,omitempty"`
 }
 
 type LoadAverage struct {
 	One     float64 `json:"one"`
 	Five    float64 `json:"five"`
 	Fifteen float64 `json:"fifteen"`
+}
+
+type LoadSample struct {
+	At string `json:"at"`
+	LoadAverage
 }
 
 func runStatus(exitCode int) string {
@@ -320,7 +330,9 @@ func cmdWorkerRun(args []string) int {
 		return 1
 	}
 
+	stopLoadSampling := startRunLoadSampling(paths, runID)
 	exitCode := executeMixedRun(paths, runID, runName, localConcurrency, batchMaxActive, retry, *executor, executorOptions, *selection, jobIDs, *sourceRunID, nil)
+	stopLoadSampling()
 	if err := finishRunContext(paths, runID); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to save run context: %v\n", err)
 		return 1
@@ -446,7 +458,13 @@ func launchAsyncRun(paths pathSet, queueName, runID, runName string, localConcur
 }
 
 func writeRunContext(paths pathSet, runID, cwd string) error {
-	return writeJSON(filepath.Join(paths.runsDir, runID, "context.json"), captureRunContext(cwd))
+	context := captureRunContext(cwd)
+	if context.StartedLoad != nil {
+		if err := appendLoadSample(loadSamplesPath(paths, runID), LoadSample{At: nowRFC3339Nano(), LoadAverage: *context.StartedLoad}); err != nil {
+			return err
+		}
+	}
+	return writeJSON(filepath.Join(paths.runsDir, runID, "context.json"), context)
 }
 
 func finishRunContext(paths pathSet, runID string) error {
@@ -456,12 +474,91 @@ func finishRunContext(paths pathSet, runID string) error {
 		_ = json.Unmarshal(data, &context)
 	}
 	context.FinishedLoad = readLoadAverage()
+	if context.FinishedLoad != nil {
+		if err := appendLoadSample(loadSamplesPath(paths, runID), LoadSample{At: nowRFC3339Nano(), LoadAverage: *context.FinishedLoad}); err != nil {
+			return err
+		}
+	}
 	return writeJSON(path, context)
 }
 
 func captureRunContext(cwd string) RunContext {
 	hostname, _ := os.Hostname()
 	return RunContext{CWD: cwd, Hostname: hostname, StartedLoad: readLoadAverage()}
+}
+
+const loadSampleInterval = 10 * time.Second
+
+func startRunLoadSampling(paths pathSet, runID string) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(loadSampleInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				_ = appendRunLoadSample(paths, runID)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+	}
+}
+
+func loadSamplesPath(paths pathSet, runID string) string {
+	return filepath.Join(paths.runsDir, runID, "load_samples.jsonl")
+}
+
+func appendLoadSample(path string, sample LoadSample) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(sample)
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = file.Write(append(data, '\n'))
+	return err
+}
+
+func readLoadSamples(path string) []LoadSample {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	var samples []LoadSample
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var sample LoadSample
+		if json.Unmarshal(line, &sample) == nil {
+			samples = append(samples, sample)
+		}
+	}
+	return samples
+}
+
+func appendRunLoadSample(paths pathSet, runID string) error {
+	load := readLoadAverage()
+	if load == nil {
+		return nil
+	}
+	return appendLoadSample(loadSamplesPath(paths, runID), LoadSample{At: nowRFC3339Nano(), LoadAverage: *load})
 }
 
 func readLoadAverage() *LoadAverage {
@@ -966,4 +1063,8 @@ func makeJobID() string {
 
 func nowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339)
+}
+
+func nowRFC3339Nano() string {
+	return time.Now().UTC().Format(time.RFC3339Nano)
 }

@@ -87,6 +87,14 @@ func TestGenerateStaticWebIncludesCLIDocs(t *testing.T) {
 	}
 }
 
+func TestWebSeparatesLogsFromActions(t *testing.T) {
+	for _, want := range []string{"function mergeActionColumns(){}", "Job log", "View log", "Source log", "Logs"} {
+		if !strings.Contains(webIndexHTML, want) {
+			t.Fatalf("web page does not contain %q", want)
+		}
+	}
+}
+
 func TestLoadWebJobsIncludesCommandMetadata(t *testing.T) {
 	runDir := t.TempDir()
 	queue := Queue{Commands: []QueuedCommand{{
@@ -194,6 +202,24 @@ func TestWriteRunContext(t *testing.T) {
 	}
 	if context.CWD != "/work/project" {
 		t.Fatalf("cwd = %q, want /work/project", context.CWD)
+	}
+	samples := readLoadSamples(loadSamplesPath(paths, "run-1"))
+	if context.StartedLoad != nil && len(samples) != 1 {
+		t.Fatalf("load samples = %#v, want initial load sample", samples)
+	}
+	if err := finishRunContext(paths, "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(filepath.Join(paths.runsDir, "run-1", "context.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &context); err != nil {
+		t.Fatal(err)
+	}
+	samples = readLoadSamples(loadSamplesPath(paths, "run-1"))
+	if context.FinishedLoad != nil && len(samples) != 2 {
+		t.Fatalf("load samples = %#v, want initial and final load samples", samples)
 	}
 }
 

@@ -1182,6 +1182,7 @@ func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMa
 		progress(serverResponse{Progress: true, Message: fmt.Sprintf("Run started: run_id=%s", runID)})
 	}
 
+	stopLoadSampling := startRunLoadSampling(paths, runID)
 	exitCode := executeMixedRun(paths, runID, runName, localConcurrency, batchMaxActive, retry, resolvedExecutor, executorOptions, selection, jobIDs, sourceRunID, func(result JobResult, completed, total, succeeded, failed int) {
 		if progress != nil {
 			message := ""
@@ -1199,6 +1200,7 @@ func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMa
 			progress(serverResponse{OK: true, Progress: true, Message: message, JobID: result.ID, Completed: completed, Total: total, Succeeded: succeeded, Failed: failed})
 		}
 	})
+	stopLoadSampling()
 	if err := finishRunContext(paths, runID); err != nil {
 		_ = os.Remove(paths.lockFile)
 		return "", 1, err
