@@ -42,6 +42,44 @@ func TestLoadWebStateIncludesAllQueues(t *testing.T) {
 	}
 }
 
+func TestCLIDocsPageUsesCommandMetadata(t *testing.T) {
+	page := cliDocsHTML("/")
+	for _, want := range []string{"rotari check", "rotari completion", "--queue-name", "Generated from the command metadata"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("docs page does not contain %q", want)
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/docs/", nil)
+	recorder := httptest.NewRecorder()
+	newWebHandler(t.TempDir(), "").ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "rotari CLI") {
+		t.Fatalf("docs response = status %d, body %q", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestGenerateStaticWebIncludesCLIDocs(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.queueFile, Queue{}); err != nil {
+		t.Fatal(err)
+	}
+	outputDir := filepath.Join(t.TempDir(), "web")
+	if err := generateStaticWeb(outputDir, baseDir, ""); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(outputDir, "docs", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "rotari CLI") || !strings.Contains(string(data), "../") {
+		t.Fatalf("static docs page = %q", string(data))
+	}
+}
+
 func TestLoadWebJobsIncludesCommandMetadata(t *testing.T) {
 	runDir := t.TempDir()
 	queue := Queue{Commands: []QueuedCommand{{

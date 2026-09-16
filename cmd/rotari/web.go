@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"net/http"
 	"net/url"
 	"os"
@@ -156,6 +157,13 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = writer.Write([]byte(webHTML()))
+	})
+	mux.HandleFunc("/docs/", func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = writer.Write([]byte(cliDocsHTML("/")))
+	})
+	mux.HandleFunc("/docs", func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, "/docs/", http.StatusMovedPermanently)
 	})
 	mux.HandleFunc("/api/state", func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet {
@@ -431,6 +439,9 @@ function rewriteStaticLinks(){document.querySelectorAll('a[href^="/"]').forEach(
 	if err := writeStaticWebPage(filepath.Join(outputDir, "index.html"), template); err != nil {
 		return err
 	}
+	if err := writeStaticWebPage(filepath.Join(outputDir, "docs", "index.html"), cliDocsHTML("../")); err != nil {
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(outputDir, ".nojekyll"), nil, 0o644); err != nil {
 		return err
 	}
@@ -620,12 +631,63 @@ func methodNotAllowed(writer http.ResponseWriter) {
 	writer.WriteHeader(http.StatusMethodNotAllowed)
 }
 
+func cliDocsHTML(homePath string) string {
+	var builder strings.Builder
+	builder.WriteString(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>rotari CLI documentation</title><style>
+:root{color-scheme:dark;--bg:#10151b;--panel:#18212b;--line:#2d3a47;--text:#e8eef4;--muted:#94a3b3;--accent:#b8d9f2}*{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#10151b,#182733);color:var(--text);font:15px/1.5 ui-sans-serif,system-ui,sans-serif}main{max-width:1100px;margin:0 auto;padding:36px 22px}header{display:flex;justify-content:space-between;align-items:end;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:24px}h1{margin:0;font-size:32px;letter-spacing:.04em}h2{margin:0 0 8px;color:var(--accent)}h3{margin:22px 0 8px}.meta{color:var(--muted)}a{color:var(--accent)}section{background:rgba(24,33,43,.9);border:1px solid var(--line);padding:18px;margin-bottom:16px}pre{white-space:pre-wrap;background:#0b1015;border:1px solid var(--line);padding:12px;overflow:auto}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid var(--line);padding:8px}th{color:var(--muted);font-size:12px;text-transform:uppercase}code{color:var(--accent)}
+</style></head><body><main><header><div><h1>rotari CLI</h1><div class="meta">Generated from the command metadata used by the binary</div></div><a href="`)
+	builder.WriteString(html.EscapeString(homePath))
+	builder.WriteString(`">Web UI</a></header><p class="meta">Every command below is available from <code>rotari</code>. The flag descriptions and usage lines are shared with shell completion and command help.</p>`)
+	for _, command := range cliCommandSpecs {
+		builder.WriteString(`<section><h2 id="`)
+		builder.WriteString(html.EscapeString(command.Name))
+		builder.WriteString(`">rotari `)
+		builder.WriteString(html.EscapeString(command.Name))
+		builder.WriteString(`</h2><p>`)
+		builder.WriteString(html.EscapeString(command.Description))
+		builder.WriteString(`</p><pre>`)
+		builder.WriteString(html.EscapeString(command.Usage))
+		builder.WriteString(`</pre>`)
+		if len(command.Flags) > 0 {
+			builder.WriteString(`<h3>Options</h3><table><thead><tr><th>Option</th><th>Description</th><th>Values</th></tr></thead><tbody>`)
+			for _, flagSpec := range command.Flags {
+				value := flagSpec.ValueName
+				if len(flagSpec.Values) > 0 {
+					value = strings.Join(flagSpec.Values, ", ")
+				}
+				builder.WriteString(`<tr><td><code>--`)
+				builder.WriteString(html.EscapeString(flagSpec.Name))
+				builder.WriteString(`</code></td><td>`)
+				builder.WriteString(html.EscapeString(flagSpec.Description))
+				builder.WriteString(`</td><td>`)
+				builder.WriteString(html.EscapeString(value))
+				builder.WriteString(`</td></tr>`)
+			}
+			builder.WriteString(`</tbody></table>`)
+		}
+		if len(command.Subcommands) > 0 {
+			builder.WriteString(`<h3>Subcommands</h3><table><thead><tr><th>Name</th><th>Description</th></tr></thead><tbody>`)
+			for _, subcommand := range command.Subcommands {
+				builder.WriteString(`<tr><td><code>`)
+				builder.WriteString(html.EscapeString(subcommand.Name))
+				builder.WriteString(`</code></td><td>`)
+				builder.WriteString(html.EscapeString(subcommand.Description))
+				builder.WriteString(`</td></tr>`)
+			}
+			builder.WriteString(`</tbody></table>`)
+		}
+		builder.WriteString(`</section>`)
+	}
+	builder.WriteString(`</main></body></html>`)
+	return builder.String()
+}
+
 const webIndexHTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>rotari</title><style>.runs tr.latest-run td{font-weight:600;background:rgba(184,217,242,.06)}.runs th:last-child,.runs td:last-child{width:1%;min-width:0;white-space:nowrap;text-align:left;padding-left:8px;padding-right:8px}
 :root{color-scheme:dark;--bg:#10151b;--panel:#18212b;--line:#2d3a47;--text:#e8eef4;--muted:#94a3b3;--good:#63d297;--bad:#ff7c7c;--warn:#f3c969}.command-guide{white-space:pre-wrap;background:#0b1015;border:1px solid var(--line);padding:14px;color:#d7e2ea;margin:12px 0 18px;overflow:auto}
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#10151b,#182733);color:var(--text);font:15px/1.5 ui-sans-serif,system-ui,sans-serif}main{max-width:1100px;margin:0 auto;padding:36px 22px}header{display:flex;justify-content:space-between;align-items:end;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:24px}h1{margin:0;font-size:32px;letter-spacing:.04em}h2{font-size:18px;margin:0 0 12px}.meta{color:var(--muted);font-size:13px}.toolbar{display:flex;gap:8px}button{border:1px solid var(--line);background:#202d39;color:var(--text);padding:8px 12px;border-radius:5px;cursor:pointer}button:hover{border-color:#7190a8}button:disabled{opacity:.45;cursor:not-allowed}input,select{border:1px solid var(--line);background:#101820;color:var(--text);padding:7px 8px;min-width:100px}.dirty{border-color:var(--warn);background:#3b331d;box-shadow:0 0 0 1px rgba(243,201,105,.25)}section{background:rgba(24,33,43,.9);border:1px solid var(--line);padding:18px;margin-bottom:20px}.summary{display:flex;gap:28px;color:var(--muted);font-size:14px}.runs{width:100%;border-collapse:collapse}.runs th,.runs td{text-align:left;border-bottom:1px solid var(--line);padding:10px 8px}.runs th{color:var(--muted);font-size:12px;text-transform:uppercase}.runs th:last-child,.runs td:last-child{white-space:nowrap;width:1%;vertical-align:top}.runs td.latest-run{font-weight:600;background:rgba(184,217,242,.06)}.latest-badge{color:#b8d9f2;font-size:11px;font-weight:400;letter-spacing:.04em;margin-left:6px}.status-finished{color:var(--good)}.status-failed{color:var(--bad)}.status-running{color:var(--warn)}.run-id{font-family:ui-monospace,monospace;color:#b8d9f2;cursor:pointer}.log{white-space:pre-wrap;background:#0b1015;border:1px solid var(--line);padding:14px;min-height:100px;max-height:360px;overflow:auto;color:#d7e2ea}.empty{color:var(--muted);padding:20px 0}.output-modal{position:fixed;inset:0;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:24px;z-index:10}.output-panel{width:min(1100px,96vw);height:min(760px,90vh);background:var(--panel);border:1px solid var(--line);padding:18px;box-shadow:0 12px 50px #000}.output-panel.compact{width:min(900px,92vw);height:auto}.output-panel header{margin:0 0 12px;padding:0 0 10px}.output-panel .log{height:calc(100% - 48px);max-height:none;margin:0}.output-panel.compact .log{height:auto;max-height:240px;min-height:0}@media(max-width:650px){header{display:block}.toolbar{margin-top:14px}.summary{flex-wrap:wrap;gap:10px}.runs th:nth-child(3),.runs td:nth-child(3){display:none}}
-</style></head><body><main><header><div><h1>rotari</h1><div class="meta" id="location">loading...</div></div><div class="toolbar"><button onclick="refresh()">Refresh</button></div></header>
+</style></head><body><main><header><div><h1>rotari</h1><div class="meta" id="location">loading...</div></div><div class="toolbar"><a class="link" href="/docs/">CLI docs</a><button onclick="refresh()">Refresh</button></div></header>
 <section><h2 id="page-title">All queues</h2><div class="summary" id="summary"></div></section><div id="app" class="empty">loading...</div><div id="output-modal" class="output-modal" style="display:none" onclick="if(event.target===this)closeOutputModal()"><div class="output-panel" onclick="event.stopPropagation()"><header><strong>Output</strong><button onclick="closeOutputModal()">Close</button></header><pre id="modal-log" class="log"></pre></div></div></main><script>
 let state;
 const expandedRunGraphics={};

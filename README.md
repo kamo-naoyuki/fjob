@@ -174,6 +174,8 @@ rotari web
 
 Open `http://127.0.0.1:8787` in a browser. By default, the web server shows all
 queues in the state directory; use `--queue-name build` to filter to one queue.
+The CLI reference generated from the same command metadata used by help and
+shell completion is available at `http://127.0.0.1:8787/docs/`.
 It reads job state from the state directory and shows the working directory
 and terminal command needed to copy jobs for another run. It can also copy all
 or failed jobs into a queue after confirmation; it does not start or control
