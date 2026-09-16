@@ -412,13 +412,13 @@ function staticLogKey(queue, run, job){return [queue, run, job].join('/');}
 function staticRootPath(){const pathname=window.location.pathname;const parts=pathname.split('/').filter(Boolean);const queueIndex=parts.indexOf('queue');if(queueIndex>=0)return '/'+parts.slice(0,queueIndex).join('/');if(pathname.endsWith('/index.html'))return '/'+parts.slice(0,-1).join('/');if(pathname.endsWith('/'))return parts.length?'/'+parts.join('/'):'';return '/'+parts.slice(0,-1).join('/')}
 function routeParts(){const root=staticRootPath().split('/').filter(Boolean);return window.location.pathname.split('/').filter(Boolean).slice(root.length)}
 function staticPath(path){return staticRootPath().replace(/\/$/,'')+path}
-function rewriteStaticLinks(){document.querySelectorAll('a[href^="/queue/"]').forEach(link=>{link.setAttribute('href',staticPath(link.getAttribute('href')))})}
+function rewriteStaticLinks(){document.querySelectorAll('a[href^="/"]').forEach(link=>{link.setAttribute('href',staticPath(link.getAttribute('href')))})}
 </script>`, escapedState.String(), escapedLogs.String())
 	baseTemplate := webHTML()
 	staticTemplate := strings.ReplaceAll(baseTemplate, "location.pathname.split('/').filter(Boolean)", "routeParts()")
 	staticTemplate = strings.ReplaceAll(staticTemplate, "location.pathname!=='/'&&location.pathname!==''", "routeParts().length")
+	staticTemplate = strings.ReplaceAll(staticTemplate, "state=await r.json();render()", "state=await r.json();render();rewriteStaticLinks()")
 	template := strings.Replace(staticTemplate, "<script>\nconst executorNames=", bootstrap+"<script>\nconst executorNames=", 1)
-	template = strings.Replace(template, "applyStatusColors()};window.addEventListener", "applyStatusColors();rewriteStaticLinks()};window.addEventListener", 1)
 	if template == baseTemplate {
 		return errors.New("web HTML script marker not found")
 	}
