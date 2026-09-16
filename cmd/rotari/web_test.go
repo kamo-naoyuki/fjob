@@ -82,7 +82,7 @@ func TestGenerateStaticWebIncludesCLIDocs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(index), "rewriteStaticLinks();") {
+	if !strings.Contains(string(index), "rewriteStaticLinks();") || !strings.Contains(string(index), "path===root||path.startsWith(root+'/')") {
 		t.Fatal("static web page does not rewrite links before rendering")
 	}
 }

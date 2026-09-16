@@ -419,7 +419,7 @@ window.fetch=async function(input, init){
 function staticLogKey(queue, run, job){return [queue, run, job].join('/');}
 function staticRootPath(){const pathname=window.location.pathname;const parts=pathname.split('/').filter(Boolean);const queueIndex=parts.indexOf('queue');if(queueIndex>=0)return '/'+parts.slice(0,queueIndex).join('/');if(pathname.endsWith('/index.html'))return '/'+parts.slice(0,-1).join('/');if(pathname.endsWith('/'))return parts.length?'/'+parts.join('/'):'';return '/'+parts.slice(0,-1).join('/')}
 function routeParts(){const root=staticRootPath().split('/').filter(Boolean);return window.location.pathname.split('/').filter(Boolean).slice(root.length)}
-function staticPath(path){return staticRootPath().replace(/\/$/,'')+path}
+function staticPath(path){const root=staticRootPath().replace(/\/$/,'');return path===root||path.startsWith(root+'/')?path:root+path}
 function rewriteStaticLinks(){document.querySelectorAll('a[href^="/"]').forEach(link=>{link.setAttribute('href',staticPath(link.getAttribute('href')))})}
 rewriteStaticLinks();
 </script>`, escapedState.String(), escapedLogs.String())
