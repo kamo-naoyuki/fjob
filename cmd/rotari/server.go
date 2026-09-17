@@ -213,7 +213,6 @@ func cmdAdd(args []string) int {
 	var executorOptions stringSliceFlag
 	cliValue(fs, &executorOptions, "executor-option")
 	jobName := cliString(fs, "job-name", "")
-	cliStringVar(fs, jobName, "name", "")
 	var dependsOn stringSliceFlag
 	cliValue(fs, &dependsOn, "depends-on")
 	runAfterAdd := cliBool(fs, "run", false)

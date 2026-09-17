@@ -146,7 +146,6 @@ var cliCommandSpecs = []cliCommandSpec{
 			cliFlagSpec{Name: "executor", Description: "job executor", ValueName: "EXECUTOR", Values: executorNames()},
 			cliFlagSpec{Name: "executor-option", Description: "option passed to the selected scheduler (sbatch/qsub/...)", ValueName: "OPTION"},
 			cliFlagSpec{Name: "job-name", Description: "job name label", ValueName: "NAME"},
-			cliFlagSpec{Name: "name", Description: "job name label (alias)", ValueName: "NAME"},
 			cliFlagSpec{Name: "depends-on", Description: "name of a prerequisite job; may be repeated", ValueName: "NAME"},
 			cliFlagSpec{Name: "run", Description: "execute the queue after adding the command"},
 		),

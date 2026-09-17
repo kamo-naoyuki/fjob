@@ -103,13 +103,13 @@ raw completion scripts.
 
 ```sh
 # Queue multiple commands, then run them together.
-rotari check --project-name build
-rotari add --project-name build --job-name build make
-rotari add --project-name build --name unit-tests go test ./...
-rotari run --project-name build --run-name unit-build
+rotari check
+rotari add make
+rotari add go test ./...
+rotari run
 
 # Or add and run a single command immediately.
-rotari add --run --project-name build go test ./...
+rotari add --run go test ./...
 ```
 
 `add` adds a command. `run` executes the queued commands and waits for
@@ -117,7 +117,7 @@ completion. A project contains its current queue and saved runs. The project
 name can be supplied with `--project-name`, `ROTARI_PROJECT_NAME`, or omitted.
 When omitted, if only one project exists in the state directory, it is selected
 automatically; if multiple projects exist, you will be prompted to specify one.
-Use `--job-name NAME` (or its `--name NAME` alias) to label a submitted job.
+Use `--job-name NAME` to label a submitted job.
 Use `--run-name NAME` to label a run; the generated run ID remains available for
 unambiguous paths and commands.
 Use `add --run` to add a command and immediately execute the queue in one command.
