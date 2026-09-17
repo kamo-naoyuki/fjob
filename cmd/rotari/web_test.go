@@ -18,6 +18,30 @@ func TestWebRunGuidanceUsesRunIDOnly(t *testing.T) {
 	if strings.Contains(html, "rotari retry'+basedir+' --queue-name '+shellQuote(queueName)") {
 		t.Fatal("web run guidance still contains basedir and project name")
 	}
+	if !strings.Contains(html, "Cancel run") || !strings.Contains(html, "/api/cancel-run") {
+		t.Fatal("web run page does not contain run cancellation controls")
+	}
+}
+
+func TestWebCancelRunRejectsStaleRunID(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.lockFile, LockInfo{RunID: "run-current", PID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/cancel-run", strings.NewReader(`{"project_name":"default","run_id":"run-old"}`))
+	recorder := httptest.NewRecorder()
+	newWebHandler(baseDir, "").ServeHTTP(recorder, request)
+	if recorder.Code == http.StatusOK {
+		t.Fatalf("status = %d, want stale run rejection", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "is no longer running") {
+		t.Fatalf("body = %q, want stale run error", recorder.Body.String())
+	}
 }
 
 func TestLoadWebStateIncludesAllQueues(t *testing.T) {

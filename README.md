@@ -21,9 +21,9 @@ whether you're on your laptop or logged into a remote compute node.
 If you've used [Kaldi](https://github.com/kaldi-asr/kaldi)'s or
 [ESPnet](https://github.com/espnet/espnet)'s `run.pl`/`queue.pl` — the
 local/cluster job dispatch scripts common in speech recognition research —
-to switch between local and cluster job submission, rotari extends that
-idea with per-run history, dependency handling, and rerunning only what
-failed.
+you'll recognize the core ideas: array-job-like parallel execution, log and
+success/failure tracking, and a backend-independent interface for local and
+cluster execution.
 
 ## Installation
 
@@ -239,17 +239,22 @@ stores its snapshot, logs, and results separately.
 
 ```mermaid
 flowchart LR
-  subgraph current[Current queue]
-    prepare([rotari add]) -->|job: prepare| queue[(queue.json)]
-    train([rotari add]) -->|job: train| queue
-  end
+  subgraph project[Project]
+    subgraph current[Current queue]
+      prepare([rotari add]) -->|job: prepare| queue[(queue.json)]
+      train([rotari add]) -->|job: train| queue
+    end
 
-  queue --> start([rotari run])
-  start --> snapshot[(runs/run-id/commands.json)]
-  snapshot --> summary[(runs/run-id/summary.json)]
-  snapshot --> output[(runs/run-id/job-id/output)]
-  start --> cleared[(queue.json: empty)]
-  next([rotari add]) -->|next job| nextQueue[(queue.json: next batch)]
+    queue --> start([rotari run])
+    subgraph history[Saved run]
+      snapshot[(runs/run-id/commands.json)] --> summary[(runs/run-id/summary.json)]
+      snapshot --> output[(runs/run-id/job-id/output)]
+    end
+    start --> snapshot
+    start --> cleared[(queue.json: empty)]
+    cleared --> next([rotari add])
+    next -->|next job| nextQueue[(queue.json: pending jobs)]
+  end
 
   classDef command fill:#1d4ed8,stroke:#1e3a8a,color:#ffffff
   class prepare,train,start,next command
