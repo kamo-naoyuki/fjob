@@ -64,6 +64,19 @@ non-empty idle queue, before selecting history.
 Run lookup applies to commands consuming existing history (`show`, `wait`,
 `copy`, `change`, `remove`, `delete`, and rerun selection), not commands
 creating or controlling current state such as `add` and a plain new `run`.
+When `wait` receives multiple run IDs, each ID is resolved independently so
+one command can wait for asynchronous runs from different projects or base
+directories.
+
+Shell completion follows the same location rules but has narrower candidate
+semantics. `project-name` lists project directories under the resolved base
+directory. `run-id` lists saved run directories under the resolved project.
+Without `--run-id`, `job-id` combines IDs from the current queue and job
+directories in all saved runs for the resolved project, deduplicated and sorted.
+With `--run-id`, `job-id` resolves that run through the master registry and lists
+only its immediate job directories; explicit base directory and project options
+must agree with the registry entry. Missing state directories produce no
+completion candidates rather than an error in the shell.
 
 Run IDs contain a UTC timestamp and random suffix. They are collision-resistant
 but do not encode a location. The master directory therefore stores one index
@@ -93,6 +106,13 @@ jobs outside the selection carry forward their result and an origin pointing
 to the original output. Dependencies use unique job names within a queue;
 unknown names, duplicates, and cycles are rejected before execution.
 
+An array queue command has an inclusive `first-last` range. Runtime expansion
+creates one `JobSpec` and persisted job directory per task. Local executors run
+those tasks as independent processes. Slurm, PBS, and LSF may submit a complete
+selected range as one native array; incomplete selections fall back to
+independent submissions so carried or omitted tasks are never started
+accidentally.
+
 ## Execution boundaries
 
 `JobExecutor` is the scheduler boundary. Implementations share lifecycle and
@@ -101,6 +121,11 @@ directory. Polling executors persist their latest normalized scheduler state in
 `scheduler_status.json`; read projections use it without querying schedulers
 directly. Scheduler display names may offer inspection commands but must not be
 the only way to locate state.
+
+Task wrappers normalize scheduler-specific task indexes into
+`ROTARI_ARRAY_TASK_ID` and the related `ROTARI_ARRAY_*` variables. Job wrappers
+also expose stable run, project, job, directory, current-working-directory,
+and executable-path variables prefixed with `ROTARI_`.
 
 The server supervises one base directory and may stop when idle, so durable
 behavior belongs in files, not memory. The web UI is a projection of the same

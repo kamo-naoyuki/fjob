@@ -39,6 +39,10 @@ func (lsfExecutor) Submit(runDir string, job JobSpec, options []string) (JobHand
 	return JobHandle{Job: job, Native: metadata.LSFJobID}, nil
 }
 
+func (lsfExecutor) SubmitArray(runDir string, jobs []JobSpec, options []string) ([]JobHandle, error) {
+	return submitLSFArray(runDir, jobs, options)
+}
+
 func (lsfExecutor) Wait(runDir string, handle JobHandle) JobResult {
 	metadata := lsfJobMetadata{
 		Executor: "lsf",
@@ -101,7 +105,7 @@ func submitLSFJob(runDir string, job JobSpec, options []string) (lsfJobMetadata,
 	}
 	outputPath := filepath.Join(jobDir, "output")
 	wrapperPath := filepath.Join(jobDir, "lsf-wrapper.sh")
-	wrapper := lsfWrapperScript(job.Command, jobDir, outputPath)
+	wrapper := lsfWrapperScript(job.Command, jobDir, outputPath, job.Environment)
 	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o755); err != nil {
 		return lsfJobMetadata{}, err
 	}
@@ -129,8 +133,57 @@ func submitLSFJob(runDir string, job JobSpec, options []string) (lsfJobMetadata,
 	return metadata, nil
 }
 
-func lsfWrapperScript(command []string, jobDir, outputPath string) string {
-	return "#BSUB -o " + shellQuote(outputPath) + "\n#BSUB -e " + shellQuote(outputPath) + "\n" + statusWrapperScript(command, jobDir)
+func submitLSFArray(runDir string, jobs []JobSpec, executorOptions []string) ([]JobHandle, error) {
+	if len(jobs) == 0 || jobs[0].ArrayTaskID == nil {
+		return nil, errors.New("empty LSF array")
+	}
+	command := jobs[0].Command
+	first, last := jobs[0].ArrayFirst, jobs[0].ArrayLast
+	for _, job := range jobs {
+		if job.ArrayTaskID == nil || job.ArrayFirst != first || job.ArrayLast != last || !sameStrings(job.Command, command) {
+			return nil, errors.New("LSF array tasks must share one command and range")
+		}
+		jobDir := filepath.Join(runDir, job.ID)
+		if err := os.MkdirAll(jobDir, 0o755); err != nil {
+			return nil, err
+		}
+		if err := writeJSON(filepath.Join(jobDir, "command.json"), job); err != nil {
+			return nil, err
+		}
+	}
+	if err := rejectArraySchedulerOptions(executorOptions, "-J"); err != nil {
+		return nil, err
+	}
+	wrapper := schedulerArrayWrapperScript(jobs, "LSB_JOBINDEX")
+	expandedOptions, err := expandShellOptions(executorOptions)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"bsub", "-J", fmt.Sprintf("rotari[%d-%d]", first, last)}
+	args = append(args, expandedOptions...)
+	output, err := runLSFCommandWithInput(bytes.NewReader([]byte(wrapper)), args...)
+	if err != nil {
+		return nil, fmt.Errorf("bsub array: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	masterID, err := parseLSFJobID(string(output))
+	if err != nil {
+		return nil, err
+	}
+	handles := make([]JobHandle, 0, len(jobs))
+	for _, job := range jobs {
+		taskID := *job.ArrayTaskID
+		nativeID := fmt.Sprintf("%s[%d]", masterID, taskID)
+		metadata := lsfJobMetadata{Executor: "lsf", JobID: job.ID, Command: job.Command, LSFJobID: nativeID, SubmittedAt: nowRFC3339()}
+		if err := writeJSON(filepath.Join(runDir, job.ID, "job.json"), metadata); err != nil {
+			return nil, err
+		}
+		handles = append(handles, JobHandle{Job: job, Native: nativeID})
+	}
+	return handles, nil
+}
+
+func lsfWrapperScript(command []string, jobDir, outputPath string, environment []string) string {
+	return "#BSUB -o " + shellQuote(outputPath) + "\n#BSUB -e " + shellQuote(outputPath) + "\n" + statusWrapperScript(command, jobDir, environment)
 }
 
 var lsfJobIDPattern = regexp.MustCompile(`<([0-9]+)>`)

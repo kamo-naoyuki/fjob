@@ -49,6 +49,10 @@ type JobExecutor interface {
 	Wait(runDir string, handle JobHandle) JobResult
 }
 
+type ArraySubmitter interface {
+	SubmitArray(runDir string, jobs []JobSpec, options []string) ([]JobHandle, error)
+}
+
 // Suspender is implemented by executor that can pause and resume a running
 // job in place (e.g. Slurm, local processes). Executor that cannot support
 // this (e.g. Kubernetes) simply do not implement it; callers must type-assert

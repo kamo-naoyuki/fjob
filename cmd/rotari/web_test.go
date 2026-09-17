@@ -79,6 +79,21 @@ func TestLoadWebStateIncludesAllQueues(t *testing.T) {
 	if len(state.Queues) != 2 || state.Queues[0].QueueName != "build" || state.Queues[1].QueueName != "test" {
 		t.Fatalf("queues = %#v, want build and test", state.Queues)
 	}
+	t.Setenv(envRunID, "web-run")
+	state, err = loadWebState(baseDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundRunID bool
+	for _, definition := range state.Environments {
+		if definition.Name == envRunID {
+			foundRunID = definition.Value == "web-run" && definition.Job && definition.Array
+			break
+		}
+	}
+	if !foundRunID {
+		t.Fatalf("web environments missing current run ID: %#v", state.Environments)
+	}
 
 	filtered, err := loadWebState(baseDir, "test")
 	if err != nil {

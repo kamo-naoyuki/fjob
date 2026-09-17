@@ -315,8 +315,10 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 	jobIDs := make([]string, 0, len(runQueue.Commands))
 	originByID := make(map[string]*JobOrigin, len(runQueue.Commands))
 	if runQueueErr == nil {
+		for _, job := range queueToJobs(runQueue.Commands) {
+			jobIDs = append(jobIDs, job.ID)
+		}
 		for _, command := range runQueue.Commands {
-			jobIDs = append(jobIDs, command.ID)
 			originByID[command.ID] = command.Origin
 		}
 	} else {
@@ -333,7 +335,7 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 	}
 	fmt.Println("\n" + cyan("Jobs:"))
 	changeHints := make([]JobSpec, 0)
-	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-12s %-15s %-20s %-10s %-30s %-24s %-24s %-24s %s", "JOB ID", "NAME", "DEPENDS ON", "STATUS", "EXECUTOR", "SUBMITTED", "FINISHED", "HOSTS", "COMMAND")))
+	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-12s %-6s %-15s %-20s %-10s %-30s %-24s %-24s %-24s %s", "JOB ID", "TASK", "NAME", "DEPENDS ON", "STATUS", "EXECUTOR", "SUBMITTED", "FINISHED", "HOSTS", "COMMAND")))
 	for _, jobID := range jobIDs {
 		jobSpec := jobSpecs[jobID]
 		name := readJobName(filepath.Join(runDir, jobID))
@@ -342,6 +344,10 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		}
 		if name == "" {
 			name = "-"
+		}
+		taskText := "-"
+		if jobSpec.ArrayTaskID != nil {
+			taskText = strconv.Itoa(*jobSpec.ArrayTaskID)
 		}
 		dependsOn := strings.Join(jobSpec.DependsOn, ",")
 		if dependsOn == "" {
@@ -387,9 +393,9 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 			} else if status != 0 {
 				statusText = red(strconv.Itoa(status))
 			}
-			fmt.Printf("%-12s %-15s %-20s %-10s %-30s %-24s %-24s %-24s %s\n", jobID, name, dependsOn, statusText, executorText, submittedAt, finishedAt, hosts, command)
+			fmt.Printf("%-12s %-6s %-15s %-20s %-10s %-30s %-24s %-24s %-24s %s\n", jobID, taskText, name, dependsOn, statusText, executorText, submittedAt, finishedAt, hosts, command)
 		} else {
-			fmt.Printf("%-12s %-15s %-20s %-10s %-30s %-24s %-24s %-24s %s\n", jobID, name, dependsOn, yellow("running"), executorText, submittedAt, finishedAt, hosts, command)
+			fmt.Printf("%-12s %-6s %-15s %-20s %-10s %-30s %-24s %-24s %-24s %s\n", jobID, taskText, name, dependsOn, yellow("running"), executorText, submittedAt, finishedAt, hosts, command)
 		}
 	}
 	printChangeHints(paths, runID, runQueue, changeHints)
@@ -547,7 +553,10 @@ func compareQueueWithRun(queuePath, runCommandsPath string) (queueRunDiff, error
 }
 
 func sameJobSpec(left, right JobSpec) bool {
-	if left.ID != right.ID || left.Name != right.Name || left.Executor != right.Executor {
+	if left.ID != right.ID || left.Name != right.Name || left.Executor != right.Executor || left.ArrayGroup != right.ArrayGroup || left.ArrayFirst != right.ArrayFirst || left.ArrayLast != right.ArrayLast {
+		return false
+	}
+	if (left.ArrayTaskID == nil) != (right.ArrayTaskID == nil) || (left.ArrayTaskID != nil && *left.ArrayTaskID != *right.ArrayTaskID) {
 		return false
 	}
 	if !slicesEqual(left.Command, right.Command) || !slicesEqual(left.ExecutorOptions, right.ExecutorOptions) || !slicesEqual(left.DependsOn, right.DependsOn) {

@@ -38,6 +38,37 @@ printf 'Job <123> is submitted to default queue.\n'
 	}
 }
 
+func TestSubmitLSFArrayWithFakeLSF(t *testing.T) {
+	binDir := t.TempDir()
+	argumentsPath := filepath.Join(t.TempDir(), "bsub-array-args")
+	writeExecutable(t, binDir, "bsub", fmt.Sprintf(`#!/bin/sh
+cat >/dev/null
+printf 'Job <123> is submitted to default queue.\n'
+printf '%%s\n' "$@" > %q
+`, argumentsPath))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	runDir := t.TempDir()
+	taskOne, taskTwo := 1, 2
+	jobs := []JobSpec{
+		{ID: "array-1", ArrayGroup: "array", ArrayTaskID: &taskOne, ArrayFirst: 1, ArrayLast: 2, Command: []string{"echo", "hello"}, Environment: []string{"ROTARI_ARRAY_TASK_ID=1", "ROTARI_JOB_DIR=" + filepath.Join(runDir, "array-1")}},
+		{ID: "array-2", ArrayGroup: "array", ArrayTaskID: &taskTwo, ArrayFirst: 1, ArrayLast: 2, Command: []string{"echo", "hello"}, Environment: []string{"ROTARI_ARRAY_TASK_ID=2", "ROTARI_JOB_DIR=" + filepath.Join(runDir, "array-2")}},
+	}
+	handles, err := submitLSFArray(runDir, jobs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(handles) != 2 || handles[0].Native != "123[1]" || handles[1].Native != "123[2]" {
+		t.Fatalf("handles = %#v", handles)
+	}
+	arguments, err := os.ReadFile(argumentsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(arguments), "-J\nrotari[1-2]\n") {
+		t.Fatalf("bsub arguments = %q", arguments)
+	}
+}
+
 func TestLSFStatusCommandsWithFakeLSF(t *testing.T) {
 	binDir := t.TempDir()
 	writeExecutable(t, binDir, "bjobs", `#!/bin/sh

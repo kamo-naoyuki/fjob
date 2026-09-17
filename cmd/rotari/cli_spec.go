@@ -2,6 +2,8 @@ package main
 
 import (
 	"flag"
+	"os"
+	"strconv"
 	"time"
 )
 
@@ -131,22 +133,24 @@ var cliCommandSpecs = []cliCommandSpec{
 	},
 	{
 		Name:        "wait",
-		Description: "wait for an asynchronous run",
-		Usage:       "rotari wait [--basedir DIR] [--project-name NAME] --run-id ID [--timeout DURATION]",
+		Description: "wait for asynchronous runs",
+		Usage:       "rotari wait [--basedir DIR] [--project-name NAME] [--run-id ID]... [--timeout DURATION] [RUN_ID ...]",
 		Flags: append(commonCLIFlags(),
-			cliFlagSpec{Name: "run-id", Description: "run ID", ValueName: "ID"},
+			cliFlagSpec{Name: "run-id", Description: "run ID; may be repeated", ValueName: "ID"},
 			cliFlagSpec{Name: "timeout", Description: "maximum wait duration", ValueName: "DURATION"},
 		),
+		HasPositional: true,
 	},
 	{
 		Name:        "add",
 		Description: "add a command to a queue",
-		Usage:       "rotari add [--basedir DIR] [--project-name NAME] [--executor EXECUTOR] [--executor-option OPTION] [--job-name NAME] [--depends-on NAME] [--run] <command ...>",
+		Usage:       "rotari add [--basedir DIR] [--project-name NAME] [--executor EXECUTOR] [--executor-option OPTION] [--job-name NAME] [--depends-on NAME] [--array FIRST-LAST] [--run] <command ...>",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "executor", Description: "job executor", ValueName: "EXECUTOR", Values: executorNames()},
 			cliFlagSpec{Name: "executor-option", Description: "option passed to the selected scheduler (sbatch/qsub/...)", ValueName: "OPTION"},
 			cliFlagSpec{Name: "job-name", Description: "job name label", ValueName: "NAME"},
 			cliFlagSpec{Name: "depends-on", Description: "name of a prerequisite job; may be repeated", ValueName: "NAME"},
+			cliFlagSpec{Name: "array", Description: "create an array job range", ValueName: "FIRST-LAST"},
 			cliFlagSpec{Name: "run", Description: "execute the queue after adding the command"},
 		),
 		HasPositional: true,
@@ -241,6 +245,11 @@ var cliCommandSpecs = []cliCommandSpec{
 		Description: "print version",
 		Usage:       "rotari version",
 	},
+	{
+		Name:        "env",
+		Description: "list ROTARI environment variables",
+		Usage:       "rotari env",
+	},
 }
 
 func cliCommandNames() []string {
@@ -287,12 +296,62 @@ func cliFlag(name string) cliFlagSpec {
 
 func cliString(fs *flag.FlagSet, name, defaultValue string) *string {
 	spec := cliFlag(name)
+	if envName := cliEnvironmentVariable(name); envName != "" {
+		if value, ok := os.LookupEnv(envName); ok {
+			defaultValue = value
+		}
+	}
 	target := new(string)
 	fs.StringVar(target, spec.Name, defaultValue, spec.Description)
 	if short := cliShortFlagNames[name]; short != "" {
 		fs.StringVar(target, short, defaultValue, spec.Description+" (shorthand)")
 	}
 	return target
+}
+
+func cliEnvironmentVariable(name string) string {
+	switch name {
+	case "basedir":
+		return envBaseDir
+	case "project-name":
+		return envProjectName
+	case "masterdir":
+		return envMasterDir
+	case "run-id":
+		return envRunID
+	case "job-id":
+		return envJobID
+	case "job-name":
+		return envJobName
+	case "executor":
+		return envExecutor
+	case "run-name":
+		return envRunName
+	case "local-concurrency":
+		return envRunLocalConc
+	case "batch-concurrency":
+		return envRunBatchConc
+	case "retry":
+		return envRunRetry
+	case "async":
+		return envRunAsync
+	case "array":
+		return envArrayRange
+	case "server":
+		return envCheckServer
+	case "recover":
+		return envCheckRecover
+	case "timeout":
+		return envWaitTimeout
+	case "host":
+		return envWebHost
+	case "port":
+		return envWebPort
+	case "static-dir":
+		return envWebStaticDir
+	default:
+		return ""
+	}
 }
 
 func cliStringVar(fs *flag.FlagSet, target *string, name, defaultValue string) {
@@ -305,6 +364,11 @@ func cliStringVar(fs *flag.FlagSet, target *string, name, defaultValue string) {
 
 func cliBool(fs *flag.FlagSet, name string, defaultValue bool) *bool {
 	spec := cliFlag(name)
+	if value, ok := os.LookupEnv(cliEnvironmentVariable(name)); ok {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			defaultValue = parsed
+		}
+	}
 	target := new(bool)
 	fs.BoolVar(target, spec.Name, defaultValue, spec.Description)
 	if short := cliShortFlagNames[name]; short != "" {
@@ -315,6 +379,11 @@ func cliBool(fs *flag.FlagSet, name string, defaultValue bool) *bool {
 
 func cliInt(fs *flag.FlagSet, name string, defaultValue int) *int {
 	spec := cliFlag(name)
+	if value, ok := os.LookupEnv(cliEnvironmentVariable(name)); ok {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			defaultValue = parsed
+		}
+	}
 	target := new(int)
 	fs.IntVar(target, spec.Name, defaultValue, spec.Description)
 	if short := cliShortFlagNames[name]; short != "" {
@@ -325,6 +394,13 @@ func cliInt(fs *flag.FlagSet, name string, defaultValue int) *int {
 
 func cliDuration(fs *flag.FlagSet, name string, defaultValue time.Duration) *time.Duration {
 	spec := cliFlag(name)
+	if envName := cliEnvironmentVariable(name); envName != "" {
+		if value, ok := os.LookupEnv(envName); ok {
+			if parsed, err := time.ParseDuration(value); err == nil {
+				defaultValue = parsed
+			}
+		}
+	}
 	target := new(time.Duration)
 	fs.DurationVar(target, spec.Name, defaultValue, spec.Description)
 	if short := cliShortFlagNames[name]; short != "" {
@@ -335,6 +411,12 @@ func cliDuration(fs *flag.FlagSet, name string, defaultValue time.Duration) *tim
 
 func cliValue(fs *flag.FlagSet, target flag.Value, name string) {
 	spec := cliFlag(name)
+	if name == "executor-option" {
+		value, exists := os.LookupEnv(envExecutorOpts)
+		if exists && value != "" {
+			_ = target.Set(value)
+		}
+	}
 	fs.Var(target, spec.Name, spec.Description)
 	if short := cliShortFlagNames[name]; short != "" {
 		fs.Var(target, short, spec.Description+" (shorthand)")

@@ -53,6 +53,43 @@ printf '123.headnode\n'
 	}
 }
 
+func TestSubmitPBSArrayWithFakePBS(t *testing.T) {
+	binDir := t.TempDir()
+	argumentsPath := filepath.Join(t.TempDir(), "qsub-array-args")
+	writeExecutable(t, binDir, "qsub", fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$@" > %q
+printf '123[].server\n'
+`, argumentsPath))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	runDir := t.TempDir()
+	taskOne, taskTwo := 1, 2
+	jobs := []JobSpec{
+		{ID: "array-1", ArrayGroup: "array", ArrayTaskID: &taskOne, ArrayFirst: 1, ArrayLast: 2, Command: []string{"echo", "hello"}, Environment: []string{"ROTARI_ARRAY_TASK_ID=1", "ROTARI_JOB_DIR=" + filepath.Join(runDir, "array-1")}},
+		{ID: "array-2", ArrayGroup: "array", ArrayTaskID: &taskTwo, ArrayFirst: 1, ArrayLast: 2, Command: []string{"echo", "hello"}, Environment: []string{"ROTARI_ARRAY_TASK_ID=2", "ROTARI_JOB_DIR=" + filepath.Join(runDir, "array-2")}},
+	}
+	handles, err := submitPBSArray(runDir, jobs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(handles) != 2 || handles[0].Native != "123.server[1]" || handles[1].Native != "123.server[2]" {
+		t.Fatalf("handles = %#v", handles)
+	}
+	arguments, err := os.ReadFile(argumentsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(arguments), "-J\n1-2\n") {
+		t.Fatalf("qsub arguments = %q", arguments)
+	}
+	wrapper, err := os.ReadFile(filepath.Join(runDir, "array-pbs-array-wrapper.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wrapper), `case "$PBS_ARRAY_INDEX"`) {
+		t.Fatalf("PBS wrapper missing array variable: %s", wrapper)
+	}
+}
+
 func TestPBSStatusCommandsWithFakePBS(t *testing.T) {
 	binDir := t.TempDir()
 	writeExecutable(t, binDir, "qstat", `#!/bin/sh

@@ -139,6 +139,77 @@ func TestResolveBaseDirPriority(t *testing.T) {
 	}
 }
 
+func TestCLIStringUsesRotariEnvironmentDefaults(t *testing.T) {
+	t.Setenv("ROTARI_RUN_ID", "run-from-env")
+	t.Setenv("ROTARI_JOB_ID", "job-from-env")
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	runID := cliString(fs, "run-id", "")
+	jobID := cliString(fs, "job-id", "")
+	if *runID != "run-from-env" || *jobID != "job-from-env" {
+		t.Fatalf("defaults = %q, %q", *runID, *jobID)
+	}
+	if err := fs.Parse([]string{"--run-id", "run-from-flag"}); err != nil {
+		t.Fatal(err)
+	}
+	if *runID != "run-from-flag" {
+		t.Fatalf("flag value = %q, want explicit flag to override environment", *runID)
+	}
+}
+
+func TestCLICommandSpecificEnvironmentDefaults(t *testing.T) {
+	t.Setenv("ROTARI_WEB_HOST", "127.0.0.2")
+	t.Setenv("ROTARI_WEB_PORT", "9000")
+	t.Setenv("ROTARI_WAIT_TIMEOUT", "2s")
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	host := cliString(fs, "host", "127.0.0.1")
+	port := cliInt(fs, "port", 8787)
+	timeout := cliDuration(fs, "timeout", 0)
+	if *host != "127.0.0.2" || *port != 9000 || *timeout != 2*time.Second {
+		t.Fatalf("defaults = %q, %d, %s", *host, *port, *timeout)
+	}
+}
+
+func TestEnvironmentDefinitionsAreUniqueAndIncludeCoreVariables(t *testing.T) {
+	definitions := environmentDefinitions()
+	seen := make(map[string]bool, len(definitions))
+	for _, definition := range definitions {
+		if definition.Name == "" {
+			t.Fatal("environment definition has an empty name")
+		}
+		if seen[definition.Name] {
+			t.Fatalf("duplicate environment definition %q", definition.Name)
+		}
+		seen[definition.Name] = true
+	}
+	for _, name := range []string{envBaseDir, envRunID, envJobID, envExecutor, envRunRetry, envRunAsync, envArrayTaskID, envWebPort} {
+		if !seen[name] {
+			t.Errorf("missing environment definition %q", name)
+		}
+	}
+}
+
+func TestCmdEnvironmentListsCurrentValues(t *testing.T) {
+	t.Setenv(envRunID, "run-from-env")
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	code := cmdEnvironment(nil)
+	_ = writer.Close()
+	os.Stdout = oldStdout
+	data, readErr := io.ReadAll(reader)
+	_ = reader.Close()
+	if code != 0 || readErr != nil {
+		t.Fatalf("cmdEnvironment = %d, read error = %v", code, readErr)
+	}
+	output := string(data)
+	if !strings.Contains(output, "VARIABLE\tVALUE\tCLI\tJOB\tARRAY") || !strings.Contains(output, envRunID+"\trun-from-env") {
+		t.Fatalf("environment output = %q", output)
+	}
+}
+
 func TestResolveExistingRunTargetUsesRegistryAndRejectsConflicts(t *testing.T) {
 	t.Setenv("ROTARI_MASTERDIR", t.TempDir())
 	baseDir := t.TempDir()
@@ -374,6 +445,68 @@ func TestQueueToJobsPreservesName(t *testing.T) {
 	}
 }
 
+func TestQueueToJobsExpandsArray(t *testing.T) {
+	taskJobs := queueToJobs([]QueuedCommand{{
+		ID: "array", Command: []string{"echo", "hello"}, Name: "train",
+		Array: &ArraySpec{First: 2, Last: 4},
+	}})
+	if len(taskJobs) != 3 {
+		t.Fatalf("got %d jobs, want 3", len(taskJobs))
+	}
+	for index, wantTask := range []int{2, 3, 4} {
+		job := taskJobs[index]
+		if job.ID != fmt.Sprintf("array-%d", wantTask) || job.ArrayTaskID == nil || *job.ArrayTaskID != wantTask || job.Name != fmt.Sprintf("train[%d]", wantTask) {
+			t.Fatalf("job %d = %#v, want task %d", index, job, wantTask)
+		}
+	}
+}
+
+func TestParseArrayRange(t *testing.T) {
+	got, err := parseArrayRange("2-4")
+	if err != nil || got != (ArraySpec{First: 2, Last: 4}) {
+		t.Fatalf("parseArrayRange = %#v, %v", got, err)
+	}
+	for _, value := range []string{"", "4-2", "one-2", "1"} {
+		if _, err := parseArrayRange(value); err == nil {
+			t.Errorf("parseArrayRange(%q) returned nil error", value)
+		}
+	}
+}
+
+func TestMergeEnvironmentOverridesValues(t *testing.T) {
+	got := mergeEnvironment([]string{"PATH=/bin", "ROTARI_JOB_ID=old"}, []string{"ROTARI_JOB_ID=new", "ROTARI_TASK=value"})
+	want := []string{"PATH=/bin", "ROTARI_JOB_ID=new", "ROTARI_TASK=value"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("mergeEnvironment = %#v, want %#v", got, want)
+	}
+}
+
+func TestPrepareJobEnvironmentsIncludesRunOptions(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := "run-1"
+	if err := writeRunContext(paths, runID, "/work"); err != nil {
+		t.Fatal(err)
+	}
+	jobs := []JobSpec{{ID: "job-1", Executor: "slurm"}}
+	prepareJobEnvironments(paths, runID, jobs, "nightly", 2, 3, 4, []string{"-p short"})
+	values := make(map[string]string)
+	for _, entry := range jobs[0].Environment {
+		parts := strings.SplitN(entry, "=", 2)
+		values[parts[0]] = parts[1]
+	}
+	for name, want := range map[string]string{
+		envRunName: "nightly", envRunLocalConc: "2", envRunBatchConc: "3", envRunRetry: "4", envExecutorOpts: "-p short",
+	} {
+		if values[name] != want {
+			t.Errorf("%s = %q, want %q", name, values[name], want)
+		}
+	}
+}
+
 func TestEnqueueCommandPersistsStableJobID(t *testing.T) {
 	baseDir := t.TempDir()
 	if _, err := enqueueCommand(baseDir, "default", []string{"echo", "old"}, "", nil, "job", nil); err != nil {
@@ -539,6 +672,49 @@ func TestCompleteProjectNames(t *testing.T) {
 	}
 	if string(output) != "a-first\nz-last\n" {
 		t.Fatalf("project-name completion = %q, want sorted project names", output)
+	}
+}
+
+func TestCompleteJobIDsForRun(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("ROTARI_MASTERDIR", t.TempDir())
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := "completion-run-1"
+	for _, jobID := range []string{"job-b", "job-a"} {
+		if err := os.MkdirAll(filepath.Join(paths.runsDir, runID, jobID), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(paths.runsDir, "other-run", "job-other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerRun(paths, runID); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	code := cmdComplete([]string{"job-id", "--run-id", runID})
+	os.Stdout = oldStdout
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 {
+		t.Fatalf("cmdComplete exit code = %d, want 0", code)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "job-a\njob-b\n" {
+		t.Fatalf("job-id completion = %q, want only jobs from %s", output, runID)
 	}
 }
 

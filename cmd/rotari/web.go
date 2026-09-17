@@ -31,6 +31,9 @@ type webRun struct {
 
 type webJob struct {
 	ID              string     `json:"id"`
+	ArrayTaskID     *int       `json:"array_task_id,omitempty"`
+	ArrayFirst      int        `json:"array_first,omitempty"`
+	ArrayLast       int        `json:"array_last,omitempty"`
 	Name            string     `json:"name,omitempty"`
 	Command         []string   `json:"command"`
 	Executor        string     `json:"executor,omitempty"`
@@ -61,9 +64,10 @@ type webQueueState struct {
 }
 
 type webState struct {
-	BaseDir   string          `json:"base_dir"`
-	Queues    []webQueueState `json:"projects"`
-	UpdatedAt string          `json:"updated_at"`
+	BaseDir      string                  `json:"base_dir"`
+	Queues       []webQueueState         `json:"projects"`
+	Environments []environmentDefinition `json:"environments"`
+	UpdatedAt    string                  `json:"updated_at"`
 }
 
 type webCopyRequest struct {
@@ -392,7 +396,12 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 }
 
 func loadWebState(baseDir, queueFilter string) (webState, error) {
-	state := webState{BaseDir: baseDir, UpdatedAt: nowRFC3339()}
+	state := webState{BaseDir: baseDir, Environments: environmentDefinitions(), UpdatedAt: nowRFC3339()}
+	for index := range state.Environments {
+		if value, ok := os.LookupEnv(state.Environments[index].Name); ok {
+			state.Environments[index].Value = value
+		}
+	}
 	queueNames := []string{}
 	if queueFilter != "" {
 		queueNames = append(queueNames, queueFilter)
@@ -574,24 +583,30 @@ func loadWebJobs(runDir string, summary RunSummary) ([]webJob, error) {
 	if err != nil {
 		return nil, err
 	}
-	jobs := make([]webJob, 0, len(commands.Commands))
+	origins := make(map[string]*JobOrigin, len(commands.Commands))
 	for _, command := range commands.Commands {
-		submittedAt, finishedAt := webJobTimestamps(runDir, command.ID, command.Origin)
-		job := webJob{ID: command.ID, Name: command.Name, Command: command.Command, Executor: command.Executor, ExecutorOptions: command.ExecutorOptions, DependsOn: command.DependsOn, Origin: command.Origin, SubmittedAt: submittedAt, FinishedAt: finishedAt, SchedulerState: loadSchedulerStatus(filepath.Join(runDir, command.ID))}
-		if result, ok := results[command.ID]; ok {
+		origins[command.ID] = command.Origin
+	}
+	taskJobs := queueToJobs(commands.Commands)
+	webJobs := make([]webJob, 0, len(taskJobs))
+	for _, jobSpec := range taskJobs {
+		origin := origins[jobSpec.ID]
+		submittedAt, finishedAt := webJobTimestamps(runDir, jobSpec.ID, origin)
+		job := webJob{ID: jobSpec.ID, Name: jobSpec.Name, Command: jobSpec.Command, Executor: jobSpec.Executor, ExecutorOptions: jobSpec.ExecutorOptions, DependsOn: jobSpec.DependsOn, Origin: origin, ArrayTaskID: jobSpec.ArrayTaskID, ArrayFirst: jobSpec.ArrayFirst, ArrayLast: jobSpec.ArrayLast, SubmittedAt: submittedAt, FinishedAt: finishedAt, SchedulerState: loadSchedulerStatus(filepath.Join(runDir, jobSpec.ID))}
+		if result, ok := results[jobSpec.ID]; ok {
 			job.Result = &result
 		}
-		jobs = append(jobs, job)
-		delete(results, command.ID)
+		webJobs = append(webJobs, job)
+		delete(results, jobSpec.ID)
 	}
 	for _, result := range summary.Results {
 		if _, exists := results[result.ID]; !exists {
 			continue
 		}
 		resultCopy := result
-		jobs = append(jobs, webJob{ID: result.ID, Command: result.Command, Result: &resultCopy, SubmittedAt: readJobTimestamp(runDir, result.ID, "submitted_at"), FinishedAt: readJobTimestamp(runDir, result.ID, "finished_at")})
+		webJobs = append(webJobs, webJob{ID: result.ID, Command: result.Command, Result: &resultCopy, SubmittedAt: readJobTimestamp(runDir, result.ID, "submitted_at"), FinishedAt: readJobTimestamp(runDir, result.ID, "finished_at")})
 	}
-	return jobs, nil
+	return webJobs, nil
 }
 
 func webJobTimestamps(runDir, jobID string, origin *JobOrigin) (string, string) {
@@ -795,14 +810,15 @@ const webIndexHTML = `<!doctype html>
 :root{color-scheme:dark;--bg:#10151b;--panel:#18212b;--line:#2d3a47;--text:#e8eef4;--muted:#94a3b3;--good:#63d297;--bad:#ff7c7c;--warn:#f3c969}.command-guide{white-space:pre-wrap;background:#0b1015;border:1px solid var(--line);padding:14px;color:#d7e2ea;margin:12px 0 18px;overflow:auto}
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#10151b,#182733);color:var(--text);font:15px/1.5 ui-sans-serif,system-ui,sans-serif}main{max-width:1100px;margin:0 auto;padding:36px 22px}header{display:flex;justify-content:space-between;align-items:end;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:24px}h1{margin:0;font-size:32px;letter-spacing:.04em}h2{font-size:18px;margin:0 0 12px}.meta{color:var(--muted);font-size:13px}.toolbar{display:flex;gap:8px}button{border:1px solid var(--line);background:#202d39;color:var(--text);padding:8px 12px;border-radius:5px;cursor:pointer}button:hover{border-color:#7190a8}button:disabled{opacity:.45;cursor:not-allowed}input,select{border:1px solid var(--line);background:#101820;color:var(--text);padding:7px 8px;min-width:100px}.dirty{border-color:var(--warn);background:#3b331d;box-shadow:0 0 0 1px rgba(243,201,105,.25)}section{background:rgba(24,33,43,.9);border:1px solid var(--line);padding:18px;margin-bottom:20px}.summary{display:flex;gap:28px;color:var(--muted);font-size:14px}.runs{width:100%;border-collapse:collapse}.runs th,.runs td{text-align:left;border-bottom:1px solid var(--line);padding:10px 8px}.runs th{color:var(--muted);font-size:12px;text-transform:uppercase}.runs th:last-child,.runs td:last-child{white-space:nowrap;width:1%;vertical-align:top}.runs td.latest-run{font-weight:600;background:rgba(184,217,242,.06)}.latest-badge{color:#b8d9f2;font-size:11px;font-weight:400;letter-spacing:.04em;margin-left:6px}.status-finished{color:var(--good)}.status-failed{color:var(--bad)}.status-running{color:var(--warn)}.run-id{font-family:ui-monospace,monospace;color:#b8d9f2;cursor:pointer}.log{white-space:pre-wrap;background:#0b1015;border:1px solid var(--line);padding:14px;min-height:100px;max-height:360px;overflow:auto;color:#d7e2ea}.empty{color:var(--muted);padding:20px 0}.output-modal{position:fixed;inset:0;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:24px;z-index:10}.output-panel{width:min(1100px,96vw);height:min(760px,90vh);background:var(--panel);border:1px solid var(--line);padding:18px;box-shadow:0 12px 50px #000}.output-panel.compact{width:min(900px,92vw);height:auto}.output-panel header{margin:0 0 12px;padding:0 0 10px}.output-panel .log{height:calc(100% - 48px);max-height:none;margin:0}.output-panel.compact .log{height:auto;max-height:240px;min-height:0}@media(max-width:650px){header{display:block}.toolbar{margin-top:14px}.summary{flex-wrap:wrap;gap:10px}.runs th:nth-child(3),.runs td:nth-child(3){display:none}}
 </style></head><body><main><header><div><h1>rotari</h1><div class="meta" id="location">loading...</div></div><div class="toolbar"><a class="link" href="/docs/">CLI docs</a><button onclick="refresh()">Refresh</button></div></header>
-<section><h2 id="page-title">All queues</h2><div class="summary" id="summary"></div></section><div id="app" class="empty">loading...</div><div id="output-modal" class="output-modal" style="display:none" onclick="if(event.target===this)closeOutputModal()"><div class="output-panel" onclick="event.stopPropagation()"><header><strong>Output</strong><button onclick="closeOutputModal()">Close</button></header><pre id="modal-log" class="log"></pre></div></div></main><script>
+<section><h2 id="page-title">All queues</h2><div class="summary" id="summary"></div></section><div id="app" class="empty">loading...</div><section id="environment-list"><h2>Environment variables</h2><div class="empty">loading...</div></section><div id="output-modal" class="output-modal" style="display:none" onclick="if(event.target===this)closeOutputModal()"><div class="output-panel" onclick="event.stopPropagation()"><header><strong>Output</strong><button onclick="closeOutputModal()">Close</button></header><pre id="modal-log" class="log"></pre></div></div></main><script>
 let state;
 const expandedRunGraphics={};
 let selectedOutput='';
 let selectedLog=null;
 let followTimer=null;
 let sortState={queue:{key:'name',direction:1},run:{key:'started',direction:-1},job:{key:'name',direction:1},queueJobs:{key:'name',direction:1}};
-async function refresh(){if(document.activeElement&&document.activeElement.closest('.web-queue-commands input,.web-queue-commands select'))return;const r=await fetch('/api/state');if(!r.ok){document.getElementById('app').textContent=await r.text();return}state=await r.json();render()}
+async function refresh(){if(document.activeElement&&document.activeElement.closest('.web-queue-commands input,.web-queue-commands select'))return;const r=await fetch('/api/state');if(!r.ok){document.getElementById('app').textContent=await r.text();return}state=await r.json();render();renderEnvironmentList()}
+function renderEnvironmentList(){const section=document.getElementById('environment-list');if(!section)return;const rows=(state.environments||[]).map(e=>'<tr><td><code>'+esc(e.name)+'</code></td><td>'+esc(e.value||'-')+'</td><td>'+esc(e.cli_default?'yes':'-')+'</td><td>'+esc(e.job?'yes':'-')+'</td><td>'+esc(e.array?'yes':'-')+'</td><td>'+esc(e.description)+'</td></tr>').join('');section.innerHTML='<h2>Environment variables</h2><table class="runs"><thead><tr><th>Variable</th><th>Value</th><th>CLI</th><th>Job</th><th>Array</th><th>Description</th></tr></thead><tbody>'+rows+'</tbody></table>'}
 function render(){const queues=state.queues||[];const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'){renderOverview(queues);return}const queue=queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));if(!queue){renderMissing('Queue not found');return}if(parts[2]==='run'){renderRun(queue,decodeURIComponent(parts[3]));return}renderQueue(queue)}
 function renderOverview(queues){let queued=0,runs=0,running=0;queues.forEach(q=>{queued+=(q.queue.commands||[]).length;runs+=q.runs.length;running+=q.runs.filter(r=>r.running).length});document.getElementById('location').textContent=state.base_dir+' / all queues';document.getElementById('page-title').textContent='All queues';document.getElementById('summary').innerHTML='<span>'+queues.length+' queues</span><span>'+queued+' queued</span><span>'+runs+' runs</span><span>'+running+' running</span>';const rows=queues.map(q=>{let latest=null;for(const run of q.runs){if(!latest||run.started_at>latest.started_at)latest=run}return '<tr><td><a class="link" href="/queue/'+encodeURIComponent(q.queue_name)+'">'+esc(q.queue_name)+'</a></td><td>'+(q.queue.commands||[]).length+'</td><td>'+q.runs.length+'</td><td>'+q.runs.filter(r=>r.running).length+'</td><td>'+(latest?'<a class="link" href="/queue/'+encodeURIComponent(q.queue_name)+'/run/'+encodeURIComponent(latest.run_id)+'">'+esc(latest.run_name||latest.run_id)+'</a>':'-')+'</td><td class="status-'+(latest?latest.status:'')+'">'+esc(latest?latest.status:'-')+'</td><td>'+esc(latest?latest.started_at:'-')+'</td></tr>'}).join('');document.getElementById('app').innerHTML=queues.length?'<table class="runs queue-overview"><thead><tr><th data-sort="name">Queue</th><th data-sort="queued">Queued</th><th data-sort="runs">Runs</th><th data-sort="running">Running</th><th>Latest run</th><th data-sort="status">Status</th><th data-sort="started">Started</th></tr></thead><tbody>'+rows+'</tbody></table>':'No queues found.'}
 function renderQueue(q){document.getElementById('location').textContent=state.base_dir+' / '+q.queue_name;document.getElementById('page-title').textContent=q.queue_name;document.getElementById('summary').innerHTML='<span>'+(q.queue.commands||[]).length+' queued</span><span>'+q.runs.length+' runs</span><span>'+q.runs.filter(r=>r.running).length+' running</span>';const rows=q.runs.map(r=>'<tr><td><a class="link run-id" href="/queue/'+encodeURIComponent(q.queue_name)+'/run/'+encodeURIComponent(r.run_id)+'">'+esc(r.run_id)+'</a></td><td class="status-'+r.status+'">'+esc(r.status)+(r.running?' ...':'')+'</td><td>'+(r.finished_at?esc(r.exit_code):'-')+'</td><td>'+esc(r.started_at||'-')+'</td><td>'+esc(r.finished_at||'-')+'</td></tr>').join('');document.getElementById('app').innerHTML='<div class="toolbar"><a class="link" href="/">All queues</a></div>'+(rows?'<table class="runs"><thead><tr><th data-sort="run">Run</th><th data-sort="status">Status</th><th data-sort="exit">Exit</th><th data-sort="started">Started</th><th data-sort="finished">Finished</th></tr></thead><tbody>'+rows+'</tbody></table>':'<div class="empty">No runs found.</div>')}

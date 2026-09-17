@@ -19,23 +19,24 @@ import (
 )
 
 type serverRequest struct {
-	Op               string   `json:"op"`
-	QueueName        string   `json:"project_name,omitempty"`
-	Command          []string `json:"command,omitempty"`
-	LocalConcurrency int      `json:"local_concurrency,omitempty"`
-	BatchMaxActive   int      `json:"batch_max_active,omitempty"`
-	Retry            int      `json:"retry,omitempty"`
-	RunName          string   `json:"run_name,omitempty"`
-	CWD              string   `json:"cwd,omitempty"`
-	Wait             bool     `json:"wait,omitempty"`
-	Async            bool     `json:"async,omitempty"`
-	Executor         string   `json:"executor,omitempty"`
-	ExecutorOptions  []string `json:"executor_options,omitempty"`
-	JobIDs           []string `json:"job_ids,omitempty"`
-	Selection        string   `json:"selection,omitempty"`
-	SourceRunID      string   `json:"source_run_id,omitempty"`
-	JobName          string   `json:"job_name,omitempty"`
-	DependsOn        []string `json:"depends_on,omitempty"`
+	Op               string     `json:"op"`
+	QueueName        string     `json:"project_name,omitempty"`
+	Command          []string   `json:"command,omitempty"`
+	LocalConcurrency int        `json:"local_concurrency,omitempty"`
+	BatchMaxActive   int        `json:"batch_max_active,omitempty"`
+	Retry            int        `json:"retry,omitempty"`
+	RunName          string     `json:"run_name,omitempty"`
+	CWD              string     `json:"cwd,omitempty"`
+	Wait             bool       `json:"wait,omitempty"`
+	Async            bool       `json:"async,omitempty"`
+	Executor         string     `json:"executor,omitempty"`
+	ExecutorOptions  []string   `json:"executor_options,omitempty"`
+	JobIDs           []string   `json:"job_ids,omitempty"`
+	Selection        string     `json:"selection,omitempty"`
+	SourceRunID      string     `json:"source_run_id,omitempty"`
+	JobName          string     `json:"job_name,omitempty"`
+	DependsOn        []string   `json:"depends_on,omitempty"`
+	Array            *ArraySpec `json:"array,omitempty"`
 }
 
 type serverResponse struct {
@@ -215,6 +216,7 @@ func cmdAdd(args []string) int {
 	jobName := cliString(fs, "job-name", "")
 	var dependsOn stringSliceFlag
 	cliValue(fs, &dependsOn, "depends-on")
+	arrayRange := cliString(fs, "array", "")
 	runAfterAdd := cliBool(fs, "run", false)
 	if err := fs.Parse(args); err != nil {
 		return 1
@@ -223,6 +225,15 @@ func cmdAdd(args []string) int {
 	if len(left) < 1 {
 		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("add"))
 		return 1
+	}
+	var array *ArraySpec
+	if *arrayRange != "" {
+		parsed, parseErr := parseArrayRange(*arrayRange)
+		if parseErr != nil {
+			fmt.Fprintf(os.Stderr, "invalid --array: %v\n", parseErr)
+			return 1
+		}
+		array = &parsed
 	}
 	baseDir, _, err := resolveBaseDir(*basedir)
 	if err != nil {
@@ -234,7 +245,7 @@ func cmdAdd(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	message, err := enqueueCommand(baseDir, queueName, left, *executor, executorOptions, *jobName, dependsOn)
+	message, err := enqueueCommand(baseDir, queueName, left, *executor, executorOptions, *jobName, dependsOn, array)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -510,7 +521,7 @@ func (server *rotariServer) handle(baseDir string, conn net.Conn) {
 	case "ping":
 		response = serverResponse{OK: true, PID: os.Getpid(), Protocol: serverProtocolVersion}
 	case "submit":
-		message, err := enqueueCommand(baseDir, request.QueueName, request.Command, request.Executor, request.ExecutorOptions, request.JobName, request.DependsOn)
+		message, err := enqueueCommand(baseDir, request.QueueName, request.Command, request.Executor, request.ExecutorOptions, request.JobName, request.DependsOn, request.Array)
 		response = serverResponse{OK: err == nil, Message: message}
 		if err != nil {
 			response.Message = err.Error()
@@ -1045,7 +1056,7 @@ func finishCancelMessage(message string, paths pathSet, queueName, runID string,
 	return message, nil
 }
 
-func enqueueCommand(baseDir, queueName string, command []string, executor string, executorOptions []string, jobName string, dependsOn []string) (string, error) {
+func enqueueCommand(baseDir, queueName string, command []string, executor string, executorOptions []string, jobName string, dependsOn []string, arrays ...*ArraySpec) (string, error) {
 	if queueName == "" || len(command) == 0 {
 		return "", errors.New("project name and command are required")
 	}
@@ -1079,8 +1090,12 @@ func enqueueCommand(baseDir, queueName string, command []string, executor string
 		queue.DefaultExecutor = executor
 		queue.DefaultExecutorOptions = append([]string(nil), executorOptions...)
 	}
+	var array *ArraySpec
+	if len(arrays) > 0 {
+		array = arrays[0]
+	}
 	queue.Commands = append(queue.Commands, QueuedCommand{
-		ID: makeJobID(), Command: command, Executor: executor, ExecutorOptions: executorOptions, Name: jobName, DependsOn: dependsOn,
+		ID: makeJobID(), Command: command, Executor: executor, ExecutorOptions: executorOptions, Name: jobName, DependsOn: dependsOn, Array: array,
 	})
 	if err := writeJSON(paths.queueFile, queue); err != nil {
 		return "", err

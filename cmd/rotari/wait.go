@@ -14,12 +14,14 @@ func cmdWait(args []string) int {
 	fs.SetOutput(os.Stderr)
 	basedir := cliString(fs, "basedir", "")
 	queueNameOption := cliString(fs, "project-name", "")
-	runID := cliString(fs, "run-id", "")
+	var runIDs stringSliceFlag
+	cliValue(fs, &runIDs, "run-id")
 	timeout := cliDuration(fs, "timeout", 0)
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
-	if len(fs.Args()) != 0 || *runID == "" {
+	runIDs = append(runIDs, fs.Args()...)
+	if len(runIDs) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("wait"))
 		return 1
 	}
@@ -27,31 +29,49 @@ func cmdWait(args []string) int {
 		fmt.Fprintln(os.Stderr, "--timeout must be >= 0")
 		return 1
 	}
-
-	baseDir, queueName, err := resolveExistingRunTarget(*basedir, *queueNameOption, *runID)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	paths, err := resolvePaths(baseDir, queueName)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve paths: %v\n", err)
-		return 1
-	}
-	runDir := filepath.Join(paths.runsDir, *runID)
 	deadline := time.Time{}
 	if *timeout > 0 {
 		deadline = time.Now().Add(*timeout)
 	}
+	exitCode := 0
+	for _, runID := range runIDs {
+		result := waitForRun(*basedir, *queueNameOption, runID, deadline)
+		if result.exitCode > exitCode {
+			exitCode = result.exitCode
+		}
+		if result.timedOut {
+			return 1
+		}
+	}
+	return exitCode
+}
+
+type waitResult struct {
+	exitCode int
+	timedOut bool
+}
+
+func waitForRun(basedir, queueNameOption, runID string, deadline time.Time) waitResult {
+	baseDir, queueName, err := resolveExistingRunTarget(basedir, queueNameOption, runID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return waitResult{exitCode: 1}
+	}
+	paths, err := resolvePaths(baseDir, queueName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to resolve paths: %v\n", err)
+		return waitResult{exitCode: 1}
+	}
+	runDir := filepath.Join(paths.runsDir, runID)
 	for {
 		summary, err := loadRunSummary(filepath.Join(runDir, "summary.json"))
 		if err == nil {
-			printRunCompletion(paths, *runID, summary)
-			return summary.ExitCode
+			printRunCompletion(paths, runID, summary)
+			return waitResult{exitCode: summary.ExitCode}
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {
-			fmt.Fprintf(os.Stderr, "timed out waiting for run %s\n", *runID)
-			return 1
+			fmt.Fprintf(os.Stderr, "timed out waiting for run %s\n", runID)
+			return waitResult{exitCode: 1, timedOut: true}
 		}
 		time.Sleep(500 * time.Millisecond)
 	}

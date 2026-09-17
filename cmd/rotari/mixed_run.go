@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +24,19 @@ func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, bat
 		fmt.Fprintf(os.Stderr, "invalid dependencies: %v\n", err)
 		return 1
 	}
+	defaultExecutor := requestedExecutor
+	if defaultExecutor == "" {
+		defaultExecutor = queue.DefaultExecutor
+	}
+	if defaultExecutor == "" {
+		defaultExecutor = "local"
+	}
+	for index := range jobs {
+		if jobs[index].Executor == "" {
+			jobs[index].Executor = defaultExecutor
+		}
+	}
+	prepareJobEnvironments(paths, runID, jobs, runName, localConcurrency, batchMaxActive, retry, executorOptions)
 
 	plan, err := planRerunSelection(paths, queue, selection, jobIDs, referenceRunID)
 	if err != nil {
@@ -160,6 +174,73 @@ func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, bat
 	return summary.ExitCode
 }
 
+func prepareJobEnvironments(paths pathSet, runID string, jobs []JobSpec, runName string, localConcurrency, batchConcurrency, retry int, executorOptions []string) {
+	runDir := filepath.Join(paths.runsDir, runID)
+	cwd := ""
+	if data, err := os.ReadFile(filepath.Join(runDir, "context.json")); err == nil {
+		var context RunContext
+		if json.Unmarshal(data, &context) == nil {
+			cwd = context.CWD
+		}
+	}
+	bin, _ := os.Executable()
+	for index := range jobs {
+		job := &jobs[index]
+		jobDir := filepath.Join(runDir, job.ID)
+		environment := []string{
+			envBaseDir + "=" + paths.baseDir,
+			envProjectName + "=" + paths.queueName,
+			envRunID + "=" + runID,
+			envJobID + "=" + job.ID,
+			envExecutor + "=" + job.Executor,
+			envBin + "=" + bin,
+			envRunDir + "=" + runDir,
+			envJobDir + "=" + jobDir,
+			envCWD + "=" + cwd,
+		}
+		if job.Name != "" {
+			environment = append(environment, envJobName+"="+job.Name)
+		}
+		if job.ArrayTaskID != nil {
+			environment = append(environment,
+				fmt.Sprintf("%s=%d", envArrayTaskID, *job.ArrayTaskID),
+				fmt.Sprintf("%s=%d", envArrayFirst, job.ArrayFirst),
+				fmt.Sprintf("%s=%d", envArrayLast, job.ArrayLast),
+				fmt.Sprintf("%s=%d", envArraySize, job.ArrayLast-job.ArrayFirst+1),
+			)
+		}
+		if runName != "" {
+			environment = append(environment, envRunName+"="+runName)
+		}
+		environment = append(environment,
+			fmt.Sprintf("%s=%d", envRunLocalConc, localConcurrency),
+			fmt.Sprintf("%s=%d", envRunBatchConc, batchConcurrency),
+			fmt.Sprintf("%s=%d", envRunRetry, retry),
+		)
+		if len(executorOptions) > 0 {
+			environment = append(environment, envExecutorOpts+"="+strings.Join(executorOptions, " "))
+		}
+		for _, name := range propagatedEnvironmentVariables {
+			if _, exists := environmentEntry(environment, name); exists {
+				continue
+			}
+			if value, exists := os.LookupEnv(name); exists {
+				environment = append(environment, name+"="+value)
+			}
+		}
+		job.Environment = environment
+	}
+}
+
+func environmentEntry(environment []string, name string) (string, bool) {
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, name+"=") {
+			return entry, true
+		}
+	}
+	return "", false
+}
+
 func jobIsPending(jobs []JobSpec, jobID string) bool {
 	for _, job := range jobs {
 		if job.ID == jobID {
@@ -249,7 +330,34 @@ func runLocalLane(workers *sync.WaitGroup, runDir string, executor JobExecutor, 
 // waves of at most maxActive concurrently-tracked jobs.
 func runBatchLane(workers *sync.WaitGroup, runDir string, queue Queue, executor JobExecutor, jobs []JobSpec, maxActive int, executorOptions []string, results chan<- JobResult) {
 	defer workers.Done()
-	for start := 0; start < len(jobs); start += maxActive {
+	for start := 0; start < len(jobs); {
+		if jobs[start].ArrayGroup != "" {
+			end := start + 1
+			for end < len(jobs) && jobs[end].ArrayGroup == jobs[start].ArrayGroup {
+				end++
+			}
+			if submitter, ok := executor.(ArraySubmitter); ok && completeArrayGroup(jobs[start:end], jobs[start].ArrayFirst, jobs[start].ArrayLast) {
+				options := jobs[start].ExecutorOptions
+				if len(options) == 0 {
+					options = executorOptions
+				}
+				if len(options) == 0 {
+					options = queue.DefaultExecutorOptions
+				}
+				handles, err := submitter.SubmitArray(runDir, jobs[start:end], options)
+				if err != nil {
+					for _, job := range jobs[start:end] {
+						results <- JobResult{ID: job.ID, ExitCode: 1, Error: err.Error()}
+					}
+				} else {
+					for _, handle := range handles {
+						results <- executor.Wait(runDir, handle)
+					}
+				}
+				start = end
+				continue
+			}
+		}
 		end := start + maxActive
 		if end > len(jobs) {
 			end = len(jobs)
@@ -282,7 +390,22 @@ func runBatchLane(workers *sync.WaitGroup, runDir string, queue Queue, executor 
 			}
 			results <- result
 		}
+		start = end
 	}
+}
+
+func completeArrayGroup(jobs []JobSpec, first, last int) bool {
+	if len(jobs) != last-first+1 {
+		return false
+	}
+	seen := make(map[int]bool, len(jobs))
+	for _, job := range jobs {
+		if job.ArrayTaskID == nil || *job.ArrayTaskID < first || *job.ArrayTaskID > last || seen[*job.ArrayTaskID] {
+			return false
+		}
+		seen[*job.ArrayTaskID] = true
+	}
+	return len(seen) == len(jobs)
 }
 
 func summarizeResults(results map[string]JobResult) (int, int, int) {

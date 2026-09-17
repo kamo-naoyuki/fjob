@@ -45,6 +45,10 @@ func (slurmExecutor) Submit(runDir string, job JobSpec, options []string) (JobHa
 	return JobHandle{Job: job, Native: metadata.SlurmJobID}, nil
 }
 
+func (slurmExecutor) SubmitArray(runDir string, jobs []JobSpec, options []string) ([]JobHandle, error) {
+	return submitSlurmArray(runDir, jobs, options)
+}
+
 func (slurmExecutor) Wait(runDir string, handle JobHandle) JobResult {
 	metadata := slurmJobMetadata{
 		Executor:   "slurm",
@@ -309,7 +313,7 @@ func submitSlurmJob(runDir string, job JobSpec, executorOptions []string) (slurm
 		return slurmJobMetadata{}, err
 	}
 	wrapperPath := filepath.Join(jobDir, "slurm-wrapper.sh")
-	if err := os.WriteFile(wrapperPath, []byte(statusWrapperScript(job.Command, jobDir)), 0o755); err != nil {
+	if err := os.WriteFile(wrapperPath, []byte(statusWrapperScript(job.Command, jobDir, job.Environment)), 0o755); err != nil {
 		return slurmJobMetadata{}, err
 	}
 	outputPath := filepath.Join(jobDir, "output")
@@ -341,19 +345,131 @@ func submitSlurmJob(runDir string, job JobSpec, executorOptions []string) (slurm
 	return metadata, nil
 }
 
+func submitSlurmArray(runDir string, jobs []JobSpec, executorOptions []string) ([]JobHandle, error) {
+	if len(jobs) == 0 || jobs[0].ArrayTaskID == nil {
+		return nil, errors.New("empty Slurm array")
+	}
+	command := jobs[0].Command
+	first, last := jobs[0].ArrayFirst, jobs[0].ArrayLast
+	for _, job := range jobs {
+		if job.ArrayTaskID == nil || job.ArrayFirst != first || job.ArrayLast != last || !sameStrings(job.Command, command) {
+			return nil, errors.New("Slurm array tasks must share one command and range")
+		}
+		if err := os.MkdirAll(filepath.Join(runDir, job.ID), 0o755); err != nil {
+			return nil, err
+		}
+		if err := writeJSON(filepath.Join(runDir, job.ID, "command.json"), job); err != nil {
+			return nil, err
+		}
+	}
+	wrapperPath := filepath.Join(runDir, jobs[0].ArrayGroup+"-array-wrapper.sh")
+	if err := os.WriteFile(wrapperPath, []byte(schedulerArrayWrapperScript(jobs, "SLURM_ARRAY_TASK_ID")), 0o755); err != nil {
+		return nil, err
+	}
+	expandedOptions, err := expandShellOptions(executorOptions)
+	if err != nil {
+		return nil, err
+	}
+	for _, option := range expandedOptions {
+		if option == "--array" || strings.HasPrefix(option, "--array=") {
+			return nil, errors.New("executor options must not include --array when rotari --array is used")
+		}
+	}
+	args := []string{"--parsable", fmt.Sprintf("--array=%d-%d", first, last), "--job-name=rotari-array"}
+	args = append(args, expandedOptions...)
+	args = append(args, wrapperPath)
+	output, err := runSlurmCommand("sbatch", args...)
+	if err != nil {
+		return nil, fmt.Errorf("sbatch array: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	masterID := strings.TrimSpace(strings.SplitN(string(output), ";", 2)[0])
+	if masterID == "" {
+		return nil, errors.New("sbatch returned an empty array job id")
+	}
+	handles := make([]JobHandle, 0, len(jobs))
+	for _, job := range jobs {
+		task := *job.ArrayTaskID
+		nativeID := fmt.Sprintf("%s_%d", masterID, task)
+		metadata := slurmJobMetadata{Executor: "slurm", JobID: job.ID, Command: job.Command, SlurmJobID: nativeID, SubmittedAt: nowRFC3339()}
+		if err := writeJSON(filepath.Join(runDir, job.ID, "job.json"), metadata); err != nil {
+			return nil, err
+		}
+		handles = append(handles, JobHandle{Job: job, Native: nativeID})
+	}
+	return handles, nil
+}
+
+func sameStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func rejectArraySchedulerOptions(options []string, names ...string) error {
+	expanded, err := expandShellOptions(options)
+	if err != nil {
+		return err
+	}
+	for _, option := range expanded {
+		for _, name := range names {
+			if option == name || strings.HasPrefix(option, name+"=") {
+				return fmt.Errorf("executor options must not include %s when rotari --array is used", name)
+			}
+		}
+	}
+	return nil
+}
+
+func schedulerArrayWrapperScript(jobs []JobSpec, taskVariable string) string {
+	quoted := make([]string, 0, len(jobs[0].Command))
+	for _, arg := range jobs[0].Command {
+		quoted = append(quoted, shellQuote(arg))
+	}
+	caseLines := make([]string, 0, len(jobs))
+	for _, job := range jobs {
+		exports := make([]string, 0, len(job.Environment))
+		for _, entry := range job.Environment {
+			parts := strings.SplitN(entry, "=", 2)
+			if len(parts) == 2 {
+				exports = append(exports, "export "+parts[0]+"="+shellQuote(parts[1]))
+			}
+		}
+		caseLines = append(caseLines, fmt.Sprintf("    %d)\n        %s\n        job_dir=\"$ROTARI_JOB_DIR\"\n        ;;", *job.ArrayTaskID, strings.Join(exports, "\n        ")))
+	}
+	return "#!/bin/sh\nset +e\ncase \"$" + taskVariable + "\" in\n" + strings.Join(caseLines, "\n") + "\n    *) exit 1 ;;\nesac\nexec >\"$job_dir/output\" 2>&1\nstatus_path=\"$job_dir/status.json\"\nhostname=$(hostname 2>/dev/null || true)\nwrite_status() {\n    phase=$1\n    code=$2\n    tmp=\"${status_path}.tmp.$$\"\n    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)\n    if [ \"$phase\" = \"running\" ]; then\n        printf '{\"phase\":\"running\",\"hosts\":[\"%s\"],\"started_at\":\"%s\"}\n' \"$hostname\" \"$now\" > \"$tmp\"\n    else\n        printf '{\"phase\":\"%s\",\"hosts\":[\"%s\"],\"exit_code\":%s,\"finished_at\":\"%s\"}\n' \"$phase\" \"$hostname\" \"$code\" \"$now\" > \"$tmp\"\n    fi\n    mv -f \"$tmp\" \"$status_path\"\n}\nwrite_status running 0\ntrap 'write_status cancelled 143; exit 143' TERM\ntrap 'write_status cancelled 130; exit 130' INT\n" + strings.Join(quoted, " ") + "\ncode=$?\nwrite_status finished \"$code\"\nexit \"$code\"\n"
+}
+
+func slurmArrayWrapperScript(jobs []JobSpec) string {
+	return schedulerArrayWrapperScript(jobs, "SLURM_ARRAY_TASK_ID")
+}
+
 // statusWrapperScript wraps command in a shell script that records phase and
 // exit code to status.json, so any poll-based executor (Slurm, PBS, ...) can
 // determine the final result even if the scheduler's own accounting lags.
-func statusWrapperScript(command []string, jobDir string) string {
+func statusWrapperScript(command []string, jobDir string, environment []string) string {
 	statusPath := filepath.Join(jobDir, "status.json")
 	quoted := make([]string, 0, len(command))
 	for _, arg := range command {
 		quoted = append(quoted, shellQuote(arg))
 	}
 	commandLine := strings.Join(quoted, " ")
+	exports := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) == 2 {
+			exports = append(exports, "export "+parts[0]+"="+shellQuote(parts[1]))
+		}
+	}
 	return fmt.Sprintf(`#!/bin/sh
 set +e
 status_path=%s
+%s
 hostname=$(hostname 2>/dev/null || true)
 write_status() {
     phase=$1
@@ -375,7 +491,7 @@ trap 'write_status cancelled 131; exit 131' QUIT
 code=$?
 write_status finished "$code"
 exit "$code"
-`, shellQuote(statusPath), commandLine)
+`, shellQuote(statusPath), strings.Join(exports, "\n"), commandLine)
 }
 
 func shellQuote(value string) string {

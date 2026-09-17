@@ -38,6 +38,12 @@ type QueuedCommand struct {
 	Name            string     `json:"name,omitempty"`
 	DependsOn       []string   `json:"depends_on,omitempty"`
 	Origin          *JobOrigin `json:"origin,omitempty"`
+	Array           *ArraySpec `json:"array,omitempty"`
+}
+
+type ArraySpec struct {
+	First int `json:"first"`
+	Last  int `json:"last"`
 }
 
 type JobOrigin struct {
@@ -70,6 +76,11 @@ type JobSpec struct {
 	ExecutorOptions []string `json:"executor_options,omitempty"`
 	Name            string   `json:"name,omitempty"`
 	DependsOn       []string `json:"depends_on,omitempty"`
+	ArrayGroup      string   `json:"array_group,omitempty"`
+	ArrayTaskID     *int     `json:"array_task_id,omitempty"`
+	ArrayFirst      int      `json:"array_first,omitempty"`
+	ArrayLast       int      `json:"array_last,omitempty"`
+	Environment     []string `json:"environment,omitempty"`
 }
 
 type JobResult struct {
@@ -114,6 +125,25 @@ func runStatus(exitCode int) string {
 		return "finished"
 	}
 	return "failed"
+}
+
+func parseArrayRange(value string) (ArraySpec, error) {
+	parts := strings.Split(value, "-")
+	if len(parts) != 2 {
+		return ArraySpec{}, fmt.Errorf("want FIRST-LAST")
+	}
+	first, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return ArraySpec{}, fmt.Errorf("invalid first index: %w", err)
+	}
+	last, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return ArraySpec{}, fmt.Errorf("invalid last index: %w", err)
+	}
+	if first > last {
+		return ArraySpec{}, errors.New("first index must not be greater than last index")
+	}
+	return ArraySpec{First: first, Last: last}, nil
 }
 
 func formatRunLabel(runID, runName string) string {
@@ -171,6 +201,8 @@ func run(args []string) int {
 		return cmdServer(args[1:])
 	case "web":
 		return cmdWeb(args[1:])
+	case "env":
+		return cmdEnvironment(args[1:])
 	case "completion":
 		return cmdCompletion(args[1:])
 	case "__complete":
@@ -849,6 +881,7 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 	}
 
 	cmd := exec.Command(job.Command[0], job.Command[1:]...)
+	cmd.Env = mergeEnvironment(os.Environ(), job.Environment)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	if err := cmd.Start(); err != nil {
@@ -883,6 +916,26 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 	return JobResult{ID: job.ID, Command: job.Command, ExitCode: exitCode, Hosts: []string{hostname}}
 }
 
+func mergeEnvironment(base, overrides []string) []string {
+	values := make(map[string]string)
+	order := make([]string, 0, len(base)+len(overrides))
+	for _, entry := range append(append([]string(nil), base...), overrides...) {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) != 2 || parts[0] == "" {
+			continue
+		}
+		if _, exists := values[parts[0]]; !exists {
+			order = append(order, parts[0])
+		}
+		values[parts[0]] = parts[1]
+	}
+	merged := make([]string, 0, len(order))
+	for _, name := range order {
+		merged = append(merged, name+"="+values[name])
+	}
+	return merged
+}
+
 func jobCancellationRequested(jobDir string) bool {
 	_, err := os.Stat(filepath.Join(jobDir, "cancelled"))
 	return err == nil
@@ -908,10 +961,26 @@ func queueToJobs(commands []QueuedCommand) []JobSpec {
 		if len(queued.Command) == 0 {
 			continue
 		}
-		jobs = append(jobs, JobSpec{
-			ID: queued.ID, Command: queued.Command, Name: queued.Name,
-			Executor: queued.Executor, ExecutorOptions: queued.ExecutorOptions, DependsOn: queued.DependsOn,
-		})
+		if queued.Array == nil {
+			jobs = append(jobs, JobSpec{
+				ID: queued.ID, Command: queued.Command, Name: queued.Name,
+				Executor: queued.Executor, ExecutorOptions: queued.ExecutorOptions, DependsOn: queued.DependsOn,
+			})
+			continue
+		}
+		for task := queued.Array.First; task <= queued.Array.Last; task++ {
+			id := fmt.Sprintf("%s-%d", queued.ID, task)
+			name := queued.Name
+			if name != "" {
+				name = fmt.Sprintf("%s[%d]", name, task)
+			}
+			taskID := task
+			jobs = append(jobs, JobSpec{
+				ID: id, Command: queued.Command, Name: name,
+				Executor: queued.Executor, ExecutorOptions: queued.ExecutorOptions, DependsOn: queued.DependsOn,
+				ArrayGroup: queued.ID, ArrayTaskID: &taskID, ArrayFirst: queued.Array.First, ArrayLast: queued.Array.Last,
+			})
+		}
 	}
 	return jobs
 }
@@ -951,7 +1020,7 @@ func resolveBaseDir(cliBaseDir string) (string, bool, error) {
 	if cliBaseDir != "" {
 		return cliBaseDir, true, nil
 	}
-	if v := os.Getenv("ROTARI_BASEDIR"); v != "" {
+	if v := os.Getenv(envBaseDir); v != "" {
 		return v, true, nil
 	}
 	if cwd, err := os.Getwd(); err == nil {
@@ -974,7 +1043,7 @@ func resolveProjectName(baseDir string, cliProjectName string) (string, error) {
 	if cliProjectName != "" {
 		return cliProjectName, nil
 	}
-	if value := os.Getenv("ROTARI_PROJECT_NAME"); value != "" {
+	if value := os.Getenv(envProjectName); value != "" {
 		return value, nil
 	}
 	projectsDir := filepath.Join(baseDir, "projects")

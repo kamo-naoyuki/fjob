@@ -56,6 +56,45 @@ printf '12345;fake-host\n'
 	}
 }
 
+func TestSubmitSlurmArrayWithFakeSlurm(t *testing.T) {
+	binDir := t.TempDir()
+	argumentsPath := filepath.Join(t.TempDir(), "sbatch-array-args")
+	writeExecutable(t, binDir, "sbatch", fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$@" > %q
+printf '54321;fake-host\n'
+`, argumentsPath))
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+oldPath)
+
+	runDir := filepath.Join(t.TempDir(), "runs", "run-1")
+	taskOne, taskTwo := 1, 2
+	jobs := []JobSpec{
+		{ID: "array-1", ArrayGroup: "array", ArrayTaskID: &taskOne, ArrayFirst: 1, ArrayLast: 2, Command: []string{"echo", "hello"}, Environment: []string{"ROTARI_ARRAY_TASK_ID=1", "ROTARI_JOB_DIR=" + filepath.Join(runDir, "array-1")}},
+		{ID: "array-2", ArrayGroup: "array", ArrayTaskID: &taskTwo, ArrayFirst: 1, ArrayLast: 2, Command: []string{"echo", "hello"}, Environment: []string{"ROTARI_ARRAY_TASK_ID=2", "ROTARI_JOB_DIR=" + filepath.Join(runDir, "array-2")}},
+	}
+	handles, err := submitSlurmArray(runDir, jobs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(handles) != 2 || handles[0].Native != "54321_1" || handles[1].Native != "54321_2" {
+		t.Fatalf("handles = %#v", handles)
+	}
+	arguments, err := os.ReadFile(argumentsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(arguments), "--array=1-2\n") {
+		t.Fatalf("sbatch arguments = %q, want native array range", arguments)
+	}
+	wrapper, err := os.ReadFile(filepath.Join(runDir, "array-array-wrapper.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wrapper), "ROTARI_ARRAY_TASK_ID='1'") || !strings.Contains(string(wrapper), `job_dir="$ROTARI_JOB_DIR"`) {
+		t.Fatalf("array wrapper missing task environment: %s", wrapper)
+	}
+}
+
 func TestPrepareSlurmRunRegistersRunLocation(t *testing.T) {
 	t.Setenv("ROTARI_MASTERDIR", t.TempDir())
 	baseDir := t.TempDir()

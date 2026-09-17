@@ -23,7 +23,7 @@ func resolveMasterDir(cliMasterDir string) (string, error) {
 	if cliMasterDir != "" {
 		return cliMasterDir, nil
 	}
-	if value := os.Getenv("ROTARI_MASTERDIR"); value != "" {
+	if value := os.Getenv(envMasterDir); value != "" {
 		return value, nil
 	}
 	if value := os.Getenv("XDG_STATE_HOME"); value != "" {

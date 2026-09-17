@@ -96,6 +96,11 @@ idempotently; it does not duplicate an existing rotari completion block. Start a
 new shell after installation, or source the shell configuration to apply it to
 the current shell.
 
+Dynamic candidates include project names, saved run IDs, and job IDs. Job ID
+completion normally includes IDs from the current queue and saved runs; when
+`--run-id RUN_ID` is present, it is limited to jobs in that run, including runs
+located through the run registry.
+
 For manual setup, `rotari completion bash` and `rotari completion zsh` print the
 raw completion scripts.
 
@@ -121,6 +126,19 @@ Use `--job-name NAME` to label a submitted job.
 Use `--run-name NAME` to label a run; the generated run ID remains available for
 unambiguous paths and commands.
 Use `add --run` to add a command and immediately execute the queue in one command.
+
+Array jobs can be added with a numeric range:
+
+```sh
+rotari add --array 1-10 --executor local ./train.sh
+rotari add --array 1-10 --executor slurm ./train.sh
+```
+
+Each task is tracked separately. Local execution starts one process per task;
+Slurm, PBS, and LSF submit native scheduler arrays when the complete range is
+selected.
+See [Job environment](#job-environment) for the environment variables
+available inside each task.
 
 Use `--depends-on NAME` to make a job wait for a named prerequisite. Repeat the
 option to specify multiple prerequisites:
@@ -238,7 +256,7 @@ go build -o rotari ./cmd/rotari
 ```
 
 The example includes local and Slurm jobs in one queue. Set
-`ROTARI_ASYNC=true` to use async mode.
+`ROTARI_RUN_ASYNC=true` to use async mode.
 
 ## Projects, queues, runs, and state
 
@@ -282,34 +300,6 @@ keeping the previous run history. Use `delete` to remove saved run logs
 explicitly. Use `run --async` when an experiment should continue after the
 terminal returns.
 
-## Environment variables
-
-| Variable | Purpose |
-| --- | --- |
-| `ROTARI_BASEDIR` | Base directory for project state. Overridden by `--basedir`. |
-| `ROTARI_PROJECT_NAME` | Default project name. Overridden by `--project-name`. |
-| `ROTARI_MASTERDIR` | Directory used by `rotari server list` to find supervisors. |
-| `XDG_STATE_HOME` | Base location used when `ROTARI_BASEDIR` or `ROTARI_MASTERDIR` is not set. |
-
-The resolution order for the state directory is:
-1. `--basedir` option
-2. `ROTARI_BASEDIR` environment variable
-3. `./.rotari-state` (if it exists in the current directory)
-4. Default location (`$XDG_STATE_HOME/rotari` or `~/.local/state/rotari`)
-
-The resolution logic for the project name when `--project-name` is omitted is:
-1. `--project-name` option
-2. `ROTARI_PROJECT_NAME` environment variable
-3. Automatically select if exactly one project exists in the state directory
-4. Default project name (`default`) if no projects exist yet (if multiple projects exist, an error will prompt you to specify one)
-
-The included `example.sh` also supports:
-
-| Variable | Purpose |
-| --- | --- |
-| `ROTARI_SLURM_OPTIONS` | Common Slurm options used by the example, such as `-p short`. |
-| `ROTARI_ASYNC` | Set to `true` to run the example asynchronously; defaults to `false`. |
-
 ## Scheduler
 
 Executor and scheduler options can be set per command:
@@ -340,11 +330,18 @@ scheduler commands, but has not yet been tested against a real LSF installation.
 
 ```sh
 rotari run --project-name build --async
-rotari wait --project-name build
+rotari wait --run-id RUN_ID
 ```
 
 The async start message prints commands for checking status and cancelling the
-run. `wait` returns the overall run exit code.
+run. `wait` returns the overall run exit code. Pass multiple run IDs to wait
+for independent async runs together:
+
+```sh
+rotari run --project-name build --async
+rotari run --project-name test --async
+rotari wait RUN_ID_FROM_BUILD RUN_ID_FROM_TEST
+```
 
 Pressing Ctrl-C during a synchronous `rotari run` requests cancellation. The
 supervisor waits for the runner to finish its normal cleanup, including the
@@ -353,7 +350,7 @@ not require `unlock` or `server shutdown`.
 
 An async run is started as a detached process in a new session (`setsid`), so
 it keeps running even if the terminal that launched it is closed. Use
-`rotari wait` from any terminal (or later) to block on the run, and
+`rotari wait --run-id RUN_ID` from any terminal (or later) to block on the run, and
 `rotari cancel` to stop it.
 
 ## Inspect and recover
@@ -519,6 +516,64 @@ flowchart LR
   class suspend,resume control
   class remove,cancel,delete destructive
 ```
+
+## Environment variables
+
+The same environment can be used to configure the CLI and to inspect the
+currently running job. Variables with a matching CLI option are read as that
+option's default; an explicit command-line option always takes precedence. Job
+variables are injected into command processes and can also be passed
+explicitly to another rotari command.
+
+Use `rotari env` to print the same list with values from the current process.
+
+| Variable | CLI default | Job | Array | Description |
+| --- | --- | --- | --- | --- |
+| `ROTARI_BASEDIR` | yes | yes | yes | State directory; CLI default for `--basedir`. |
+| `ROTARI_PROJECT_NAME` | yes | yes | yes | Project name; CLI default for `--project-name`. |
+| `ROTARI_MASTERDIR` | yes | - | - | Server registry directory; CLI default for `--masterdir`. |
+| `XDG_STATE_HOME` | yes | - | - | Base location used when state-specific variables are not set. |
+| `ROTARI_RUN_ID` | yes | yes | yes | Current run ID; CLI default for `--run-id`. |
+| `ROTARI_JOB_ID` | yes | yes | yes | Current job ID; CLI default for `--job-id`. |
+| `ROTARI_JOB_NAME` | yes | yes | yes | Current job name; CLI default for `--job-name`. |
+| `ROTARI_EXECUTOR` | yes | yes | yes | Current executor; CLI default for `--executor`. |
+| `ROTARI_EXECUTOR_OPTIONS` | yes | yes | yes | Default options passed to the selected scheduler executor. |
+| `ROTARI_RUN_NAME` | yes | yes | yes | Run name; CLI default for `--run-name`. |
+| `ROTARI_RUN_LOCAL_CONCURRENCY` | yes | yes | yes | Local worker limit; CLI default for `--local-concurrency`. |
+| `ROTARI_RUN_BATCH_CONCURRENCY` | yes | yes | yes | Scheduler submission limit; CLI default for `--batch-concurrency`. |
+| `ROTARI_RUN_RETRY` | yes | yes | yes | Retry count; CLI default for `--retry`. |
+| `ROTARI_RUN_ASYNC` | yes | yes | yes | Async run mode; CLI default for `--async`. |
+| `ROTARI_ARRAY_RANGE` | yes | yes | yes | Array range; CLI default for `--array`, such as `1-10`. |
+| `ROTARI_BIN` | - | yes | yes | Absolute path to the rotari binary. |
+| `ROTARI_RUN_DIR` | - | yes | yes | Directory for the current run. |
+| `ROTARI_JOB_DIR` | - | yes | yes | Directory for the current job. |
+| `ROTARI_CWD` | - | yes | yes | Working directory from which the run was started. |
+| `ROTARI_ARRAY_TASK_ID` | - | - | yes | Current array task number. |
+| `ROTARI_ARRAY_FIRST` | - | - | yes | First task number in the array range. |
+| `ROTARI_ARRAY_LAST` | - | - | yes | Last task number in the array range. |
+| `ROTARI_ARRAY_SIZE` | - | - | yes | Number of tasks in the array range. |
+| `ROTARI_CHECK_SERVER` | yes | - | - | Require a running server for `check --server`. |
+| `ROTARI_CHECK_RECOVER` | yes | - | - | Recovery action for `check --recover`, `keep` or `discard`. |
+| `ROTARI_WAIT_TIMEOUT` | yes | - | - | Default timeout for `wait --timeout`. |
+| `ROTARI_WEB_HOST` | yes | - | - | Listen host for `web --host`. |
+| `ROTARI_WEB_PORT` | yes | - | - | Listen port for `web --port`. |
+| `ROTARI_WEB_STATIC_DIR` | yes | - | - | Output directory for `web --static-dir`. |
+
+The resolution order for the state directory is:
+1. `--basedir` option
+2. `ROTARI_BASEDIR` environment variable
+3. `./.rotari-state` (if it exists in the current directory)
+4. Default location (`$XDG_STATE_HOME/rotari` or `~/.local/state/rotari`)
+
+The resolution logic for the project name when `--project-name` is omitted is:
+1. `--project-name` option
+2. `ROTARI_PROJECT_NAME` environment variable
+3. Automatically select if exactly one project exists in the state directory
+4. Default project name (`default`) if no projects exist yet (if multiple projects exist, an error will prompt you to specify one)
+
+For scheduler-backed jobs, rotari converts the scheduler-specific task
+variable, such as `SLURM_ARRAY_TASK_ID`, `PBS_ARRAY_INDEX`, or
+`LSB_JOBINDEX`, into the common `ROTARI_ARRAY_*` variables above.
 
 ## Server management
 

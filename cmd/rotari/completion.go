@@ -48,7 +48,7 @@ func cmdComplete(args []string) int {
 	if len(args) == 0 || (args[0] != "project-name" && args[0] != "run-id" && args[0] != "job-id") {
 		return 1
 	}
-	basedir, projectName := "", ""
+	basedir, projectName, runID := "", "", ""
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--basedir", "-b":
@@ -63,9 +63,24 @@ func cmdComplete(args []string) int {
 			}
 			projectName = args[i+1]
 			i++
+		case "--run-id", "-r":
+			if i+1 >= len(args) {
+				return 1
+			}
+			runID = args[i+1]
+			i++
 		}
 	}
-	baseDir, _, err := resolveBaseDir(basedir)
+	if args[0] != "job-id" {
+		runID = ""
+	}
+	baseDir := ""
+	var err error
+	if runID != "" {
+		baseDir, projectName, err = resolveExistingRunTarget(basedir, projectName, runID)
+	} else {
+		baseDir, _, err = resolveBaseDir(basedir)
+	}
 	if err != nil {
 		return 1
 	}
@@ -103,6 +118,16 @@ func cmdComplete(args []string) int {
 		for _, entry := range entries {
 			if entry.IsDir() {
 				values[entry.Name()] = struct{}{}
+			}
+		}
+	} else if runID != "" {
+		entries, err := os.ReadDir(filepath.Join(paths.runsDir, runID))
+		if err != nil {
+			return 0
+		}
+		for _, job := range entries {
+			if job.IsDir() {
+				values[job.Name()] = struct{}{}
 			}
 		}
 	} else {
@@ -278,7 +303,13 @@ func generateBashCompletion() string {
 		builder.WriteString("            ;;\n")
 	}
 	builder.WriteString("    esac\n}\ncomplete -F _rotari_completion rotari\n")
-	return builder.String()
+	completion := builder.String()
+	if jobCase := strings.Index(completion, "        --job-id|-j)"); jobCase >= 0 {
+		before, after := completion[:jobCase], completion[jobCase:]
+		after = strings.Replace(after, "--basedir|-b|--project-name|-p)", "--basedir|-b|--project-name|-p|--run-id|-r)", 1)
+		completion = before + after
+	}
+	return completion
 }
 
 func bashOptions(flags []cliFlagSpec) string {
@@ -337,6 +368,7 @@ func generateZshCompletion() string {
 		builder.WriteString("            ;;\n")
 	}
 	builder.WriteString("    esac\n}\n\n_rotari_completion_context() {\n    local -a args\n    local i\n    for (( i = 3; i <= ${#words[@]}; i++ )); do\n        case $words[i] in\n            --basedir|-b|--project-name|-p)\n                if (( i + 1 <= ${#words[@]} )); then\n                    args+=(\"$words[i]\" \"$words[i+1]\")\n                    (( i++ ))\n                fi\n                ;;\n        esac\n    done\n    reply=(\"${(@f)$(rotari __complete \"$1\" \"${args[@]}\" 2>/dev/null)}\")\n}\n_rotari_run_ids() { _rotari_completion_context run-id }\n_rotari_job_ids() { _rotari_completion_context job-id }\n\nif (( $+functions[compdef] )); then\n    compdef _rotari rotari\nfi\n")
+	builder.WriteString("_rotari_job_ids() {\n    local -a args\n    local i\n    for (( i = 3; i <= ${#words[@]}; i++ )); do\n        case $words[i] in\n            --basedir|-b|--project-name|-p|--run-id|-r)\n                if (( i + 1 <= ${#words[@]} )); then\n                    args+=(\"$words[i]\" \"$words[i+1]\")\n                    (( i++ ))\n                fi\n                ;;\n        esac\n    done\n    reply=(\"${(@f)$(rotari __complete job-id \"${args[@]}\" 2>/dev/null)}\")\n}\n")
 	builder.WriteString("_rotari_project_names() { _rotari_completion_context project-name }\n")
 	return builder.String()
 }

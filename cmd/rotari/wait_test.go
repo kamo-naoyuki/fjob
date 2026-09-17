@@ -48,6 +48,58 @@ func TestCmdWaitReturnsCompletedRunExitCode(t *testing.T) {
 	}
 }
 
+func TestCmdWaitAcceptsMultipleRunIDs(t *testing.T) {
+	t.Setenv("ROTARI_MASTERDIR", t.TempDir())
+
+	baseDir := t.TempDir()
+	pathsA, err := resolvePaths(baseDir, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pathsB, err := resolvePaths(baseDir, "beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runA := "run-a"
+	runB := "run-b"
+	if err := writeJSON(filepath.Join(pathsA.runsDir, runA, "summary.json"), RunSummary{RunID: runA, Status: "success", Results: []JobResult{{ID: "job-a", ExitCode: 0}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(pathsB.runsDir, runB, "summary.json"), RunSummary{RunID: runB, Status: "failed", ExitCode: 3, Results: []JobResult{{ID: "job-b", ExitCode: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerRun(pathsA, runA); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerRun(pathsB, runB); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	code := cmdWait([]string{"--run-id", runA, runB})
+	os.Stdout = oldStdout
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 3 {
+		t.Fatalf("cmdWait exit code = %d, want 3", code)
+	}
+	for _, want := range []string{"Project: alpha", "Project: beta", "Run: run-a", "Run: run-b"} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("cmdWait output does not contain %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestCmdWaitTimesOutForMalformedSummary(t *testing.T) {
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "demo")

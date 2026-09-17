@@ -38,6 +38,10 @@ func (pbsExecutor) Submit(runDir string, job JobSpec, options []string) (JobHand
 	return JobHandle{Job: job, Native: metadata.PBSJobID}, nil
 }
 
+func (pbsExecutor) SubmitArray(runDir string, jobs []JobSpec, options []string) ([]JobHandle, error) {
+	return submitPBSArray(runDir, jobs, options)
+}
+
 func (pbsExecutor) Wait(runDir string, handle JobHandle) JobResult {
 	metadata := pbsJobMetadata{
 		Executor: "pbs",
@@ -99,7 +103,7 @@ func submitPBSJob(runDir string, job JobSpec, options []string) (pbsJobMetadata,
 		return pbsJobMetadata{}, err
 	}
 	wrapperPath := filepath.Join(jobDir, "pbs-wrapper.sh")
-	if err := os.WriteFile(wrapperPath, []byte(statusWrapperScript(job.Command, jobDir)), 0o755); err != nil {
+	if err := os.WriteFile(wrapperPath, []byte(statusWrapperScript(job.Command, jobDir, job.Environment)), 0o755); err != nil {
 		return pbsJobMetadata{}, err
 	}
 	outputPath := filepath.Join(jobDir, "output")
@@ -127,6 +131,62 @@ func submitPBSJob(runDir string, job JobSpec, options []string) (pbsJobMetadata,
 	}
 	fmt.Printf("[%s] submit job=%s pbs_job_id=%s command=%s\n", metadata.SubmittedAt, job.ID, pbsJobID, strings.Join(job.Command, " "))
 	return metadata, nil
+}
+
+func submitPBSArray(runDir string, jobs []JobSpec, executorOptions []string) ([]JobHandle, error) {
+	if len(jobs) == 0 || jobs[0].ArrayTaskID == nil {
+		return nil, errors.New("empty PBS array")
+	}
+	command := jobs[0].Command
+	first, last := jobs[0].ArrayFirst, jobs[0].ArrayLast
+	for _, job := range jobs {
+		if job.ArrayTaskID == nil || job.ArrayFirst != first || job.ArrayLast != last || !sameStrings(job.Command, command) {
+			return nil, errors.New("PBS array tasks must share one command and range")
+		}
+		jobDir := filepath.Join(runDir, job.ID)
+		if err := os.MkdirAll(jobDir, 0o755); err != nil {
+			return nil, err
+		}
+		if err := writeJSON(filepath.Join(jobDir, "command.json"), job); err != nil {
+			return nil, err
+		}
+	}
+	if err := rejectArraySchedulerOptions(executorOptions, "-J", "-t"); err != nil {
+		return nil, err
+	}
+	wrapperPath := filepath.Join(runDir, jobs[0].ArrayGroup+"-pbs-array-wrapper.sh")
+	if err := os.WriteFile(wrapperPath, []byte(schedulerArrayWrapperScript(jobs, "PBS_ARRAY_INDEX")), 0o755); err != nil {
+		return nil, err
+	}
+	expandedOptions, err := expandShellOptions(executorOptions)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"-j", "oe", "-J", fmt.Sprintf("%d-%d", first, last)}
+	args = append(args, expandedOptions...)
+	args = append(args, wrapperPath)
+	output, err := runPBSCommand("qsub", args...)
+	if err != nil {
+		return nil, fmt.Errorf("qsub array: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	masterID := strings.TrimSpace(string(output))
+	if bracket := strings.Index(masterID, "["); bracket >= 0 {
+		masterID = masterID[:bracket] + strings.TrimPrefix(masterID[strings.Index(masterID, "]")+1:], "]")
+	}
+	if masterID == "" {
+		return nil, errors.New("qsub returned an empty array job id")
+	}
+	handles := make([]JobHandle, 0, len(jobs))
+	for _, job := range jobs {
+		taskID := *job.ArrayTaskID
+		nativeID := fmt.Sprintf("%s[%d]", masterID, taskID)
+		metadata := pbsJobMetadata{Executor: "pbs", JobID: job.ID, Command: job.Command, PBSJobID: nativeID, SubmittedAt: nowRFC3339()}
+		if err := writeJSON(filepath.Join(runDir, job.ID, "job.json"), metadata); err != nil {
+			return nil, err
+		}
+		handles = append(handles, JobHandle{Job: job, Native: nativeID})
+	}
+	return handles, nil
 }
 
 func waitPBSJob(runDir string, job pbsJobMetadata) JobResult {
