@@ -9,6 +9,7 @@ import (
 )
 
 func TestCmdWaitReturnsCompletedRunExitCode(t *testing.T) {
+	t.Setenv("ROTARI_MASTERDIR", t.TempDir())
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "demo")
 	if err != nil {
@@ -101,6 +102,7 @@ func TestCmdWaitAcceptsMultipleRunIDs(t *testing.T) {
 }
 
 func TestCmdWaitTimesOutForMalformedSummary(t *testing.T) {
+	t.Setenv("ROTARI_MASTERDIR", t.TempDir())
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "demo")
 	if err != nil {

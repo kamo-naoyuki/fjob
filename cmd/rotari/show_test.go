@@ -281,6 +281,7 @@ func TestPagerWriterFallsBackWhenPagerCannotStart(t *testing.T) {
 }
 
 func TestCmdShowFailedLogsFiltersSuccessfulJobs(t *testing.T) {
+	t.Setenv("ROTARI_MASTERDIR", t.TempDir())
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "demo")
 	if err != nil {
