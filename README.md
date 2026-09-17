@@ -99,16 +99,6 @@ the current shell.
 For manual setup, `rotari completion bash` and `rotari completion zsh` print the
 raw completion scripts.
 
-Frequently used options have short forms:
-
-| Long option | Short option |
-| --- | --- |
-| `--project-name` | `-p` |
-| `--basedir` | `-b` |
-| `--run-id` | `-r` |
-| `--job-id` | `-j` |
-| `--executor` | `-e` |
-
 ## Quick start
 
 ```sh
@@ -203,6 +193,18 @@ is equivalent to:
 rotari copy --project-name build --run-id RUN_ID --overwrite
 rotari run --project-name build --failed
 ```
+
+## Common options
+
+Frequently used options have short forms:
+
+| Long option | Short option |
+| --- | --- |
+| `--project-name` | `-p` |
+| `--basedir` | `-b` |
+| `--run-id` | `-r` |
+| `--job-id` | `-j` |
+| `--executor` | `-e` |
 
 ## Local web UI
 
