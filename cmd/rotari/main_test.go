@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -11,13 +12,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestResolveQueueNamePriority(t *testing.T) {
-	const envName = "ROTARI_QUEUE_NAME"
+func TestResolveProjectNamePriority(t *testing.T) {
+	const envName = "ROTARI_PROJECT_NAME"
 	old, existed := os.LookupEnv(envName)
 	t.Cleanup(func() {
 		if existed {
@@ -32,40 +34,40 @@ func TestResolveQueueNamePriority(t *testing.T) {
 	if err := os.Setenv(envName, "from-env"); err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveQueueName(baseDir, "from-option")
+	got, err := resolveProjectName(baseDir, "from-option")
 	if err != nil || got != "from-option" {
 		t.Fatalf("option priority: got %q, err %v", got, err)
 	}
-	got, err = resolveQueueName(baseDir, "")
+	got, err = resolveProjectName(baseDir, "")
 	if err != nil || got != "from-env" {
 		t.Fatalf("environment priority: got %q, err %v", got, err)
 	}
 	if err := os.Unsetenv(envName); err != nil {
 		t.Fatal(err)
 	}
-	got, err = resolveQueueName(baseDir, "")
-	if err != nil || got != defaultQueueName {
-		t.Fatalf("default priority: got %q, want %q, err %v", got, defaultQueueName, err)
+	got, err = resolveProjectName(baseDir, "")
+	if err != nil || got != defaultProjectName {
+		t.Fatalf("default priority: got %q, want %q, err %v", got, defaultProjectName, err)
 	}
 
 	// Test automatically selecting a single queue if only one exists
-	q1Dir := filepath.Join(baseDir, "queues", "q1")
+	q1Dir := filepath.Join(baseDir, "projects", "q1")
 	if err := os.MkdirAll(q1Dir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	got, err = resolveQueueName(baseDir, "")
+	got, err = resolveProjectName(baseDir, "")
 	if err != nil || got != "q1" {
-		t.Fatalf("auto select single queue: got %q, want q1, err %v", got, err)
+		t.Fatalf("auto select single project: got %q, want q1, err %v", got, err)
 	}
 
-	// Test returning an error if multiple queues exist and none is specified
-	q2Dir := filepath.Join(baseDir, "queues", "q2")
+	// Test returning an error if multiple projects exist and none is specified
+	q2Dir := filepath.Join(baseDir, "projects", "q2")
 	if err := os.MkdirAll(q2Dir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	_, err = resolveQueueName(baseDir, "")
+	_, err = resolveProjectName(baseDir, "")
 	if err == nil {
-		t.Fatal("expected error for multiple queues when queue-name is empty, got nil")
+		t.Fatal("expected error for multiple projects when project-name is empty, got nil")
 	}
 }
 
@@ -137,6 +139,29 @@ func TestResolveBaseDirPriority(t *testing.T) {
 	}
 }
 
+func TestResolveExistingRunTargetUsesRegistryAndRejectsConflicts(t *testing.T) {
+	t.Setenv("ROTARI_MASTERDIR", t.TempDir())
+	baseDir := t.TempDir()
+	location := runLocation{BaseDir: baseDir, ProjectName: "demo", RunID: "run-1"}
+	if err := registerRunLocation(location); err != nil {
+		t.Fatal(err)
+	}
+
+	gotBaseDir, gotProject, err := resolveExistingRunTarget("", "", "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotBaseDir != baseDir || gotProject != "demo" {
+		t.Fatalf("target = %q, %q; want %q, demo", gotBaseDir, gotProject, baseDir)
+	}
+	if _, _, err := resolveExistingRunTarget(t.TempDir(), "", "run-1"); err == nil {
+		t.Fatal("conflicting basedir was accepted")
+	}
+	if _, _, err := resolveExistingRunTarget("", "other", "run-1"); err == nil {
+		t.Fatal("conflicting project was accepted")
+	}
+}
+
 func TestSplitShellWords(t *testing.T) {
 	got, err := splitShellWords(`-p "short queue" --constraint='fast\ node' --exclusive`)
 	if err != nil {
@@ -178,6 +203,148 @@ func TestMakeRunIDFormat(t *testing.T) {
 	}
 	if first == makeRunID() {
 		t.Fatal("makeRunID returned the same ID twice")
+	}
+}
+
+func TestFormatCheckRunningIncludesWaitAndCancelHints(t *testing.T) {
+	output := formatCheckRunning(pathSet{baseDir: "/state", queueName: "demo"}, "run-1")
+	for _, want := range []string{
+		"project 'demo' is running",
+		"Run: run-1",
+		"rotari wait --basedir /state --project-name demo --run-id run-1",
+		"rotari cancel --basedir /state --project-name demo",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("formatCheckRunning() missing %q; got %q", want, output)
+		}
+	}
+}
+
+func TestConfirmInterruptedRecoveryPreservesQueue(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := Queue{Commands: []QueuedCommand{{ID: "retained", Command: []string{"echo", "retained"}}}}
+	if err := writeJSON(paths.queueFile, queue); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.metaFile, Meta{Phase: "running", LastRunID: "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	action, err := confirmInterruptedRecovery(strings.NewReader("keep\n"), &output, paths, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action != interruptedRecoveryKept || !strings.Contains(output.String(), "Confirm all jobs have stopped") {
+		t.Fatalf("action = %v, output = %q", action, output.String())
+	}
+	meta, err := loadMeta(paths.metaFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Phase != "collecting" || meta.LastRunID != "run-1" {
+		t.Fatalf("metadata = %#v, want collecting with run-1 retained", meta)
+	}
+	gotQueue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotQueue.Commands) != 1 || gotQueue.Commands[0].ID != "retained" {
+		t.Fatalf("queue changed during recovery: %#v", gotQueue.Commands)
+	}
+}
+
+func TestConfirmInterruptedRecoveryDiscardsQueue(t *testing.T) {
+	paths, err := resolvePaths(t.TempDir(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := Queue{DefaultExecutor: "slurm", Commands: []QueuedCommand{{ID: "retained", Command: []string{"echo", "retained"}}}}
+	if err := writeJSON(paths.queueFile, queue); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.metaFile, Meta{Phase: "running", LastRunID: "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+	action, err := confirmInterruptedRecovery(strings.NewReader("discard\n"), io.Discard, paths, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action != interruptedRecoveryDiscarded {
+		t.Fatalf("action = %v, want discarded", action)
+	}
+	meta, err := loadMeta(paths.metaFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Phase != "collecting" || meta.LastRunID != "run-1" {
+		t.Fatalf("metadata = %#v, want collecting with run-1 retained", meta)
+	}
+	gotQueue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotQueue.Commands) != 0 || gotQueue.DefaultExecutor != "slurm" {
+		t.Fatalf("queue after discard = %#v, want no commands and preserved defaults", gotQueue)
+	}
+}
+
+func TestConfirmInterruptedRecoveryDeclineLeavesState(t *testing.T) {
+	paths, err := resolvePaths(t.TempDir(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.metaFile, Meta{Phase: "running", LastRunID: "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+	action, err := confirmInterruptedRecovery(strings.NewReader("cancel\n"), io.Discard, paths, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action != interruptedRecoveryCancelled {
+		t.Fatalf("declined recovery action = %v, want cancelled", action)
+	}
+	meta, err := loadMeta(paths.metaFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Phase != "running" {
+		t.Fatalf("metadata phase = %q, want running", meta.Phase)
+	}
+}
+
+func TestCmdCheckRecoverDiscardWithoutPrompt(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.queueFile, Queue{Commands: []QueuedCommand{{ID: "retained", Command: []string{"retained"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.metaFile, Meta{Phase: "running", LastRunID: "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := cmdCheck([]string{"--basedir", baseDir, "--project-name", "demo", "--recover", "discard"}); code != 0 {
+		t.Fatalf("cmdCheck exit code = %d, want 0", code)
+	}
+	queue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.Commands) != 0 {
+		t.Fatalf("queue commands = %#v, want empty", queue.Commands)
+	}
+	meta, err := loadMeta(paths.metaFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Phase != "collecting" {
+		t.Fatalf("metadata phase = %q, want collecting", meta.Phase)
 	}
 }
 
@@ -231,6 +398,14 @@ func TestEnqueueCommandPersistsStableJobID(t *testing.T) {
 	}
 }
 
+func TestAddRunArgsPreservesResolvedQueue(t *testing.T) {
+	got := addRunArgs("/tmp/rotari state", "build queue")
+	want := []string{"--basedir", "/tmp/rotari state", "--project-name", "build queue"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("addRunArgs() = %#v, want %#v", got, want)
+	}
+}
+
 func TestEnqueueCommandKeepsFinishedRunHistory(t *testing.T) {
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "default")
@@ -281,13 +456,33 @@ func TestAppendCompletionBlockIsIdempotent(t *testing.T) {
 
 func TestZshArgumentsIncludeValueNames(t *testing.T) {
 	got := zshArguments([]cliFlagSpec{{Name: "basedir", Description: "state directory", ValueName: "DIR"}})
-	if got != "'--basedir[state directory]:DIR:'" {
+	if got != "{-b,--basedir}'[state directory]:DIR:'" {
 		t.Fatalf("zsh argument = %q, want value name in specification", got)
 	}
 }
 
+func TestCLIShortOptions(t *testing.T) {
+	fs := flag.NewFlagSet("short-options", flag.ContinueOnError)
+	baseDir := cliString(fs, "basedir", "")
+	projectName := cliString(fs, "project-name", "")
+	runID := cliString(fs, "run-id", "")
+	executor := cliString(fs, "executor", "")
+	var jobIDs stringSliceFlag
+	cliValue(fs, &jobIDs, "job-id")
+
+	if err := fs.Parse([]string{"-b", "/state", "-p", "build", "-r", "run-1", "-j", "job-1", "-j", "job-2", "-e", "local"}); err != nil {
+		t.Fatal(err)
+	}
+	if *baseDir != "/state" || *projectName != "build" || *runID != "run-1" || *executor != "local" {
+		t.Fatalf("short option values = %q, %q, %q, %q", *baseDir, *projectName, *runID, *executor)
+	}
+	if strings.Join(jobIDs, ",") != "job-1,job-2" {
+		t.Fatalf("short job IDs = %q", jobIDs)
+	}
+}
+
 func TestCompletionScriptsContainCommandOptions(t *testing.T) {
-	for _, option := range []string{"--basedir", "--queue-name", "--failed-logs", "--no-pager", "--job-name"} {
+	for _, option := range []string{"--basedir", "-b", "--project-name", "-p", "--run-id", "-r", "--job-id", "-j", "--executor", "-e", "--failed-logs", "--no-pager", "--job-name"} {
 		if !strings.Contains(generateBashCompletion(), option) {
 			t.Errorf("Bash completion does not contain %s", option)
 		}
@@ -304,23 +499,23 @@ func TestCompletionScriptsContainCommandOptions(t *testing.T) {
 	if !strings.Contains(generateZshCompletion(), "compdef _rotari rotari") {
 		t.Error("Zsh completion does not register rotari")
 	}
-	if !strings.Contains(generateBashCompletion(), "__complete queue-name") {
-		t.Error("Bash completion does not dynamically complete queue names")
+	if !strings.Contains(generateBashCompletion(), "__complete project-name") {
+		t.Error("Bash completion does not dynamically complete project names")
 	}
-	if !strings.Contains(generateZshCompletion(), "_rotari_queue_names") {
-		t.Error("Zsh completion does not dynamically complete queue names")
+	if !strings.Contains(generateZshCompletion(), "_rotari_project_names") {
+		t.Error("Zsh completion does not dynamically complete project names")
 	}
 }
 
-func TestCompleteQueueNames(t *testing.T) {
+func TestCompleteProjectNames(t *testing.T) {
 	baseDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(baseDir, "queues", "z-last"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(baseDir, "projects", "z-last"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(baseDir, "queues", "a-first"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(baseDir, "projects", "a-first"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(baseDir, "queues", "not-a-queue"), []byte{}, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(baseDir, "projects", "not-a-project"), []byte{}, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -330,7 +525,7 @@ func TestCompleteQueueNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = writer
-	code := cmdComplete([]string{"queue-name", "--basedir", baseDir})
+	code := cmdComplete([]string{"project-name", "--basedir", baseDir})
 	os.Stdout = oldStdout
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
@@ -343,7 +538,7 @@ func TestCompleteQueueNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(output) != "a-first\nz-last\n" {
-		t.Fatalf("queue-name completion = %q, want sorted queue names", output)
+		t.Fatalf("project-name completion = %q, want sorted project names", output)
 	}
 }
 
@@ -386,6 +581,68 @@ func TestShowWithPagerDisabledWritesDirectly(t *testing.T) {
 	}
 	if string(output) != "log output" {
 		t.Fatalf("output = %q, want log output", output)
+	}
+}
+
+func TestShowRunIncludesCarriedJobFromCommands(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(paths.runsDir, "run-2")
+	queue := Queue{Commands: []QueuedCommand{{
+		ID: "carried", Name: "carried-job", Command: []string{"echo", "done"},
+		Origin: &JobOrigin{RunID: "run-1", JobID: "carried", Status: "success"},
+	}}}
+	if err := writeJSON(paths.queueFile, queue); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(runDir, "commands.json"), queue); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(runDir, "summary.json"), RunSummary{RunID: "run-2", Status: "finished", Results: []JobResult{{ID: "carried", ExitCode: 0}}}); err != nil {
+		t.Fatal(err)
+	}
+	sourceJobDir := filepath.Join(paths.runsDir, "run-1", "carried")
+	if err := os.MkdirAll(sourceJobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceJobDir, "submitted_at"), []byte("2026-09-16T00:00:01Z\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceJobDir, "finished_at"), []byte("2026-09-16T00:00:02Z\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	code := showRun(paths, "run-2", false)
+	os.Stdout = oldStdout
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 {
+		t.Fatalf("showRun exit code = %d, want 0", code)
+	}
+	for _, want := range []string{"carried", "carried-job", "2026-09-16T00:00:01Z", "2026-09-16T00:00:02Z", "echo done"} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("showRun output does not contain %q:\n%s", want, output)
+		}
+	}
+	if !strings.Contains(string(output), "rotari delete --run-id run-2") {
+		t.Fatalf("showRun output does not contain short delete command:\n%s", output)
+	}
+	if strings.Contains(string(output), "rotari delete --basedir") {
+		t.Fatalf("showRun output contains verbose delete command:\n%s", output)
 	}
 }
 
@@ -531,6 +788,16 @@ func TestPlanRerunSelectionCarriesForwardNonMatchingResults(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	alphaDir := filepath.Join(paths.runsDir, "run-1", "alpha")
+	if err := os.MkdirAll(alphaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(alphaDir, "submitted_at"), []byte("2026-09-16T00:00:01Z\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(alphaDir, "finished_at"), []byte("2026-09-16T00:00:02Z\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	meta := defaultMeta()
 	meta.LastRunID = "run-1"
 	if err := writeJSON(paths.metaFile, meta); err != nil {
@@ -554,8 +821,8 @@ func TestPlanRerunSelectionCarriesForwardNonMatchingResults(t *testing.T) {
 		t.Fatal("delta has no previous result and must not be carried forward")
 	}
 	origin := plan.CarriedOrigins["alpha"]
-	if origin == nil || origin.RunID != "run-1" || origin.JobID != "alpha" || origin.Status != "success" {
-		t.Fatalf("origin = %#v, want run-1/alpha success", origin)
+	if origin == nil || origin.RunID != "run-1" || origin.JobID != "alpha" || origin.Status != "success" || origin.SubmittedAt != "2026-09-16T00:00:01Z" || origin.FinishedAt != "2026-09-16T00:00:02Z" {
+		t.Fatalf("origin = %#v, want run-1/alpha success with timestamps", origin)
 	}
 }
 
@@ -592,6 +859,12 @@ func TestDeleteRemovesOnlySelectedRun(t *testing.T) {
 	}
 	if meta.LastRunID != "run-1" || meta.LastRunExitCode != 1 || meta.Phase != "collecting" {
 		t.Fatalf("metadata = %#v, want latest remaining run-1", meta)
+	}
+}
+
+func TestClearCommandIsRejected(t *testing.T) {
+	if code := run([]string{"clear", "--basedir", t.TempDir()}); code != 1 {
+		t.Fatalf("run clear exit = %d, want 1", code)
 	}
 }
 
@@ -663,7 +936,7 @@ func TestCompareQueueWithRun(t *testing.T) {
 
 func TestResolveQueueExecutorUsesDefaultExecutor(t *testing.T) {
 	baseDir := t.TempDir()
-	queueDir := filepath.Join(baseDir, "queues", "default")
+	queueDir := filepath.Join(baseDir, "projects", "default")
 	if err := os.MkdirAll(queueDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -713,7 +986,7 @@ func TestExecuteMixedRunRetriesFailedJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(baseDir, "retry-marker")
@@ -751,7 +1024,7 @@ func TestExecuteMixedRunPersistsRunName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeJSON(paths.queueFile, Queue{Commands: []QueuedCommand{{
@@ -1007,7 +1280,7 @@ func TestExecuteMixedRunBlocksWhenDependencyFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeJSON(paths.queueFile, Queue{Commands: []QueuedCommand{
@@ -1154,7 +1427,7 @@ func TestFinishCancelMessageWaitsUntilLockDisappears(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	lock := LockInfo{PID: os.Getpid(), RunID: "run-1", StartedAt: nowRFC3339()}
@@ -1375,7 +1648,7 @@ func TestFinishCancelMessageIncludesInspectHintWhenNotWaiting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1477,13 +1750,13 @@ func TestSendRunRequestReadsProgressThenFinalResponse(t *testing.T) {
 	}
 }
 
-func TestRunServerSyncWithDisconnectReturnsAfterSocketEOF(t *testing.T) {
+func TestRunServerSyncWithDisconnectCancelsRunningJob(t *testing.T) {
 	baseDir := t.TempDir()
-	queueDir := filepath.Join(baseDir, "queues", "default")
+	queueDir := filepath.Join(baseDir, "projects", "default")
 	if err := os.MkdirAll(queueDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeJSON(filepath.Join(queueDir, "queue.json"), Queue{Commands: []QueuedCommand{{ID: "slow-id", Command: []string{"sleep", "3"}, Name: "slow"}}}); err != nil {
+	if err := writeJSON(filepath.Join(queueDir, "queue.json"), Queue{Commands: []QueuedCommand{{ID: "slow-id", Command: []string{"sleep", "30"}, Name: "slow"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeJSON(filepath.Join(queueDir, "meta.json"), defaultMeta()); err != nil {
@@ -1500,14 +1773,36 @@ func TestRunServerSyncWithDisconnectReturnsAfterSocketEOF(t *testing.T) {
 		_, _, _ = runServerSyncWithDisconnect(serverConn, baseDir, "default", "", 1, 1, 0, "", nil, "", nil, "", func(serverResponse) {})
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	var pid int
+	deadline := time.Now().Add(5 * time.Second)
+	for pid == 0 && time.Now().Before(deadline) {
+		matches, err := filepath.Glob(filepath.Join(queueDir, "runs", "*", "slow-id", "pid"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) == 1 {
+			data, err := os.ReadFile(matches[0])
+			if err == nil {
+				pid, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+			}
+		}
+		if pid == 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if pid == 0 {
+		t.Fatal("job did not start")
+	}
 	if err := client.Close(); err != nil {
 		t.Fatal(err)
 	}
 
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("runServerSyncWithDisconnect did not return after disconnect")
+	case <-time.After(5 * time.Second):
+		t.Fatal("running job was not cancelled after disconnect")
+	}
+	if processAlive(pid) {
+		t.Fatalf("job process %d is still running after disconnect", pid)
 	}
 }

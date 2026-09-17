@@ -12,7 +12,7 @@ func cmdDelete(args []string) int {
 	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	basedir := cliString(fs, "basedir", "")
-	queueNameOption := cliString(fs, "queue-name", "")
+	queueNameOption := cliString(fs, "project-name", "")
 	runIDOption := cliString(fs, "run-id", "")
 	if err := fs.Parse(args); err != nil {
 		return 1
@@ -22,12 +22,7 @@ func cmdDelete(args []string) int {
 		return 1
 	}
 
-	baseDir, _, err := resolveBaseDir(*basedir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
-		return 1
-	}
-	queueName, err := resolveQueueName(baseDir, *queueNameOption)
+	baseDir, queueName, err := resolveExistingRunTarget(*basedir, *queueNameOption, *runIDOption)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -37,7 +32,7 @@ func cmdDelete(args []string) int {
 		fmt.Fprintf(os.Stderr, "failed to resolve paths: %v\n", err)
 		return 1
 	}
-	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create queue directory: %v\n", err)
 		return 1
 	}
@@ -53,7 +48,7 @@ func cmdDelete(args []string) int {
 		return 1
 	}
 	if running {
-		fmt.Fprintf(os.Stderr, "queue '%s' is running; clear is not allowed\n", queueName)
+		fmt.Fprintf(os.Stderr, "project '%s' is running; clear is not allowed\n", queueName)
 		return 1
 	}
 
@@ -96,9 +91,9 @@ func cmdDelete(args []string) int {
 		return 1
 	}
 	if *runIDOption == "" {
-		fmt.Printf("%s\n", green(fmt.Sprintf("cleared logs queue=%s directory=%s", queueName, filepath.Join(paths.queueDir, "runs"))))
+		fmt.Printf("%s\n", green(fmt.Sprintf("cleared logs project=%s directory=%s", queueName, filepath.Join(paths.projectDir, "runs"))))
 	} else {
-		fmt.Printf("%s\n", green(fmt.Sprintf("cleared logs queue=%s run=%s", queueName, *runIDOption)))
+		fmt.Printf("%s\n", green(fmt.Sprintf("cleared logs project=%s run=%s", queueName, *runIDOption)))
 	}
 	return 0
 }
@@ -139,7 +134,7 @@ func clearRunHistory(baseDir, queueName, runID string) error {
 		return err
 	}
 	if running {
-		return fmt.Errorf("queue %q is running; clear is not allowed", queueName)
+		return fmt.Errorf("project %q is running; clear is not allowed", queueName)
 	}
 	if filepath.Base(runID) != runID || runID == "." || runID == ".." {
 		return fmt.Errorf("run %q not found", runID)

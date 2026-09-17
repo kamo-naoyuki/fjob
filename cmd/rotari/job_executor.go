@@ -6,12 +6,38 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // JobHandle carries what a JobExecutor needs to wait for a previously submitted job.
 type JobHandle struct {
 	Job    JobSpec
 	Native string //executor-specific job id (e.g. Slurm job id); empty when unused
+}
+
+type schedulerStatus struct {
+	State     string `json:"state"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+func writeSchedulerStatus(jobDir, state string) {
+	state = strings.ToLower(strings.TrimSpace(state))
+	if state == "" {
+		return
+	}
+	_ = writeJSON(filepath.Join(jobDir, "scheduler_status.json"), schedulerStatus{State: state, UpdatedAt: nowRFC3339()})
+}
+
+func loadSchedulerStatus(jobDir string) string {
+	data, err := os.ReadFile(filepath.Join(jobDir, "scheduler_status.json"))
+	if err != nil {
+		return ""
+	}
+	var status schedulerStatus
+	if json.Unmarshal(data, &status) != nil {
+		return ""
+	}
+	return status.State
 }
 
 // JobExecutor abstracts a job execution executor (e.g. "local", "slurm"). Adding a

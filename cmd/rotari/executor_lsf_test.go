@@ -45,7 +45,7 @@ if [ "$1" = "-a" ]; then
     printf 'DONE 0\n'
     exit 0
 fi
-exit 1
+printf 'PEND\n'
 `)
 	oldPath := os.Getenv("PATH")
 	if err := os.Setenv("PATH", binDir+string(os.PathListSeparator)+oldPath); err != nil {
@@ -54,8 +54,12 @@ exit 1
 	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
 
 	active, err := lsfJobActive("123")
-	if err != nil || active {
-		t.Fatalf("lsfJobActive = %v, %v; want false, nil", active, err)
+	if err != nil || !active {
+		t.Fatalf("lsfJobActive = %v, %v; want true, nil", active, err)
+	}
+	state, err := lsfJobState("123")
+	if err != nil || state != "pending" {
+		t.Fatalf("lsfJobState = %q, %v; want pending, nil", state, err)
 	}
 	exitCode, ok := lsfAccounting("123")
 	if !ok || exitCode != 0 {
@@ -146,6 +150,34 @@ func TestWaitLSFJobUsesWrapperStatus(t *testing.T) {
 	}
 }
 
+func TestWaitLSFJobPersistsNormalizedSchedulerStatus(t *testing.T) {
+	binDir := t.TempDir()
+	runDir := t.TempDir()
+	job := lsfJobMetadata{Executor: "lsf", JobID: "job-1", Command: []string{"echo", "hi"}, LSFJobID: "123"}
+	jobDir := filepath.Join(runDir, job.JobID)
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statusPath := filepath.Join(jobDir, "status.json")
+	writeExecutable(t, binDir, "bjobs", fmt.Sprintf(`#!/bin/sh
+printf '{"phase":"finished","exit_code":0}\n' > %q
+printf 'RUN\n'
+`, statusPath))
+	oldPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", binDir+string(os.PathListSeparator)+oldPath); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
+
+	result := waitLSFJob(runDir, job)
+	if result.ExitCode != 0 || result.Error != "" {
+		t.Fatalf("result = %+v, want successful result", result)
+	}
+	if state := loadSchedulerStatus(jobDir); state != "running" {
+		t.Fatalf("scheduler state = %q, want running", state)
+	}
+}
+
 func TestExecuteMixedRunSupportsLSFExecutor(t *testing.T) {
 	binDir := t.TempDir()
 	writeExecutable(t, binDir, "bsub", `#!/bin/sh
@@ -170,7 +202,7 @@ exit 1
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	queue := Queue{Commands: []QueuedCommand{{ID: "lsf-job", Command: []string{"echo", "hi"}, Executor: "lsf"}}}

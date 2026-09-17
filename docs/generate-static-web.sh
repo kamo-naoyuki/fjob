@@ -20,14 +20,14 @@ echo "building rotari..."
 (cd "${repo_dir}" && "${go_binary}" build -o "${binary}" ./cmd/rotari)
 
 export ROTARI_BASEDIR="${state_dir}"
-export ROTARI_QUEUE_NAME=demo
+export ROTARI_PROJECT_NAME=demo
 
 "${binary}" check
 "${binary}" add --job-name prepare sh -c 'echo preparation complete'
 "${binary}" add --job-name train --depends-on prepare sh -c 'echo training complete'
 "${binary}" add --job-name failed sh -c 'echo validation failed; exit 1'
 "${binary}" run --run-name "Demo run" || true
-first_run_id=$(find "${state_dir}/queues/demo/runs" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tail -n 1)
+first_run_id=$(find "${state_dir}/projects/demo/runs" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tail -n 1)
 if [[ -z "${first_run_id}" ]]; then
 	echo "first run was not created" >&2
 	exit 1
@@ -40,7 +40,7 @@ fi
 "${binary}" run --failed --run-name "Retry run"
 
 # Keep a useful current queue in the demo so the queue page is not empty.
-run_count=$(find "${state_dir}/queues/demo/runs" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | wc -l)
+run_count=$(find "${state_dir}/projects/demo/runs" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | wc -l)
 if [[ "${run_count}" -lt 2 ]]; then
 	echo "expected two demo runs, found ${run_count}" >&2
 	exit 1

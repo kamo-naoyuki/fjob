@@ -137,11 +137,14 @@ func waitPBSJob(runDir string, job pbsJobMetadata) JobResult {
 		if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
 			return jobResultFromStatus(job.JobID, job.Command, status)
 		}
-		active, err := pbsJobActive(job.PBSJobID)
+		state, err := pbsJobState(job.PBSJobID)
 		if err != nil {
 			return JobResult{ID: job.JobID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 		}
-		if !active {
+		if state != "" {
+			writeSchedulerStatus(jobDir, state)
+		}
+		if state == "" {
 			if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
 				return jobResultFromStatus(job.JobID, job.Command, status)
 			}
@@ -163,8 +166,36 @@ func waitPBSJob(runDir string, job pbsJobMetadata) JobResult {
 // pbsJobActive reports whether the scheduler still tracks the job. qstat
 // exits non-zero once a job has been purged from its queue view.
 func pbsJobActive(jobID string) (bool, error) {
-	_, err := runPBSCommand("qstat", jobID)
-	return err == nil, nil
+	state, err := pbsJobState(jobID)
+	return state != "", err
+}
+
+func pbsJobState(jobID string) (string, error) {
+	output, err := runPBSCommand("qstat", "-f", jobID)
+	if err != nil {
+		return "", nil
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), "=", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) != "job_state" {
+			continue
+		}
+		switch strings.TrimSpace(parts[1]) {
+		case "Q":
+			return "pending", nil
+		case "R", "E":
+			return "running", nil
+		case "H":
+			return "held", nil
+		case "S":
+			return "suspended", nil
+		case "W":
+			return "waiting", nil
+		default:
+			return strings.ToLower(strings.TrimSpace(parts[1])), nil
+		}
+	}
+	return "", nil
 }
 
 // pbsAccounting parses "exit_status = N" out of qstat's full/history output,

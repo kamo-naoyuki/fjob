@@ -20,7 +20,7 @@ import (
 
 type serverRequest struct {
 	Op               string   `json:"op"`
-	QueueName        string   `json:"queue_name,omitempty"`
+	QueueName        string   `json:"project_name,omitempty"`
 	Command          []string `json:"command,omitempty"`
 	LocalConcurrency int      `json:"local_concurrency,omitempty"`
 	BatchMaxActive   int      `json:"batch_max_active,omitempty"`
@@ -208,7 +208,7 @@ func cmdAdd(args []string) int {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	basedir := cliString(fs, "basedir", "")
-	queueNameOption := cliString(fs, "queue-name", "")
+	queueNameOption := cliString(fs, "project-name", "")
 	executor := cliString(fs, "executor", "")
 	var executorOptions stringSliceFlag
 	cliValue(fs, &executorOptions, "executor-option")
@@ -216,6 +216,7 @@ func cmdAdd(args []string) int {
 	cliStringVar(fs, jobName, "name", "")
 	var dependsOn stringSliceFlag
 	cliValue(fs, &dependsOn, "depends-on")
+	runAfterAdd := cliBool(fs, "run", false)
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -229,7 +230,7 @@ func cmdAdd(args []string) int {
 		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
 		return 1
 	}
-	queueName, err := resolveQueueName(baseDir, *queueNameOption)
+	queueName, err := resolveProjectName(baseDir, *queueNameOption)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -240,15 +241,23 @@ func cmdAdd(args []string) int {
 		return 1
 	}
 	fmt.Println(cyan(message))
+	if *runAfterAdd {
+		return cmdRun(addRunArgs(baseDir, queueName))
+	}
 	return 0
+}
+
+func addRunArgs(baseDir, queueName string) []string {
+	return []string{"--basedir", baseDir, "--project-name", queueName}
 }
 
 func cmdRun(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	basedir := cliString(fs, "basedir", "")
-	queueNameOption := cliString(fs, "queue-name", "")
+	queueNameOption := cliString(fs, "project-name", "")
 	runIDOption := cliString(fs, "run-id", "")
+	overwriteQueue := cliBool(fs, "overwrite", false)
 	runName := cliString(fs, "run-name", "")
 	localConcurrency := cliInt(fs, "local-concurrency", 8)
 	batchConcurrency := cliInt(fs, "batch-concurrency", 8)
@@ -270,17 +279,16 @@ func cmdRun(args []string) int {
 	if len(jobIDs) > 0 && selection == "" {
 		selection = "job-id"
 	}
-	if len(left) != 0 || *localConcurrency < 1 || *batchConcurrency < 1 || *retry < -1 {
+	if len(left) != 0 || *localConcurrency < 1 || *batchConcurrency < 1 || *retry < -1 || (*overwriteQueue && *runIDOption == "") {
 		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("run"))
 		return 1
 	}
-	baseDir, _, err := resolveBaseDir(*basedir)
+	baseDir, queueName, err := resolveExistingRunTarget(*basedir, *queueNameOption, *runIDOption)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
+		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	queueName, err := resolveQueueName(baseDir, *queueNameOption)
-	if err != nil {
+	if err := ensureProjectIdle(baseDir, queueName, "run"); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -320,7 +328,7 @@ func cmdRun(args []string) int {
 	if forceCopy {
 		// Only prompts when the queue actually has jobs to lose; an empty
 		// queue (the common "auto-copy" case) is overwritten silently.
-		overwriteConfirmed, confirmErr := confirmQueueOverwrite(baseDir, queueName, false, false)
+		overwriteConfirmed, confirmErr := confirmQueueOverwrite(baseDir, queueName, false, *overwriteQueue)
 		if confirmErr != nil {
 			fmt.Fprintln(os.Stderr, confirmErr)
 			return 1
@@ -529,7 +537,7 @@ func (server *rotariServer) handle(baseDir string, conn net.Conn) {
 			server.beginRun()
 			onDone = server.endRun
 			message, err = startServerRun(baseDir, request.QueueName, request.RunName, request.LocalConcurrency, request.BatchMaxActive, request.Retry, request.Executor, request.ExecutorOptions, request.Selection, request.JobIDs, request.SourceRunID, onDone, request.CWD)
-			if err != nil && onDone != nil {
+			if err != nil {
 				onDone()
 			}
 		} else {
@@ -589,7 +597,7 @@ func cmdCancel(args []string) int {
 	fs := flag.NewFlagSet("cancel", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	basedir := cliString(fs, "basedir", "")
-	queueNameOption := cliString(fs, "queue-name", "")
+	queueNameOption := cliString(fs, "project-name", "")
 	var jobIDs stringSliceFlag
 	cliValue(fs, &jobIDs, "job-id")
 	wait := cliBool(fs, "wait", false)
@@ -609,7 +617,7 @@ func cmdCancel(args []string) int {
 		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
 		return 1
 	}
-	queueName, err := resolveQueueName(baseDir, *queueNameOption)
+	queueName, err := resolveProjectName(baseDir, *queueNameOption)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -635,7 +643,7 @@ func cmdJobSignal(args []string, operation string) int {
 	fs := flag.NewFlagSet(operation, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	basedir := cliString(fs, "basedir", "")
-	queueNameOption := cliString(fs, "queue-name", "")
+	queueNameOption := cliString(fs, "project-name", "")
 	var jobIDs stringSliceFlag
 	cliValue(fs, &jobIDs, "job-id")
 	if err := fs.Parse(args); err != nil {
@@ -650,7 +658,7 @@ func cmdJobSignal(args []string, operation string) int {
 		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
 		return 1
 	}
-	queueName, err := resolveQueueName(baseDir, *queueNameOption)
+	queueName, err := resolveProjectName(baseDir, *queueNameOption)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -822,7 +830,7 @@ func controlQueueJobs(baseDir, queueName string, jobIDs []string, operation stri
 	data, err := os.ReadFile(paths.lockFile)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("queue %q is not running", queueName)
+			return "", fmt.Errorf("project %q is not running", queueName)
 		}
 		return "", err
 	}
@@ -877,7 +885,7 @@ func controlQueueJobs(baseDir, queueName string, jobIDs []string, operation stri
 	if controlled == 0 {
 		return "", fmt.Errorf("no running jobs found in queue %q", queueName)
 	}
-	return fmt.Sprintf("%s requested\n  Queue: %s\n  Run: %s\n  Jobs: %d", strings.Title(operation), queueName, lock.RunID, controlled), nil
+	return fmt.Sprintf("%s requested\n  Project: %s\n  Run: %s\n  Jobs: %d", strings.Title(operation), queueName, lock.RunID, controlled), nil
 }
 
 func jobFinished(jobDir string) bool {
@@ -900,7 +908,7 @@ func cancelQueueJobs(baseDir, queueName string, jobIDs []string, wait bool) (str
 	data, err := os.ReadFile(paths.lockFile)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("queue %q is not running", queueName)
+			return "", fmt.Errorf("project %q is not running", queueName)
 		}
 		return "", err
 	}
@@ -926,7 +934,7 @@ func cancelQueueJobs(baseDir, queueName string, jobIDs []string, wait bool) (str
 				return "", fmt.Errorf("scancel %s: %w", job.SlurmJobID, err)
 			}
 		}
-		return finishCancelMessage(fmt.Sprintf("Cancel requested\n  Queue: %s\n  Run: %s\n  Slurm jobs: %d", queueName, lock.RunID, len(jobs)), paths, queueName, lock.RunID, wait)
+		return finishCancelMessage(fmt.Sprintf("Cancel requested\n  Project: %s\n  Run: %s\n  Slurm jobs: %d", queueName, lock.RunID, len(jobs)), paths, queueName, lock.RunID, wait)
 	}
 
 	if lock.PID == os.Getpid() {
@@ -945,12 +953,12 @@ func cancelQueueJobs(baseDir, queueName string, jobIDs []string, wait bool) (str
 				cancelled++
 			}
 		}
-		return finishCancelMessage(fmt.Sprintf("Cancel requested\n  Queue: %s\n  Run: %s\n  Local jobs: %d", queueName, lock.RunID, cancelled), paths, queueName, lock.RunID, wait)
+		return finishCancelMessage(fmt.Sprintf("Cancel requested\n  Project: %s\n  Run: %s\n  Local jobs: %d", queueName, lock.RunID, cancelled), paths, queueName, lock.RunID, wait)
 	}
 	if err := syscall.Kill(-lock.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return "", fmt.Errorf("cancel local worker: %w", err)
 	}
-	return finishCancelMessage(fmt.Sprintf("Cancel requested\n  Queue: %s\n  Run: %s\n  Worker PID: %d", queueName, lock.RunID, lock.PID), paths, queueName, lock.RunID, wait)
+	return finishCancelMessage(fmt.Sprintf("Cancel requested\n  Project: %s\n  Run: %s\n  Worker PID: %d", queueName, lock.RunID, lock.PID), paths, queueName, lock.RunID, wait)
 }
 
 func cancelJobs(runDir, queueName, runID string, jobIDs []string) (string, error) {
@@ -995,7 +1003,7 @@ func cancelJobs(runDir, queueName, runID string, jobIDs []string) (string, error
 		}
 		cancelled++
 	}
-	return fmt.Sprintf("Cancel requested\n  Queue: %s\n  Run: %s\n  Jobs: %d", queueName, runID, cancelled), nil
+	return fmt.Sprintf("Cancel requested\n  Project: %s\n  Run: %s\n  Jobs: %d", queueName, runID, cancelled), nil
 }
 
 func markQueueCancelling(paths pathSet) error {
@@ -1034,19 +1042,19 @@ func finishCancelMessage(message string, paths pathSet, queueName, runID string,
 			time.Sleep(500 * time.Millisecond)
 		}
 	}
-	message += fmt.Sprintf("\n\nInspect status:\n  rotari show --basedir %s --queue-name %s --run-id %s", paths.baseDir, queueName, runID)
+	message += fmt.Sprintf("\n\nInspect status:\n  rotari show --basedir %s --project-name %s --run-id %s", paths.baseDir, queueName, runID)
 	return message, nil
 }
 
 func enqueueCommand(baseDir, queueName string, command []string, executor string, executorOptions []string, jobName string, dependsOn []string) (string, error) {
 	if queueName == "" || len(command) == 0 {
-		return "", errors.New("queue name and command are required")
+		return "", errors.New("project name and command are required")
 	}
 	paths, err := resolvePaths(baseDir, queueName)
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
 		return "", err
 	}
 	release, err := acquireStateLock(paths.stateLockFile)
@@ -1054,12 +1062,8 @@ func enqueueCommand(baseDir, queueName string, command []string, executor string
 		return "", err
 	}
 	defer release()
-	running, err := isRunning(paths.lockFile)
-	if err != nil {
+	if err := ensureProjectIdleForPaths(paths, "add"); err != nil {
 		return "", err
-	}
-	if running {
-		return "", fmt.Errorf("queue %q is running", queueName)
 	}
 	meta, err := loadMeta(paths.metaFile)
 	if err != nil {
@@ -1087,7 +1091,7 @@ func enqueueCommand(baseDir, queueName string, command []string, executor string
 	if err := writeJSON(paths.metaFile, meta); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("submitted queue=%s command=%s", queueName, joinCommand(command)), nil
+	return fmt.Sprintf("submitted project=%s command=%s", queueName, joinCommand(command)), nil
 }
 
 func startServerRun(baseDir, queueName, runName string, localConcurrency, batchMaxActive, retry int, executor string, executorOptions []string, selection string, jobIDs []string, sourceRunID string, onDone func(), cwd string) (string, error) {
@@ -1102,7 +1106,7 @@ func startServerRun(baseDir, queueName, runName string, localConcurrency, batchM
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
 		return "", err
 	}
 	release, err := acquireStateLock(paths.stateLockFile)
@@ -1110,6 +1114,9 @@ func startServerRun(baseDir, queueName, runName string, localConcurrency, batchM
 		return "", err
 	}
 	defer release()
+	if err := ensureProjectIdleForPaths(paths, "run"); err != nil {
+		return "", err
+	}
 	queue, err := loadQueue(paths.queueFile)
 	if err != nil {
 		return "", err
@@ -1118,11 +1125,11 @@ func startServerRun(baseDir, queueName, runName string, localConcurrency, batchM
 		return "", fmt.Errorf("queue %q has no queued commands", queueName)
 	}
 	runID := makeRunID()
-	if err := launchAsyncRun(paths, queueName, runID, runName, localConcurrency, batchMaxActive, retry, executor, executorOptions, selection, jobIDs, sourceRunID, cwd); err != 0 {
+	if err := launchAsyncRun(paths, queueName, runID, runName, localConcurrency, batchMaxActive, retry, executor, executorOptions, selection, jobIDs, sourceRunID, cwd, onDone); err != 0 {
 		return "", errors.New("queue is already running")
 	}
 	runDir := filepath.Join(paths.runsDir, runID)
-	return fmt.Sprintf("Run started:\n  Queue: %s\n  Run: %s\n  Directory: %s\n\nCheck status:\n  rotari show --basedir %s --queue-name %s --run-id %s\n\nCancel run:\n  rotari cancel --basedir %s --queue-name %s",
+	return fmt.Sprintf("Run started:\n  Project: %s\n  Run: %s\n  Directory: %s\n\nCheck status:\n  rotari show --basedir %s --project-name %s --run-id %s\n\nCancel run:\n  rotari cancel --basedir %s --project-name %s",
 		queueName, formatRunLabel(runID, runName), runDir, paths.baseDir, queueName, runID, paths.baseDir, queueName), nil
 }
 
@@ -1138,11 +1145,15 @@ func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMa
 	if err != nil {
 		return "", 1, err
 	}
-	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
 		return "", 1, err
 	}
 	release, err := acquireStateLock(paths.stateLockFile)
 	if err != nil {
+		return "", 1, err
+	}
+	if err := ensureProjectIdleForPaths(paths, "run"); err != nil {
+		release()
 		return "", 1, err
 	}
 	queue, err := loadQueue(paths.queueFile)
@@ -1161,7 +1172,13 @@ func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMa
 	}
 	if err := acquireLock(paths.lockFile, LockInfo{PID: os.Getpid(), RunID: runID, StartedAt: nowRFC3339()}); err != nil {
 		release()
-		return "", 1, fmt.Errorf("queue %q is already running", queueName)
+		return "", 1, fmt.Errorf("project %q is already running", queueName)
+	}
+	if err := registerRun(paths, runID); err != nil {
+		_ = os.Remove(paths.lockFile)
+		_ = os.RemoveAll(filepath.Join(paths.runsDir, runID))
+		release()
+		return "", 1, fmt.Errorf("failed to register run: %w", err)
 	}
 	meta, err := loadMeta(paths.metaFile)
 	if err != nil {
@@ -1191,7 +1208,7 @@ func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMa
 				if retry > 0 {
 					failureTitle = "Job failed after retry:"
 				}
-				message = fmt.Sprintf("%s\n  ID: %s\n  Command: %s\n  Show output:\n    rotari show --basedir %s --queue-name %s --run-id %s --job-id %s",
+				message = fmt.Sprintf("%s\n  ID: %s\n  Command: %s\n  Show output:\n    rotari show --basedir %s --project-name %s --run-id %s --job-id %s",
 					failureTitle,
 					result.ID, strings.Join(result.Command, " "), paths.baseDir, paths.queueName, runID, result.ID)
 			} else if strings.HasPrefix(result.Error, "retry:") {
@@ -1219,7 +1236,7 @@ func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMa
 			return formatRunCompletion(paths, runID, summary), exitCode, nil
 		}
 	}
-	return fmt.Sprintf("Run finished:\n  Queue: %s\n  Run: %s\n  Exit code: %d", queueName, runID, exitCode), exitCode, nil
+	return fmt.Sprintf("Run finished:\n  Project: %s\n  Run: %s\n  Exit code: %d", queueName, runID, exitCode), exitCode, nil
 }
 
 func joinCommand(command []string) string {

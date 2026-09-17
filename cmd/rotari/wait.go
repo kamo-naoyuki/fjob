@@ -13,7 +13,7 @@ func cmdWait(args []string) int {
 	fs := flag.NewFlagSet("wait", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	basedir := cliString(fs, "basedir", "")
-	queueNameOption := cliString(fs, "queue-name", "")
+	queueNameOption := cliString(fs, "project-name", "")
 	runID := cliString(fs, "run-id", "")
 	timeout := cliDuration(fs, "timeout", 0)
 	if err := fs.Parse(args); err != nil {
@@ -28,12 +28,7 @@ func cmdWait(args []string) int {
 		return 1
 	}
 
-	baseDir, _, err := resolveBaseDir(*basedir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
-		return 1
-	}
-	queueName, err := resolveQueueName(baseDir, *queueNameOption)
+	baseDir, queueName, err := resolveExistingRunTarget(*basedir, *queueNameOption, *runID)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -95,13 +90,13 @@ func formatRunCompletion(paths pathSet, runID string, summary RunSummary) string
 	} else {
 		title = green(title)
 	}
-	message := fmt.Sprintf("%s\n  Queue: %s\n  Run: %s\n  Status: %s\n  Exit code: %d\n  Success: %d\n  Failed: %d\n  Directory: %s\n",
+	message := fmt.Sprintf("%s\n  Project: %s\n  Run: %s\n  Status: %s\n  Exit code: %d\n  Success: %d\n  Failed: %d\n  Directory: %s\n",
 		title,
 		paths.queueName, formatRunLabel(runID, summary.RunName), summary.Status, summary.ExitCode, successCount, failedCount, runDir)
 	if failedCount > 0 {
-		message += fmt.Sprintf("\nInspect run:\n  rotari show --basedir %s --queue-name %s --run-id %s\n\nSee failed job output below.\n\nFailed job output:\n%s",
+		message += fmt.Sprintf("\nInspect run:\n  rotari show --basedir %s --project-name %s --run-id %s\n\nSee failed job output below.\n\nFailed job output:\n%s",
 			paths.baseDir, paths.queueName, runID, failedJobHints(paths, runID, summary.Results))
-		message += fmt.Sprintf("\nRerun failed jobs:\n  rotari retry --basedir %s --queue-name %s\n", paths.baseDir, paths.queueName)
+		message += fmt.Sprintf("\nRerun failed jobs:\n  rotari retry --basedir %s --project-name %s\n", paths.baseDir, paths.queueName)
 	}
 	return message
 }

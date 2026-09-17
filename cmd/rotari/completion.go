@@ -45,23 +45,23 @@ func cmdCompletion(args []string) int {
 }
 
 func cmdComplete(args []string) int {
-	if len(args) == 0 || (args[0] != "queue-name" && args[0] != "run-id" && args[0] != "job-id") {
+	if len(args) == 0 || (args[0] != "project-name" && args[0] != "run-id" && args[0] != "job-id") {
 		return 1
 	}
-	basedir, queueName := "", ""
+	basedir, projectName := "", ""
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
-		case "--basedir":
+		case "--basedir", "-b":
 			if i+1 >= len(args) {
 				return 1
 			}
 			basedir = args[i+1]
 			i++
-		case "--queue-name":
+		case "--project-name", "-p":
 			if i+1 >= len(args) {
 				return 1
 			}
-			queueName = args[i+1]
+			projectName = args[i+1]
 			i++
 		}
 	}
@@ -69,8 +69,8 @@ func cmdComplete(args []string) int {
 	if err != nil {
 		return 1
 	}
-	if args[0] == "queue-name" {
-		entries, err := os.ReadDir(filepath.Join(baseDir, "queues"))
+	if args[0] == "project-name" {
+		entries, err := os.ReadDir(filepath.Join(baseDir, "projects"))
 		if err != nil {
 			return 0
 		}
@@ -85,11 +85,11 @@ func cmdComplete(args []string) int {
 		}
 		return 0
 	}
-	queueName, err = resolveQueueName(baseDir, queueName)
+	projectName, err = resolveProjectName(baseDir, projectName)
 	if err != nil {
 		return 1
 	}
-	paths, err := resolvePaths(baseDir, queueName)
+	paths, err := resolvePaths(baseDir, projectName)
 	if err != nil {
 		return 1
 	}
@@ -243,16 +243,16 @@ func generateBashCompletion() string {
 	builder.WriteString("    if [[ ${COMP_CWORD} -eq 1 ]]; then\n")
 	fmt.Fprintf(&builder, "        COMPREPLY=($(compgen -W \"%s\" -- \"$cur\"))\n", strings.Join(cliCommandNames(), " "))
 	builder.WriteString("        return\n    fi\n\n    case \"$prev\" in\n")
-	builder.WriteString("        --queue-name)\n            local -a __rotari_completion_args=()\n            local __i\n            for (( __i = 2; __i < ${#COMP_WORDS[@]}; __i++ )); do\n                case \"${COMP_WORDS[__i]}\" in\n                    --basedir)\n                        if (( __i + 1 < ${#COMP_WORDS[@]} )); then\n                            __rotari_completion_args+=(\"${COMP_WORDS[__i]}\" \"${COMP_WORDS[__i+1]}\")\n                            (( __i++ ))\n                        fi\n                        ;;\n                esac\n            done\n            COMPREPLY=($(compgen -W \"$(rotari __complete queue-name \"${__rotari_completion_args[@]}\" 2>/dev/null)\" -- \"$cur\"))\n            return\n            ;;\n")
+	builder.WriteString("        --project-name|-p)\n            local -a __rotari_completion_args=()\n            local __i\n            for (( __i = 2; __i < ${#COMP_WORDS[@]}; __i++ )); do\n                case \"${COMP_WORDS[__i]}\" in\n                    --basedir|-b)\n                        if (( __i + 1 < ${#COMP_WORDS[@]} )); then\n                            __rotari_completion_args+=(\"${COMP_WORDS[__i]}\" \"${COMP_WORDS[__i+1]}\")\n                            (( __i++ ))\n                        fi\n                        ;;\n                esac\n            done\n            COMPREPLY=($(compgen -W \"$(rotari __complete project-name \"${__rotari_completion_args[@]}\" 2>/dev/null)\" -- \"$cur\"))\n            return\n            ;;\n")
 	for _, command := range cliCommandSpecs {
 		for _, option := range command.Flags {
 			if len(option.Values) == 0 {
 				continue
 			}
-			fmt.Fprintf(&builder, "        --%s)\n            COMPREPLY=($(compgen -W \"%s\" -- \"$cur\"))\n            return\n            ;;\n", option.Name, strings.Join(option.Values, " "))
+			fmt.Fprintf(&builder, "        %s)\n            COMPREPLY=($(compgen -W \"%s\" -- \"$cur\"))\n            return\n            ;;\n", shellOptionPattern(option.Name), strings.Join(option.Values, " "))
 		}
 	}
-	builder.WriteString("        --run-id)\n            local -a __rotari_completion_args=()\n            local __i\n            for (( __i = 2; __i < ${#COMP_WORDS[@]}; __i++ )); do\n                case \"${COMP_WORDS[__i]}\" in\n                    --basedir|--queue-name)\n                        if (( __i + 1 < ${#COMP_WORDS[@]} )); then\n                            __rotari_completion_args+=(\"${COMP_WORDS[__i]}\" \"${COMP_WORDS[__i+1]}\")\n                            (( __i++ ))\n                        fi\n                        ;;\n                esac\n            done\n            COMPREPLY=($(compgen -W \"$(rotari __complete run-id \"${__rotari_completion_args[@]}\" 2>/dev/null)\" -- \"$cur\"))\n            return\n            ;;\n        --job-id)\n            local -a __rotari_completion_args=()\n            local __i\n            for (( __i = 2; __i < ${#COMP_WORDS[@]}; __i++ )); do\n                case \"${COMP_WORDS[__i]}\" in\n                    --basedir|--queue-name)\n                        if (( __i + 1 < ${#COMP_WORDS[@]} )); then\n                            __rotari_completion_args+=(\"${COMP_WORDS[__i]}\" \"${COMP_WORDS[__i+1]}\")\n                            (( __i++ ))\n                        fi\n                        ;;\n                esac\n            done\n            COMPREPLY=($(compgen -W \"$(rotari __complete job-id \"${__rotari_completion_args[@]}\" 2>/dev/null)\" -- \"$cur\"))\n            return\n            ;;\n")
+	builder.WriteString("        --run-id|-r)\n            local -a __rotari_completion_args=()\n            local __i\n            for (( __i = 2; __i < ${#COMP_WORDS[@]}; __i++ )); do\n                case \"${COMP_WORDS[__i]}\" in\n                    --basedir|-b|--project-name|-p)\n                        if (( __i + 1 < ${#COMP_WORDS[@]} )); then\n                            __rotari_completion_args+=(\"${COMP_WORDS[__i]}\" \"${COMP_WORDS[__i+1]}\")\n                            (( __i++ ))\n                        fi\n                        ;;\n                esac\n            done\n            COMPREPLY=($(compgen -W \"$(rotari __complete run-id \"${__rotari_completion_args[@]}\" 2>/dev/null)\" -- \"$cur\"))\n            return\n            ;;\n        --job-id|-j)\n            local -a __rotari_completion_args=()\n            local __i\n            for (( __i = 2; __i < ${#COMP_WORDS[@]}; __i++ )); do\n                case \"${COMP_WORDS[__i]}\" in\n                    --basedir|-b|--project-name|-p)\n                        if (( __i + 1 < ${#COMP_WORDS[@]} )); then\n                            __rotari_completion_args+=(\"${COMP_WORDS[__i]}\" \"${COMP_WORDS[__i+1]}\")\n                            (( __i++ ))\n                        fi\n                        ;;\n                esac\n            done\n            COMPREPLY=($(compgen -W \"$(rotari __complete job-id \"${__rotari_completion_args[@]}\" 2>/dev/null)\" -- \"$cur\"))\n            return\n            ;;\n")
 	completionValues := cliSubcommandNames("completion")
 	fmt.Fprintf(&builder, "        completion)\n            COMPREPLY=($(compgen -W \"%s\" -- \"$cur\"))\n            return\n            ;;\n    esac\n\n    case \"$command\" in\n", strings.Join(completionValues, " "))
 	for _, command := range cliCommandSpecs {
@@ -285,8 +285,18 @@ func bashOptions(flags []cliFlagSpec) string {
 	options := make([]string, 0, len(flags))
 	for _, flag := range flags {
 		options = append(options, "--"+flag.Name)
+		if short := cliShortFlagNames[flag.Name]; short != "" {
+			options = append(options, "-"+short)
+		}
 	}
 	return strings.Join(options, " ")
+}
+
+func shellOptionPattern(name string) string {
+	if short := cliShortFlagNames[name]; short != "" {
+		return "--" + name + "|-" + short
+	}
+	return "--" + name
 }
 
 func generateZshCompletion() string {
@@ -316,7 +326,7 @@ func generateZshCompletion() string {
 			builder.WriteString("            fi\n")
 		} else {
 			if len(command.Flags) > 0 {
-				fmt.Fprintf(&builder, "            case $words[CURRENT-1] in\n                --run-id)\n                    _rotari_run_ids\n                    compadd -- $reply\n                    return\n                    ;;\n                --job-id)\n                    _rotari_job_ids\n                    compadd -- $reply\n                    return\n                    ;;\n            esac\n            if [[ $words[CURRENT] == -* ]]; then\n                compadd -- %s\n                return\n            fi\n", zshOptionNames(command.Flags))
+				fmt.Fprintf(&builder, "            case $words[CURRENT-1] in\n                --run-id|-r)\n                    _rotari_run_ids\n                    compadd -- $reply\n                    return\n                    ;;\n                --job-id|-j)\n                    _rotari_job_ids\n                    compadd -- $reply\n                    return\n                    ;;\n            esac\n            if [[ $words[CURRENT] == -* ]]; then\n                compadd -- %s\n                return\n            fi\n", zshOptionNames(command.Flags))
 			}
 			arguments := zshArguments(command.Flags)
 			if command.HasPositional {
@@ -326,18 +336,22 @@ func generateZshCompletion() string {
 		}
 		builder.WriteString("            ;;\n")
 	}
-	builder.WriteString("    esac\n}\n\n_rotari_completion_context() {\n    local -a args\n    local i\n    for (( i = 3; i <= ${#words[@]}; i++ )); do\n        case $words[i] in\n            --basedir|--queue-name)\n                if (( i + 1 <= ${#words[@]} )); then\n                    args+=(\"$words[i]\" \"$words[i+1]\")\n                    (( i++ ))\n                fi\n                ;;\n        esac\n    done\n    reply=(\"${(@f)$(rotari __complete \"$1\" \"${args[@]}\" 2>/dev/null)}\")\n}\n_rotari_run_ids() { _rotari_completion_context run-id }\n_rotari_job_ids() { _rotari_completion_context job-id }\n\nif (( $+functions[compdef] )); then\n    compdef _rotari rotari\nfi\n")
-	builder.WriteString("_rotari_queue_names() { _rotari_completion_context queue-name }\n")
+	builder.WriteString("    esac\n}\n\n_rotari_completion_context() {\n    local -a args\n    local i\n    for (( i = 3; i <= ${#words[@]}; i++ )); do\n        case $words[i] in\n            --basedir|-b|--project-name|-p)\n                if (( i + 1 <= ${#words[@]} )); then\n                    args+=(\"$words[i]\" \"$words[i+1]\")\n                    (( i++ ))\n                fi\n                ;;\n        esac\n    done\n    reply=(\"${(@f)$(rotari __complete \"$1\" \"${args[@]}\" 2>/dev/null)}\")\n}\n_rotari_run_ids() { _rotari_completion_context run-id }\n_rotari_job_ids() { _rotari_completion_context job-id }\n\nif (( $+functions[compdef] )); then\n    compdef _rotari rotari\nfi\n")
+	builder.WriteString("_rotari_project_names() { _rotari_completion_context project-name }\n")
 	return builder.String()
 }
 
 func zshArguments(flags []cliFlagSpec) string {
 	arguments := make([]string, 0, len(flags))
 	for _, flag := range flags {
-		argument := fmt.Sprintf("'--%s[%s]", flag.Name, flag.Description)
+		option := "'--" + flag.Name
+		if short := cliShortFlagNames[flag.Name]; short != "" {
+			option = "{-" + short + ",--" + flag.Name + "}'"
+		}
+		argument := fmt.Sprintf("%s[%s]", option, flag.Description)
 		if len(flag.Values) > 0 {
 			argument += ":" + flag.ValueName + ":(" + strings.Join(flag.Values, " ") + ")"
-		} else if flag.Name == "queue-name" || flag.Name == "run-id" || flag.Name == "job-id" {
+		} else if flag.Name == "project-name" || flag.Name == "run-id" || flag.Name == "job-id" {
 			action := "_rotari_" + strings.ReplaceAll(flag.Name, "-", "_") + "s"
 			argument += ":" + flag.ValueName + ":" + action
 		} else if flag.ValueName != "" {
@@ -352,6 +366,9 @@ func zshOptionNames(flags []cliFlagSpec) string {
 	options := make([]string, 0, len(flags))
 	for _, flag := range flags {
 		options = append(options, "--"+flag.Name)
+		if short := cliShortFlagNames[flag.Name]; short != "" {
+			options = append(options, "-"+short)
+		}
 	}
 	return strings.Join(options, " ")
 }

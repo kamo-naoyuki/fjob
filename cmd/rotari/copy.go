@@ -27,7 +27,7 @@ func confirmQueueOverwrite(baseDir, queueName string, appendJobs, overwriteJobs 
 			if !isTerminal(os.Stdin) {
 				return false, errors.New("queue is not empty; use --append or --overwrite")
 			}
-			fmt.Fprintf(os.Stderr, "queue %q contains %d jobs; overwrite it? [y/N] ", queueName, len(queue.Commands))
+			fmt.Fprintf(os.Stderr, "project %q has %d queued jobs; overwrite them? [y/N] ", queueName, len(queue.Commands))
 			answer, readErr := bufio.NewReader(os.Stdin).ReadString('\n')
 			if readErr != nil && len(answer) == 0 {
 				return false, readErr
@@ -46,7 +46,7 @@ func cmdCopy(args []string) int {
 	fs := flag.NewFlagSet("copy", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	basedir := cliString(fs, "basedir", "")
-	queueNameOption := cliString(fs, "queue-name", "")
+	queueNameOption := cliString(fs, "project-name", "")
 	runID := cliString(fs, "run-id", "")
 	failed := cliBool(fs, "failed", false)
 	unfinished := cliBool(fs, "unfinished", false)
@@ -73,13 +73,12 @@ func cmdCopy(args []string) int {
 		selection = "all"
 	}
 
-	baseDir, _, err := resolveBaseDir(*basedir)
+	baseDir, queueName, err := resolveExistingRunTarget(*basedir, *queueNameOption, *runID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
+		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	queueName, err := resolveQueueName(baseDir, *queueNameOption)
-	if err != nil {
+	if err := ensureProjectIdle(baseDir, queueName, "copy"); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -108,12 +107,8 @@ func copyRunToQueue(baseDir, queueName, runID, selection string, jobIDs []string
 		return "", fmt.Errorf("failed to lock queue: %w", err)
 	}
 	defer release()
-	running, err := isRunning(paths.lockFile)
-	if err != nil {
-		return "", fmt.Errorf("failed to check queue: %w", err)
-	}
-	if running {
-		return "", fmt.Errorf("queue %q is running; copy is not allowed", queueName)
+	if err := ensureProjectIdleForPaths(paths, "copy"); err != nil {
+		return "", err
 	}
 
 	sourceRunDir := filepath.Join(paths.runsDir, runID)
@@ -182,7 +177,7 @@ func copyRunToQueue(baseDir, queueName, runID, selection string, jobIDs []string
 		return "", fmt.Errorf("failed to load queue: %w", err)
 	}
 	if len(queue.Commands) > 0 && !appendJobs && !overwrite {
-		return "", fmt.Errorf("queue %q is not empty; use --append or --overwrite", queueName)
+		return "", fmt.Errorf("project %q has queued jobs; use --append or --overwrite", queueName)
 	}
 	existingIDs := make(map[string]bool)
 	if appendJobs {

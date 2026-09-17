@@ -10,16 +10,21 @@ import (
 
 func TestSubmitSlurmJobWithFakeSlurm(t *testing.T) {
 	binDir := t.TempDir()
-	writeExecutable(t, binDir, "sbatch", `#!/bin/sh
+	argumentsPath := filepath.Join(t.TempDir(), "sbatch-args")
+	writeExecutable(t, binDir, "sbatch", fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$@" > %q
 printf '12345;fake-host\n'
-`)
+`, argumentsPath))
 	oldPath := os.Getenv("PATH")
 	if err := os.Setenv("PATH", binDir+string(os.PathListSeparator)+oldPath); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
 
-	runDir := t.TempDir()
+	masterDir := t.TempDir()
+	t.Setenv("ROTARI_MASTERDIR", masterDir)
+	baseDir := t.TempDir()
+	runDir := filepath.Join(baseDir, "projects", "demo", "runs", "run-1")
 	job := JobSpec{ID: "abc123", Command: []string{"echo", "hello"}}
 	metadata, err := submitSlurmJob(runDir, job, []string{"-p short --cpus-per-task=2"})
 	if err != nil {
@@ -41,11 +46,47 @@ printf '12345;fake-host\n'
 	if !strings.Contains(string(wrapper), "echo") {
 		t.Fatalf("wrapper does not contain command: %s", wrapper)
 	}
+	arguments, err := os.ReadFile(argumentsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantShowCommand := "--job-name=rotari show --run-id 'run-1' --job-id 'abc123'"
+	if !strings.Contains(string(arguments), wantShowCommand+"\n") {
+		t.Fatalf("sbatch arguments = %q, want %q", arguments, wantShowCommand)
+	}
+}
+
+func TestPrepareSlurmRunRegistersRunLocation(t *testing.T) {
+	t.Setenv("ROTARI_MASTERDIR", t.TempDir())
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := Queue{Commands: []QueuedCommand{{ID: "job-1", Command: []string{"echo", "hello"}}}}
+	if err := writeJSON(paths.queueFile, queue); err != nil {
+		t.Fatal(err)
+	}
+
+	_, runID, _, release, err := prepareSlurmRun(baseDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	t.Cleanup(func() { _ = os.Remove(paths.lockFile) })
+
+	location, found, err := resolveRunLocation(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || location.BaseDir != baseDir || location.ProjectName != "demo" || location.RunID != runID {
+		t.Fatalf("run location = %+v, %v; want prepared run target", location, found)
+	}
 }
 
 func TestSlurmStatusCommandsWithFakeSlurm(t *testing.T) {
 	binDir := t.TempDir()
-	writeExecutable(t, binDir, "squeue", "#!/bin/sh\nprintf 'RUNNING\\n'\n")
+	writeExecutable(t, binDir, "squeue", "#!/bin/sh\nprintf 'PENDING\\n'\n")
 	writeExecutable(t, binDir, "sacct", "#!/bin/sh\nprintf 'FAILED|1:0\\n'\n")
 	oldPath := os.Getenv("PATH")
 	if err := os.Setenv("PATH", binDir+string(os.PathListSeparator)+oldPath); err != nil {
@@ -56,6 +97,10 @@ func TestSlurmStatusCommandsWithFakeSlurm(t *testing.T) {
 	active, err := slurmJobActive("12345")
 	if err != nil || !active {
 		t.Fatalf("slurmJobActive = %v, %v; want true, nil", active, err)
+	}
+	state, err := slurmJobState("12345")
+	if err != nil || state != "pending" {
+		t.Fatalf("slurmJobState = %q, %v; want pending, nil", state, err)
 	}
 	exitCode, state, ok := slurmAccounting("12345")
 	if !ok || exitCode != 1 || state != "failed" {

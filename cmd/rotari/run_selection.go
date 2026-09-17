@@ -81,12 +81,12 @@ func planRerunSelection(paths pathSet, queue Queue, selection string, jobIDs []s
 		meta, err := loadMeta(paths.metaFile)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return rerunPlan{}, fmt.Errorf("queue '%s' has no previous run: %w", paths.queueName, errNoPreviousRun)
+				return rerunPlan{}, fmt.Errorf("project '%s' has no previous run: %w", paths.queueName, errNoPreviousRun)
 			}
 			return rerunPlan{}, fmt.Errorf("failed to load metadata: %w", err)
 		}
 		if meta.LastRunID == "" {
-			return rerunPlan{}, fmt.Errorf("queue '%s' has no previous run: %w", paths.queueName, errNoPreviousRun)
+			return rerunPlan{}, fmt.Errorf("project '%s' has no previous run: %w", paths.queueName, errNoPreviousRun)
 		}
 		runID = meta.LastRunID
 	}
@@ -140,7 +140,14 @@ func planRerunSelection(paths pathSet, queue Queue, selection string, jobIDs []s
 			status = "success"
 		}
 		plan.CarriedResults[command.ID] = result
-		plan.CarriedOrigins[command.ID] = &JobOrigin{RunID: runID, JobID: command.ID, Status: status, CWD: originCWD}
+		plan.CarriedOrigins[command.ID] = &JobOrigin{
+			RunID:       runID,
+			JobID:       command.ID,
+			Status:      status,
+			CWD:         originCWD,
+			SubmittedAt: readJobTimestamp(runDir, command.ID, "submitted_at"),
+			FinishedAt:  readJobTimestamp(runDir, command.ID, "finished_at"),
+		}
 	}
 	if len(requested) > 0 {
 		missing := make([]string, 0, len(requested))

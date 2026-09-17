@@ -40,6 +40,7 @@ type webJob struct {
 	Origin          *JobOrigin `json:"origin,omitempty"`
 	SubmittedAt     string     `json:"submitted_at,omitempty"`
 	FinishedAt      string     `json:"finished_at,omitempty"`
+	SchedulerState  string     `json:"scheduler_state,omitempty"`
 }
 
 type webTimelinePoint struct {
@@ -52,7 +53,7 @@ type webTimelinePoint struct {
 }
 
 type webQueueState struct {
-	QueueName    string   `json:"queue_name"`
+	QueueName    string   `json:"project_name"`
 	Queue        Queue    `json:"queue"`
 	Runs         []webRun `json:"runs"`
 	RunnerPID    int      `json:"runner_pid,omitempty"`
@@ -61,12 +62,12 @@ type webQueueState struct {
 
 type webState struct {
 	BaseDir   string          `json:"base_dir"`
-	Queues    []webQueueState `json:"queues"`
+	Queues    []webQueueState `json:"projects"`
 	UpdatedAt string          `json:"updated_at"`
 }
 
 type webCopyRequest struct {
-	QueueName string `json:"queue_name"`
+	QueueName string `json:"project_name"`
 	RunID     string `json:"run_id"`
 	Selection string `json:"selection"`
 	Append    bool   `json:"append"`
@@ -74,7 +75,7 @@ type webCopyRequest struct {
 }
 
 type webChangeRequest struct {
-	QueueName            string   `json:"queue_name"`
+	QueueName            string   `json:"project_name"`
 	JobID                string   `json:"job_id"`
 	SetJobName           string   `json:"set_job_name,omitempty"`
 	Command              []string `json:"command,omitempty"`
@@ -86,24 +87,24 @@ type webChangeRequest struct {
 }
 
 type webRemoveRequest struct {
-	QueueName string `json:"queue_name"`
+	QueueName string `json:"project_name"`
 	JobID     string `json:"job_id"`
 }
 
 type webCancelRequest struct {
-	QueueName string `json:"queue_name"`
+	QueueName string `json:"project_name"`
 	JobID     string `json:"job_id"`
 }
 
 type webClearRequest struct {
-	QueueName string `json:"queue_name"`
+	QueueName string `json:"project_name"`
 	RunID     string `json:"run_id"`
 }
 
 func cmdWeb(args []string) int {
 	fs := newFlagSet("web")
 	basedir := cliString(fs, "basedir", "")
-	queueNameOption := cliString(fs, "queue-name", "")
+	queueNameOption := cliString(fs, "project-name", "")
 	host := cliString(fs, "host", "127.0.0.1")
 	port := cliInt(fs, "port", webDefaultPort)
 	staticDir := cliString(fs, "static-dir", "")
@@ -182,13 +183,13 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 			methodNotAllowed(writer)
 			return
 		}
-		queueName := request.URL.Query().Get("queue_name")
+		queueName := request.URL.Query().Get("project_name")
 		runID, jobID := request.URL.Query().Get("run_id"), request.URL.Query().Get("job_id")
 		if !validWebID(queueName) || !validWebID(runID) || !validWebID(jobID) {
-			writeWebError(writer, fmt.Errorf("queue_name, run_id and job_id are required"))
+			writeWebError(writer, fmt.Errorf("project_name, run_id and job_id are required"))
 			return
 		}
-		data, err := os.ReadFile(filepath.Join(baseDir, "queues", queueName, "runs", runID, jobID, "output"))
+		data, err := os.ReadFile(filepath.Join(baseDir, "projects", queueName, "runs", runID, jobID, "output"))
 		if err != nil {
 			writeWebError(writer, err)
 			return
@@ -237,7 +238,7 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 			return
 		}
 		if !validWebID(copyRequest.QueueName) || !validWebID(copyRequest.RunID) {
-			writeWebError(writer, fmt.Errorf("queue_name and run_id are required"))
+			writeWebError(writer, fmt.Errorf("project_name and run_id are required"))
 			return
 		}
 		if copyRequest.Append && copyRequest.Overwrite {
@@ -269,7 +270,7 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 			return
 		}
 		if !validWebID(change.QueueName) || !validWebID(change.JobID) || len(change.Command) == 0 {
-			writeWebError(writer, fmt.Errorf("queue_name, job_id, and command are required"))
+			writeWebError(writer, fmt.Errorf("project_name, job_id, and command are required"))
 			return
 		}
 		message, err := changeBatch(baseDir, change.QueueName, "", change.JobID, "", change.Executor,
@@ -291,7 +292,7 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 			return
 		}
 		if !validWebID(remove.QueueName) || !validWebID(remove.JobID) {
-			writeWebError(writer, fmt.Errorf("queue_name and job_id are required"))
+			writeWebError(writer, fmt.Errorf("project_name and job_id are required"))
 			return
 		}
 		message, err := removeBatch(baseDir, remove.QueueName, "", []string{remove.JobID}, "")
@@ -312,7 +313,7 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 			return
 		}
 		if !validWebID(clear.QueueName) || !validWebID(clear.RunID) {
-			writeWebError(writer, fmt.Errorf("queue_name and run_id are required"))
+			writeWebError(writer, fmt.Errorf("project_name and run_id are required"))
 			return
 		}
 		if err := clearRunHistory(baseDir, clear.QueueName, clear.RunID); err != nil {
@@ -332,7 +333,7 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 			return
 		}
 		if !validWebID(cancel.QueueName) || !validWebID(cancel.JobID) {
-			writeWebError(writer, fmt.Errorf("queue_name and job_id are required"))
+			writeWebError(writer, fmt.Errorf("project_name and job_id are required"))
 			return
 		}
 		message, err := cancelQueueJobs(baseDir, cancel.QueueName, []string{cancel.JobID}, false)
@@ -351,7 +352,7 @@ func loadWebState(baseDir, queueFilter string) (webState, error) {
 	if queueFilter != "" {
 		queueNames = append(queueNames, queueFilter)
 	} else {
-		entries, err := os.ReadDir(filepath.Join(baseDir, "queues"))
+		entries, err := os.ReadDir(filepath.Join(baseDir, "projects"))
 		if err != nil && !os.IsNotExist(err) {
 			return webState{}, err
 		}
@@ -385,7 +386,7 @@ func generateStaticWeb(outputDir, baseDir, queueFilter string) error {
 	for _, queue := range state.Queues {
 		for _, run := range queue.Runs {
 			for _, job := range run.Jobs {
-				path := filepath.Join(baseDir, "queues", queue.QueueName, "runs", run.RunID, job.ID, "output")
+				path := filepath.Join(baseDir, "projects", queue.QueueName, "runs", run.RunID, job.ID, "output")
 				data, readErr := os.ReadFile(path)
 				if readErr == nil {
 					logs[staticLogKey(queue.QueueName, run.RunID, job.ID)] = string(data)
@@ -411,13 +412,13 @@ window.fetch=async function(input, init){
   const request=new URL(input, window.location.href);
   if(request.pathname.endsWith('/api/state')) return new Response(JSON.stringify(window.__ROTARI_STATIC_STATE__), {headers:{'Content-Type':'application/json'}});
   if(request.pathname.endsWith('/api/log')) {
-    const key=staticLogKey(request.searchParams.get('queue_name'), request.searchParams.get('run_id'), request.searchParams.get('job_id'));
+	const key=staticLogKey(request.searchParams.get('project_name'), request.searchParams.get('run_id'), request.searchParams.get('job_id'));
     return new Response(window.__ROTARI_STATIC_LOGS__[key] || '', {headers:{'Content-Type':'text/plain'}});
   }
   return new Response('This is a read-only static demo.', {status:405});
 };
 function staticLogKey(queue, run, job){return [queue, run, job].join('/');}
-function staticRootPath(){const pathname=window.location.pathname;const parts=pathname.split('/').filter(Boolean);const queueIndex=parts.indexOf('queue');if(queueIndex>=0)return '/'+parts.slice(0,queueIndex).join('/');if(pathname.endsWith('/index.html'))return '/'+parts.slice(0,-1).join('/');if(pathname.endsWith('/'))return parts.length?'/'+parts.join('/'):'';return '/'+parts.slice(0,-1).join('/')}
+function staticRootPath(){const pathname=window.location.pathname;const parts=pathname.split('/').filter(Boolean);const projectIndex=parts.indexOf('project');if(projectIndex>=0)return '/'+parts.slice(0,projectIndex).join('/');if(pathname.endsWith('/index.html'))return '/'+parts.slice(0,-1).join('/');if(pathname.endsWith('/'))return parts.length?'/'+parts.join('/'):'';return '/'+parts.slice(0,-1).join('/')}
 function routeParts(){const root=staticRootPath().split('/').filter(Boolean);return window.location.pathname.split('/').filter(Boolean).slice(root.length)}
 function staticPath(path){const root=staticRootPath().replace(/\/$/,'');return path===root||path.startsWith(root+'/')?path:root+path}
 function rewriteStaticLinks(){document.querySelectorAll('a[href^="/"]').forEach(link=>{link.setAttribute('href',staticPath(link.getAttribute('href')))})}
@@ -448,7 +449,7 @@ new MutationObserver(rewriteStaticLinks).observe(document.body,{childList:true,s
 		return err
 	}
 	for _, queue := range state.Queues {
-		queuePath := filepath.Join(outputDir, "queue", url.PathEscape(queue.QueueName))
+		queuePath := filepath.Join(outputDir, "project", url.PathEscape(queue.QueueName))
 		if err := writeStaticWebPage(filepath.Join(queuePath, "index.html"), template); err != nil {
 			return err
 		}
@@ -530,7 +531,8 @@ func loadWebJobs(runDir string, summary RunSummary) ([]webJob, error) {
 	}
 	jobs := make([]webJob, 0, len(commands.Commands))
 	for _, command := range commands.Commands {
-		job := webJob{ID: command.ID, Name: command.Name, Command: command.Command, Executor: command.Executor, ExecutorOptions: command.ExecutorOptions, DependsOn: command.DependsOn, Origin: command.Origin, SubmittedAt: readJobTimestamp(runDir, command.ID, "submitted_at"), FinishedAt: readJobTimestamp(runDir, command.ID, "finished_at")}
+		submittedAt, finishedAt := webJobTimestamps(runDir, command.ID, command.Origin)
+		job := webJob{ID: command.ID, Name: command.Name, Command: command.Command, Executor: command.Executor, ExecutorOptions: command.ExecutorOptions, DependsOn: command.DependsOn, Origin: command.Origin, SubmittedAt: submittedAt, FinishedAt: finishedAt, SchedulerState: loadSchedulerStatus(filepath.Join(runDir, command.ID))}
 		if result, ok := results[command.ID]; ok {
 			job.Result = &result
 		}
@@ -545,6 +547,28 @@ func loadWebJobs(runDir string, summary RunSummary) ([]webJob, error) {
 		jobs = append(jobs, webJob{ID: result.ID, Command: result.Command, Result: &resultCopy, SubmittedAt: readJobTimestamp(runDir, result.ID, "submitted_at"), FinishedAt: readJobTimestamp(runDir, result.ID, "finished_at")})
 	}
 	return jobs, nil
+}
+
+func webJobTimestamps(runDir, jobID string, origin *JobOrigin) (string, string) {
+	submittedAt := readJobTimestamp(runDir, jobID, "submitted_at")
+	finishedAt := readJobTimestamp(runDir, jobID, "finished_at")
+	if origin == nil || (submittedAt != "" && finishedAt != "") {
+		return submittedAt, finishedAt
+	}
+	if submittedAt == "" {
+		submittedAt = origin.SubmittedAt
+	}
+	if finishedAt == "" {
+		finishedAt = origin.FinishedAt
+	}
+	sourceRunDir := filepath.Join(filepath.Dir(runDir), origin.RunID)
+	if submittedAt == "" {
+		submittedAt = readJobTimestamp(sourceRunDir, origin.JobID, "submitted_at")
+	}
+	if finishedAt == "" {
+		finishedAt = readJobTimestamp(sourceRunDir, origin.JobID, "finished_at")
+	}
+	return submittedAt, finishedAt
 }
 
 func readJobTimestamp(runDir, jobID, name string) string {
@@ -567,7 +591,7 @@ func buildWebTimeline(summary RunSummary, jobs []webJob) []webTimelinePoint {
 	events := make([]event, 0, len(jobs)*2)
 	initial := webTimelinePoint{At: summary.StartedAt}
 	for _, job := range jobs {
-		if job.Result != nil && job.SubmittedAt == "" && job.FinishedAt == "" {
+		if job.Result != nil && (job.Origin != nil || (job.SubmittedAt == "" && job.FinishedAt == "")) {
 			initial.Finished++
 			if job.Result.ExitCode == 0 {
 				initial.Success++
@@ -630,12 +654,35 @@ func writeWebError(writer http.ResponseWriter, err error) {
 func webHTML() string {
 	executorJSON, _ := json.Marshal(executorNames())
 	template := strings.Replace(webIndexHTML, "<script>\nlet state;", "<script>\nconst executorNames="+string(executorJSON)+";\nlet state;", 1)
+	template = strings.NewReplacer(
+		"state.queues", "state.projects",
+		"queue_name", "project_name",
+		"/queue/", "/project/",
+		"parts[0]!=='queue'", "parts[0]!=='project'",
+		"parts[0]==='queue'", "parts[0]==='project'",
+		"/queues/", "/projects/",
+		"Queue not found", "Project not found",
+		">Queues<", ">Projects<",
+		">Queue<", ">Project<",
+	).Replace(template)
 	template = strings.Replace(template, "rotari copy", "rotari retry", -1)
-	template = strings.Replace(template, "\\nrotari rerun'+basedir+' --queue-name '+shellQuote(queueName)+' --job-id JOB_ID", "", -1)
+	template = strings.Replace(template, "\\nrotari rerun'+basedir+' --project-name '+shellQuote(queueName)+' --job-id JOB_ID", "", -1)
 	template = strings.Replace(template, "rotari rerun", "rotari retry", -1)
 	// "retry" already means --failed --unfinished, so drop the now-redundant flag.
 	template = strings.Replace(template, " --failed", "", -1)
 	template = strings.Replace(template, "rerun failed jobs", "retry failed or unfinished jobs", -1)
+	template = strings.NewReplacer(
+		"rotari retry --queue-name '+shellQuote(q.project_name)+' --run-id '+shellQuote(runID)",
+		"rotari retry --run-id '+shellQuote(runID)",
+		"rotari retry'+basedir+' --queue-name '+shellQuote(queueName)+' --run-id '+shellQuote(runID)",
+		"rotari retry --run-id '+shellQuote(runID)",
+		"rotari retry'+basedir+' --queue-name '+shellQuote(queueName)",
+		"rotari retry --run-id '+shellQuote(runID)",
+		"retry failed or unfinished jobs from the latest run",
+		"retry failed or unfinished jobs from this run",
+		"retry failed or unfinished jobs from this older run",
+		"retry failed or unfinished jobs from this run",
+	).Replace(template)
 	return strings.Replace(template,
 		`<select class="executor-input"><option value="local">local</option><option value="slurm">slurm</option></select>`,
 		`<select class="executor-input">'+executorNames.map(name=>'<option value="'+esc(name)+'">'+esc(name)+'</option>').join('')+'</select>`, 1)
@@ -760,7 +807,8 @@ function runOrderKey(run){const sample=run&&run.context&&run.context.load_sample
 function enhanceQueueOverview(){const parts=location.pathname.split('/').filter(Boolean);if(parts.length)return;const queues=state.queues||[];document.querySelectorAll('#app section').forEach((section,index)=>{const queue=queues[index];if(!queue)return;let latest=null;for(const run of queue.runs){if(!latest||runOrderKey(run)>runOrderKey(latest))latest=run}const latestHTML=latest?'<div class="meta">Latest run: <a class="link" href="/queue/'+encodeURIComponent(queue.queue_name)+'/run/'+encodeURIComponent(latest.run_id)+'">'+esc(latest.run_name||latest.run_id)+'</a></div><div class="summary"><span class="status-'+esc(latest.status)+'">'+esc(latest.status)+'</span><span>Started: '+esc(latest.started_at||'-')+'</span><span>Finished: '+esc(latest.finished_at||'-')+'</span></div>':'<div class="meta">No runs yet</div>';section.innerHTML='<h2><a class="link" href="/queue/'+encodeURIComponent(queue.queue_name)+'">'+esc(queue.queue_name)+'</a></h2><div class="summary"><span>'+(queue.queue.commands||[]).length+' queued</span><span>'+queue.runs.length+' runs</span><span>'+queue.runs.filter(r=>r.running).length+' running</span></div>'+latestHTML})}
 function markLatestRun(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2])return;const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));const table=[...document.querySelectorAll('#app table.runs')].find(item=>!item.closest('.web-queue-commands'));if(!queue||!table)return;table.querySelectorAll('tbody tr').forEach(row=>{row.classList.remove('latest-run');const badge=row.querySelector('.latest-badge');if(badge)badge.remove()});let latest=null;for(const run of queue.runs){if(!latest||runOrderKey(run)>runOrderKey(latest))latest=run}if(!latest)return;table.querySelectorAll('tbody tr').forEach(row=>{const link=row.querySelector('a.run-id');if(link&&decodeURIComponent(link.getAttribute('href')).endsWith('/run/'+latest.run_id)){row.classList.add('latest-run');link.insertAdjacentHTML('afterend','<span class="latest-badge">latest</span>')}})}
 function addQueueOverviewPathActions(){if(location.pathname!=='/'&&location.pathname!=='')return;const table=document.querySelector('.queue-overview');if(!table)return;const header=document.createElement('th');header.textContent='Actions';table.querySelector('thead tr').append(header);const queues=state.queues||[];table.querySelectorAll('tbody tr').forEach((row,index)=>{const queue=queues[index];const cell=document.createElement('td');if(queue)addPathButton(cell,state.base_dir+'/queues/'+queue.queue_name);row.append(cell)})}
-function addRunJobStatusColumn(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const table=document.querySelector('#app table.runs');if(!run||!table||table.querySelector('.job-status-header'))return;const header=document.createElement('th');header.className='job-status-header';header.dataset.sort='status';header.textContent='Status';table.querySelector('thead tr').insertBefore(header,table.querySelector('thead tr').children[1]);const rows=table.querySelectorAll('tbody tr');(run.jobs||[]).forEach((job,index)=>{if(!rows[index])return;const status=document.createElement('td');const result=job.result;if(!result)status.textContent=run.running?'running':'pending';else if(result.error==='blocked by failed dependency')status.textContent='blocked';else status.textContent=result.exit_code===0?'success':'failed';rows[index].insertBefore(status,rows[index].children[1])})}
+function jobDisplayStatus(job,run){const result=job.result;if(!result)return job.scheduler_state||(run.running?'running':'pending');if(result.error==='blocked by failed dependency')return 'blocked';return result.exit_code===0?'success':'failed'}
+function addRunJobStatusColumn(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const table=document.querySelector('#app table.runs');if(!run||!table||table.querySelector('.job-status-header'))return;const header=document.createElement('th');header.className='job-status-header';header.dataset.sort='status';header.textContent='Status';table.querySelector('thead tr').insertBefore(header,table.querySelector('thead tr').children[1]);const rows=table.querySelectorAll('tbody tr');(run.jobs||[]).forEach((job,index)=>{if(!rows[index])return;const status=document.createElement('td');status.textContent=jobDisplayStatus(job,run);rows[index].insertBefore(status,rows[index].children[1])})}
 function addRunningOutputButtons(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const table=document.querySelector('#app table.runs');if(!run||!run.running||!table)return;table.querySelectorAll('tbody tr').forEach((row,index)=>{const cell=row.children[row.children.length-2];if(cell&&cell.textContent.trim()==='-'){const job=run.jobs[index];if(job){const button=document.createElement('button');button.textContent='Output';button.onclick=()=>showLog(queue.queue_name,run.run_id,job.id,button);cell.textContent='';cell.append(button)}}})}
 function addRunningCancelButtons(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const table=document.querySelector('#app table.runs');if(!run||!run.running||!table)return;table.querySelectorAll('tbody tr').forEach((row,index)=>{const job=run.jobs[index];const actions=row.lastElementChild;if(!job||!actions||actions.querySelector('.cancel-job'))return;const button=document.createElement('button');button.className='cancel-job';button.textContent='Cancel';button.onclick=()=>cancelJob(queue.queue_name,job.id,job.name||job.id);actions.append(' ',button)})}
 async function cancelJob(queue,jobID,label){if(!confirm('Cancel '+label+'?'))return;const response=await fetch('/api/cancel-job',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({queue_name:queue,job_id:jobID})});const text=await response.text();if(!response.ok){alert(text);return}await refresh()}

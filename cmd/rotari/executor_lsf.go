@@ -151,11 +151,14 @@ func waitLSFJob(runDir string, job lsfJobMetadata) JobResult {
 		if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
 			return jobResultFromStatus(job.JobID, job.Command, status)
 		}
-		active, err := lsfJobActive(job.LSFJobID)
+		state, err := lsfJobState(job.LSFJobID)
 		if err != nil {
 			return JobResult{ID: job.JobID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 		}
-		if !active {
+		if state != "" {
+			writeSchedulerStatus(jobDir, state)
+		}
+		if state == "" {
 			if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
 				return jobResultFromStatus(job.JobID, job.Command, status)
 			}
@@ -175,8 +178,27 @@ func waitLSFJob(runDir string, job lsfJobMetadata) JobResult {
 }
 
 func lsfJobActive(jobID string) (bool, error) {
-	_, err := runLSFCommand("bjobs", "-noheader", jobID)
-	return err == nil, nil
+	state, err := lsfJobState(jobID)
+	return state != "", err
+}
+
+func lsfJobState(jobID string) (string, error) {
+	output, err := runLSFCommand("bjobs", "-noheader", "-o", "stat", jobID)
+	if err != nil {
+		return "", nil
+	}
+	switch strings.ToUpper(strings.TrimSpace(string(output))) {
+	case "PEND":
+		return "pending", nil
+	case "RUN":
+		return "running", nil
+	case "PSUSP", "USUSP", "SSUSP":
+		return "suspended", nil
+	case "WAIT":
+		return "waiting", nil
+	default:
+		return strings.ToLower(strings.TrimSpace(string(output))), nil
+	}
 }
 
 func lsfAccounting(jobID string) (int, bool) {

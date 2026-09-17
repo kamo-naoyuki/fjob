@@ -10,6 +10,16 @@ import (
 	"testing"
 )
 
+func TestWebRunGuidanceUsesRunIDOnly(t *testing.T) {
+	html := webHTML()
+	if !strings.Contains(html, "rotari retry --run-id '+shellQuote(runID)") {
+		t.Fatal("web run guidance does not contain a run-id-only retry command")
+	}
+	if strings.Contains(html, "rotari retry'+basedir+' --queue-name '+shellQuote(queueName)") {
+		t.Fatal("web run guidance still contains basedir and project name")
+	}
+}
+
 func TestLoadWebStateIncludesAllQueues(t *testing.T) {
 	baseDir := t.TempDir()
 	for _, queueName := range []string{"build", "test"} {
@@ -44,7 +54,7 @@ func TestLoadWebStateIncludesAllQueues(t *testing.T) {
 
 func TestCLIDocsPageUsesCommandMetadata(t *testing.T) {
 	page := cliDocsHTML("/")
-	for _, want := range []string{"rotari check", "rotari completion", "--queue-name", "Generated from the command metadata"} {
+	for _, want := range []string{"rotari check", "rotari completion", "--project-name", "Generated from the command metadata"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("docs page does not contain %q", want)
 		}
@@ -85,6 +95,16 @@ func TestGenerateStaticWebIncludesCLIDocs(t *testing.T) {
 	if !strings.Contains(string(index), "rewriteStaticLinks();") || !strings.Contains(string(index), "path===root||path.startsWith(root+'/')") || !strings.Contains(string(index), "new MutationObserver(rewriteStaticLinks)") {
 		t.Fatal("static web page does not rewrite links before rendering")
 	}
+	for _, obsolete := range []string{"queue_name", "/queue/", "state.queues"} {
+		if strings.Contains(string(index), obsolete) {
+			t.Fatalf("static web page contains obsolete project identifier %q", obsolete)
+		}
+	}
+	for _, want := range []string{"project_name", "/project/", "state.projects"} {
+		if !strings.Contains(string(index), want) {
+			t.Fatalf("static web page does not contain %q", want)
+		}
+	}
 }
 
 func TestWebSeparatesLogsFromActions(t *testing.T) {
@@ -114,6 +134,54 @@ func TestLoadWebJobsIncludesCommandMetadata(t *testing.T) {
 	job := jobs[0]
 	if job.Name != "train" || job.Executor != "slurm" || len(job.ExecutorOptions) != 2 || len(job.DependsOn) != 1 || job.Result == nil {
 		t.Fatalf("job = %#v, want command metadata and result", job)
+	}
+}
+
+func TestLoadWebJobsIncludesSchedulerState(t *testing.T) {
+	runDir := t.TempDir()
+	queue := Queue{Commands: []QueuedCommand{{ID: "job-1", Command: []string{"sleep", "10"}, Executor: "slurm"}}}
+	if err := writeJSON(filepath.Join(runDir, "commands.json"), queue); err != nil {
+		t.Fatal(err)
+	}
+	writeSchedulerStatus(filepath.Join(runDir, "job-1"), "PENDING")
+
+	jobs, err := loadWebJobs(runDir, RunSummary{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].SchedulerState != "pending" {
+		t.Fatalf("jobs = %#v, want pending scheduler state", jobs)
+	}
+}
+
+func TestLoadWebJobsUsesCarriedOriginTimestamps(t *testing.T) {
+	runsDir := t.TempDir()
+	sourceRunDir := filepath.Join(runsDir, "run-1")
+	currentRunDir := filepath.Join(runsDir, "run-2")
+	queue := Queue{Commands: []QueuedCommand{{
+		ID: "job-1", Command: []string{"true"},
+		Origin: &JobOrigin{RunID: "run-1", JobID: "job-1", Status: "success"},
+	}}}
+	if err := writeJSON(filepath.Join(currentRunDir, "commands.json"), queue); err != nil {
+		t.Fatal(err)
+	}
+	jobDir := filepath.Join(sourceRunDir, "job-1")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "submitted_at"), []byte("2026-09-16T00:00:01Z\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "finished_at"), []byte("2026-09-16T00:00:02Z\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	jobs, err := loadWebJobs(currentRunDir, RunSummary{Results: []JobResult{{ID: "job-1", ExitCode: 0}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jobs[0].SubmittedAt != "2026-09-16T00:00:01Z" || jobs[0].FinishedAt != "2026-09-16T00:00:02Z" {
+		t.Fatalf("job timestamps = %#v, want carried origin timestamps", jobs[0])
 	}
 }
 
@@ -167,7 +235,7 @@ func TestLoadWebStateIncludesRunContextAndTimeline(t *testing.T) {
 func TestBuildWebTimelineCountsCarriedResultsAtStart(t *testing.T) {
 	summary := RunSummary{StartedAt: "2026-09-16T00:00:00Z"}
 	jobs := []webJob{
-		{ID: "carried-success", Result: &JobResult{ID: "carried-success", ExitCode: 0}},
+		{ID: "carried-success", Origin: &JobOrigin{RunID: "previous", JobID: "carried-success"}, SubmittedAt: "2026-09-15T00:00:01Z", FinishedAt: "2026-09-15T00:00:02Z", Result: &JobResult{ID: "carried-success", ExitCode: 0}},
 		{ID: "rerun-failed", SubmittedAt: "2026-09-16T00:00:01Z", FinishedAt: "2026-09-16T00:00:02Z", Result: &JobResult{ID: "rerun-failed", ExitCode: 1}},
 	}
 
@@ -237,7 +305,7 @@ func TestWebCopyEndpointCopiesWithoutRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	request := httptest.NewRequest(http.MethodPost, "/api/copy", strings.NewReader(`{"queue_name":"default","run_id":"run-1","selection":"failed"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/copy", strings.NewReader(`{"project_name":"default","run_id":"run-1","selection":"failed"}`))
 	recorder := httptest.NewRecorder()
 	newWebHandler(baseDir, "").ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -264,7 +332,7 @@ func TestWebChangeEndpointUpdatesQueueJob(t *testing.T) {
 	if err := writeJSON(paths.queueFile, Queue{Commands: []QueuedCommand{{ID: "job-1", Command: []string{"old"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/api/change", strings.NewReader(`{"queue_name":"default","job_id":"job-1","command":["new","arg"],"executor_options":["-p","gpu"]}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/change", strings.NewReader(`{"project_name":"default","job_id":"job-1","command":["new","arg"],"executor_options":["-p","gpu"]}`))
 	recorder := httptest.NewRecorder()
 	newWebHandler(baseDir, "").ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {

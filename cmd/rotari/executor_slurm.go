@@ -204,7 +204,7 @@ func prepareSlurmRun(baseDir, queueName string) (pathSet, string, Meta, func(), 
 	if err != nil {
 		return pathSet{}, "", Meta{}, nil, err
 	}
-	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
 		return pathSet{}, "", Meta{}, nil, err
 	}
 	release, err := acquireStateLock(paths.stateLockFile)
@@ -223,7 +223,12 @@ func prepareSlurmRun(baseDir, queueName string) (pathSet, string, Meta, func(), 
 	runID := makeRunID()
 	if err := acquireLock(paths.lockFile, LockInfo{PID: os.Getpid(), RunID: runID, StartedAt: nowRFC3339()}); err != nil {
 		release()
-		return pathSet{}, "", Meta{}, nil, fmt.Errorf("queue %q is already running", queueName)
+		return pathSet{}, "", Meta{}, nil, fmt.Errorf("project %q is already running", queueName)
+	}
+	if err := registerRun(paths, runID); err != nil {
+		_ = os.Remove(paths.lockFile)
+		release()
+		return pathSet{}, "", Meta{}, nil, fmt.Errorf("failed to register run: %w", err)
 	}
 	meta, err := loadMeta(paths.metaFile)
 	if err != nil {
@@ -267,7 +272,7 @@ func runSlurmServerSync(baseDir, queueName string, maxActive int, executorOption
 		return "", 1, err
 	}
 	runDir := filepath.Join(paths.runsDir, runID)
-	message := fmt.Sprintf("Run finished:\n  Queue: %s\n  Run: %s\n  Exit code: %d\n  Success: %d\n  Failed: %d\n  Directory: %s", queueName, runID, exitCode, successCount, failedCount, runDir)
+	message := fmt.Sprintf("Run finished:\n  Project: %s\n  Run: %s\n  Exit code: %d\n  Success: %d\n  Failed: %d\n  Directory: %s", queueName, runID, exitCode, successCount, failedCount, runDir)
 	if summaryData, err := os.ReadFile(filepath.Join(runDir, "summary.json")); err == nil {
 		var summary RunSummary
 		if json.Unmarshal(summaryData, &summary) == nil {
@@ -291,7 +296,7 @@ func startSlurmServerRun(baseDir, queueName string, maxActive int, executorOptio
 		}
 	}()
 	runDir := filepath.Join(paths.runsDir, runID)
-	return fmt.Sprintf("Run started (Slurm):\n  Queue: %s\n  Run: %s\n  Directory: %s\n\nCheck status:\n  rotari show --basedir %s --queue-name %s --run-id %s\n\nCancel run:\n  rotari cancel --basedir %s --queue-name %s",
+	return fmt.Sprintf("Run started (Slurm):\n  Project: %s\n  Run: %s\n  Directory: %s\n\nCheck status:\n  rotari show --basedir %s --project-name %s --run-id %s\n\nCancel run:\n  rotari cancel --basedir %s --project-name %s",
 		queueName, runID, runDir, paths.baseDir, queueName, runID, paths.baseDir, queueName), nil
 }
 
@@ -308,12 +313,8 @@ func submitSlurmJob(runDir string, job JobSpec, executorOptions []string) (slurm
 		return slurmJobMetadata{}, err
 	}
 	outputPath := filepath.Join(jobDir, "output")
-	queueDir := filepath.Dir(filepath.Dir(runDir))
-	baseDir := filepath.Dir(filepath.Dir(queueDir))
-	queueName := filepath.Base(queueDir)
 	runID := filepath.Base(runDir)
-	showCommand := fmt.Sprintf("rotari show --basedir %s --queue-name %s --run-id %s --job-id %s",
-		shellQuote(baseDir), shellQuote(queueName), shellQuote(runID), shellQuote(job.ID))
+	showCommand := fmt.Sprintf("rotari show --run-id %s --job-id %s", shellQuote(runID), shellQuote(job.ID))
 	args := []string{"--parsable", "--job-name=" + showCommand, "--output=" + outputPath, "--error=" + outputPath}
 	expandedOptions, err := expandShellOptions(executorOptions)
 	if err != nil {
@@ -474,11 +475,14 @@ func waitSlurmJob(runDir string, job slurmJobMetadata) JobResult {
 		if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
 			return jobResultFromStatus(job.JobID, job.Command, status)
 		}
-		active, err := slurmJobActive(job.SlurmJobID)
+		state, err := slurmJobState(job.SlurmJobID)
 		if err != nil {
 			return JobResult{ID: job.JobID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 		}
-		if !active {
+		if state != "" {
+			writeSchedulerStatus(jobDir, state)
+		}
+		if state == "" {
 			_, _ = os.ReadDir(jobDir)
 			if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
 				return jobResultFromStatus(job.JobID, job.Command, status)
@@ -515,11 +519,16 @@ func loadSlurmStatus(path string) (slurmStatus, bool) {
 }
 
 func slurmJobActive(jobID string) (bool, error) {
+	state, err := slurmJobState(jobID)
+	return state != "", err
+}
+
+func slurmJobState(jobID string) (string, error) {
 	output, err := runSlurmCommand("squeue", "--noheader", "--jobs", jobID, "--format=%T")
 	if err != nil {
-		return false, fmt.Errorf("squeue: %w", err)
+		return "", fmt.Errorf("squeue: %w", err)
 	}
-	return strings.TrimSpace(string(output)) != "", nil
+	return strings.ToLower(strings.TrimSpace(string(output))), nil
 }
 
 func slurmAccounting(jobID string) (int, string, bool) {

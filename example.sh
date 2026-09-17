@@ -5,7 +5,7 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PATH="${script_dir}:${PATH}"
 export PATH
 export ROTARI_BASEDIR=${ROTARI_BASEDIR:-"${script_dir}/.rotari-state"}
-export ROTARI_QUEUE_NAME=${ROTARI_QUEUE_NAME:-${1:-demo}}
+export ROTARI_PROJECT_NAME=${ROTARI_PROJECT_NAME:-${1:-demo}}
 executor_options=${ROTARI_EXECUTOR_OPTIONS:-}
 async=${ROTARI_ASYNC:-false}
 

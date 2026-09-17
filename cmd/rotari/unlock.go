@@ -11,7 +11,7 @@ func cmdUnlock(args []string) int {
 	fs := flag.NewFlagSet("unlock", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	basedir := cliString(fs, "basedir", "")
-	queueNameOption := cliString(fs, "queue-name", "")
+	queueNameOption := cliString(fs, "project-name", "")
 	runID := cliString(fs, "run-id", "")
 	if err := fs.Parse(args); err != nil {
 		return 1
@@ -25,7 +25,7 @@ func cmdUnlock(args []string) int {
 		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
 		return 1
 	}
-	queueName, err := resolveQueueName(baseDir, *queueNameOption)
+	queueName, err := resolveProjectName(baseDir, *queueNameOption)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -42,22 +42,38 @@ func cmdUnlock(args []string) int {
 	}
 	defer release()
 	lock, err := loadLockInfo(paths.lockFile)
+	removedLock := false
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintln(os.Stderr, "no run lock exists")
+		if !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "failed to read run lock: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(os.Stderr, "failed to read run lock: %v\n", err)
+	} else {
+		if lock.RunID != *runID {
+			fmt.Fprintf(os.Stderr, "run lock belongs to %q, not %q\n", lock.RunID, *runID)
+			return 1
+		}
+		if err := os.Remove(paths.lockFile); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to remove run lock: %v\n", err)
+			return 1
+		}
+		removedLock = true
+	}
+	meta, err := loadMeta(paths.metaFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load metadata: %v\n", err)
 		return 1
 	}
-	if lock.RunID != *runID {
-		fmt.Fprintf(os.Stderr, "run lock belongs to %q, not %q\n", lock.RunID, *runID)
+	if !removedLock && (meta.Phase != "running" && meta.Phase != "cancelling" || meta.LastRunID != *runID) {
+		fmt.Fprintln(os.Stderr, "no matching interrupted run exists")
 		return 1
 	}
-	if err := os.Remove(paths.lockFile); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to remove run lock: %v\n", err)
+	meta.Phase = "collecting"
+	meta.UpdatedAt = nowRFC3339()
+	if err := writeJSON(paths.metaFile, meta); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to update metadata: %v\n", err)
 		return 1
 	}
-	fmt.Printf("removed run lock queue=%s run_id=%s host=%s\n", queueName, lock.RunID, lock.Host)
+	fmt.Printf("recovered queue project=%s run_id=%s\n", queueName, *runID)
 	return 0
 }

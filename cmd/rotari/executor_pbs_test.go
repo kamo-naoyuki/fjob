@@ -14,6 +14,7 @@ func TestSubmitPBSJobWithFakePBS(t *testing.T) {
 	writeExecutable(t, binDir, "qsub", `#!/bin/sh
 printf '123.headnode\n'
 `)
+
 	oldPath := os.Getenv("PATH")
 	if err := os.Setenv("PATH", binDir+string(os.PathListSeparator)+oldPath); err != nil {
 		t.Fatal(err)
@@ -57,6 +58,8 @@ func TestPBSStatusCommandsWithFakePBS(t *testing.T) {
 	writeExecutable(t, binDir, "qstat", `#!/bin/sh
 if [ "$1" = "-xf" ]; then
     printf '    exit_status = 1\n'
+elif [ "$1" = "-f" ]; then
+	printf '    job_state = Q\n'
 else
     exit 1
 fi
@@ -68,8 +71,12 @@ fi
 	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
 
 	active, err := pbsJobActive("123.headnode")
-	if err != nil || active {
-		t.Fatalf("pbsJobActive = %v, %v; want false, nil", active, err)
+	if err != nil || !active {
+		t.Fatalf("pbsJobActive = %v, %v; want true, nil", active, err)
+	}
+	state, err := pbsJobState("123.headnode")
+	if err != nil || state != "pending" {
+		t.Fatalf("pbsJobState = %q, %v; want pending, nil", state, err)
 	}
 	exitCode, ok := pbsAccounting("123.headnode")
 	if !ok || exitCode != 1 {
@@ -180,7 +187,7 @@ exit 1
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(paths.queueDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	queue := Queue{Commands: []QueuedCommand{{ID: "pbs-job", Command: []string{"echo", "hi"}, Executor: "pbs"}}}

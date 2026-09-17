@@ -10,7 +10,7 @@ func cmdRemove(args []string) int {
 	fs := flag.NewFlagSet("remove", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	basedir := cliString(fs, "basedir", "")
-	queueNameOption := cliString(fs, "queue-name", "")
+	queueNameOption := cliString(fs, "project-name", "")
 	runID := cliString(fs, "run-id", "")
 	jobName := cliString(fs, "job-name", "")
 	var jobIDs stringSliceFlag
@@ -23,12 +23,7 @@ func cmdRemove(args []string) int {
 		return 1
 	}
 
-	baseDir, _, err := resolveBaseDir(*basedir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
-		return 1
-	}
-	queueName, err := resolveQueueName(baseDir, *queueNameOption)
+	baseDir, queueName, err := resolveExistingRunTarget(*basedir, *queueNameOption, *runID)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -57,7 +52,7 @@ func removeBatch(baseDir, queueName, requestedRunID string, requestedJobIDs []st
 		return "", fmt.Errorf("failed to check queue: %w", err)
 	}
 	if running {
-		return "", fmt.Errorf("queue %q is running; remove is not allowed", queueName)
+		return "", fmt.Errorf("project %q is running; remove is not allowed", queueName)
 	}
 
 	queue, err := loadQueue(paths.queueFile)

@@ -26,10 +26,18 @@ type cliCommandSpec struct {
 	HasPositional bool
 }
 
+var cliShortFlagNames = map[string]string{
+	"basedir":      "b",
+	"project-name": "p",
+	"run-id":       "r",
+	"job-id":       "j",
+	"executor":     "e",
+}
+
 func commonCLIFlags() []cliFlagSpec {
 	return []cliFlagSpec{
 		{Name: "basedir", Description: "state directory", ValueName: "DIR"},
-		{Name: "queue-name", Description: "queue name", ValueName: "NAME"},
+		{Name: "project-name", Description: "project name", ValueName: "NAME"},
 	}
 }
 
@@ -37,15 +45,15 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "check",
 		Description: "check queue and dependencies",
-		Usage:       "rotari check [--basedir DIR] [--queue-name NAME] [--server]",
-		Flags: append(commonCLIFlags(), cliFlagSpec{
-			Name: "server", Description: "also require a running server",
-		}),
+		Usage:       "rotari check [--basedir DIR] [--project-name NAME] [--server] [--recover keep|discard]",
+		Flags: append(commonCLIFlags(),
+			cliFlagSpec{Name: "server", Description: "also require a running server"},
+			cliFlagSpec{Name: "recover", Description: "recover an interrupted run without prompting", ValueName: "keep|discard", Values: []string{"keep", "discard"}},
+		),
 	},
 	{
-		Name:        "cancel",
-		Description: "cancel the current run",
-		Usage:       "rotari cancel [--basedir DIR] [--queue-name NAME] [--job-id ID] [--wait]",
+		Name:  "cancel",
+		Usage: "rotari cancel [--basedir DIR] [--project-name NAME] [--job-id ID] [--wait]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "job-id", Description: "cancel a running job; may be repeated", ValueName: "ID"},
 			cliFlagSpec{Name: "wait", Description: "wait until cancellation is complete"},
@@ -54,7 +62,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "suspend",
 		Description: "suspend running jobs",
-		Usage:       "rotari suspend [--basedir DIR] [--queue-name NAME] [--job-id ID]...",
+		Usage:       "rotari suspend [--basedir DIR] [--project-name NAME] [--job-id ID]...",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "job-id", Description: "suspend a running job; may be repeated", ValueName: "ID"},
 		),
@@ -62,7 +70,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "resume",
 		Description: "resume suspended jobs",
-		Usage:       "rotari resume [--basedir DIR] [--queue-name NAME] [--job-id ID]...",
+		Usage:       "rotari resume [--basedir DIR] [--project-name NAME] [--job-id ID]...",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "job-id", Description: "resume a suspended job; may be repeated", ValueName: "ID"},
 		),
@@ -70,19 +78,19 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "delete",
 		Description: "delete saved run history",
-		Usage:       "rotari delete [--basedir DIR] [--queue-name NAME] [--run-id ID]",
+		Usage:       "rotari delete [--basedir DIR] [--project-name NAME] [--run-id ID]",
 		Flags:       append(commonCLIFlags(), cliFlagSpec{Name: "run-id", Description: "delete only the specified run", ValueName: "ID"}),
 	},
 	{
 		Name:        "unlock",
 		Description: "remove a confirmed stale run lock",
-		Usage:       "rotari unlock [--basedir DIR] [--queue-name NAME] --run-id ID",
+		Usage:       "rotari unlock [--basedir DIR] [--project-name NAME] --run-id ID",
 		Flags:       append(commonCLIFlags(), cliFlagSpec{Name: "run-id", Description: "run ID recorded in the stale lock", ValueName: "ID"}),
 	},
 	{
 		Name:        "change",
 		Description: "change a job in the current or previous batch",
-		Usage:       "rotari change [--basedir DIR] [--queue-name NAME] [--run-id ID] [--job-id ID|--job-name NAME] [--executor EXECUTOR] [--executor-option OPTION] [--clear-executor-options] [--set-job-name NAME] [--depends-on NAME] [--clear-depends-on] [-- command ...]",
+		Usage:       "rotari change [--basedir DIR] [--project-name NAME] [--run-id ID] [--job-id ID|--job-name NAME] [--executor EXECUTOR] [--executor-option OPTION] [--clear-executor-options] [--set-job-name NAME] [--depends-on NAME] [--clear-depends-on] [-- command ...]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "run-id", Description: "run ID to use when restoring a batch", ValueName: "ID"},
 			cliFlagSpec{Name: "job-id", Description: "target job ID", ValueName: "ID"},
@@ -99,7 +107,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "remove",
 		Description: "remove jobs from the current or previous batch",
-		Usage:       "rotari remove [--basedir DIR] [--queue-name NAME] [--run-id ID] [--job-id ID]...|[--job-name NAME]",
+		Usage:       "rotari remove [--basedir DIR] [--project-name NAME] [--run-id ID] [--job-id ID]...|[--job-name NAME]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "run-id", Description: "run ID to use when restoring a batch", ValueName: "ID"},
 			cliFlagSpec{Name: "job-id", Description: "remove a job; may be repeated", ValueName: "ID"},
@@ -109,7 +117,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "show",
 		Description: "show queue or run status",
-		Usage:       "rotari show [--basedir DIR] [--queue-name NAME] [--run-id ID] [--job-id ID] [--failed] [--logs] [--failed-logs] [--follow] [--no-pager] [--runs]",
+		Usage:       "rotari show [--basedir DIR] [--project-name NAME] [--run-id ID] [--job-id ID] [--failed] [--logs] [--failed-logs] [--follow] [--no-pager] [--runs]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "run-id", Description: "run ID", ValueName: "ID"},
 			cliFlagSpec{Name: "job-id", Description: "job ID", ValueName: "ID"},
@@ -118,13 +126,13 @@ var cliCommandSpecs = []cliCommandSpec{
 			cliFlagSpec{Name: "failed-logs", Description: "print output logs for failed jobs"},
 			cliFlagSpec{Name: "follow", Description: "follow log output until the run completes"},
 			cliFlagSpec{Name: "no-pager", Description: "print logs directly instead of using a pager"},
-			cliFlagSpec{Name: "runs", Description: "list all runs in the queue"},
+			cliFlagSpec{Name: "runs", Description: "list all runs in the project"},
 		),
 	},
 	{
 		Name:        "wait",
 		Description: "wait for an asynchronous run",
-		Usage:       "rotari wait [--basedir DIR] [--queue-name NAME] --run-id ID [--timeout DURATION]",
+		Usage:       "rotari wait [--basedir DIR] [--project-name NAME] --run-id ID [--timeout DURATION]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "run-id", Description: "run ID", ValueName: "ID"},
 			cliFlagSpec{Name: "timeout", Description: "maximum wait duration", ValueName: "DURATION"},
@@ -133,20 +141,21 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "add",
 		Description: "add a command to a queue",
-		Usage:       "rotari add [--basedir DIR] [--queue-name NAME] [--executor EXECUTOR] [--executor-option OPTION] [--job-name NAME] [--depends-on NAME] <command ...>",
+		Usage:       "rotari add [--basedir DIR] [--project-name NAME] [--executor EXECUTOR] [--executor-option OPTION] [--job-name NAME] [--depends-on NAME] [--run] <command ...>",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "executor", Description: "job executor", ValueName: "EXECUTOR", Values: executorNames()},
 			cliFlagSpec{Name: "executor-option", Description: "option passed to the selected scheduler (sbatch/qsub/...)", ValueName: "OPTION"},
 			cliFlagSpec{Name: "job-name", Description: "job name label", ValueName: "NAME"},
 			cliFlagSpec{Name: "name", Description: "job name label (alias)", ValueName: "NAME"},
 			cliFlagSpec{Name: "depends-on", Description: "name of a prerequisite job; may be repeated", ValueName: "NAME"},
+			cliFlagSpec{Name: "run", Description: "execute the queue after adding the command"},
 		),
 		HasPositional: true,
 	},
 	{
 		Name:        "copy",
 		Description: "copy jobs from a run into the queue",
-		Usage:       "rotari copy [--basedir DIR] [--queue-name NAME] --run-id ID [--failed] [--unfinished] [--success] [--job-id ID] [--append|--overwrite]",
+		Usage:       "rotari copy [--basedir DIR] [--project-name NAME] --run-id ID [--failed] [--unfinished] [--success] [--job-id ID] [--append|--overwrite]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "run-id", Description: "source run ID", ValueName: "ID"},
 			cliFlagSpec{Name: "failed", Description: "include failed jobs; may be combined with result filters"},
@@ -160,9 +169,10 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "run",
 		Description: "execute queued commands, optionally selecting jobs from a run",
-		Usage:       "rotari run [--basedir DIR] [--queue-name NAME] [--run-id ID] [--run-name NAME] [--local-concurrency N] [--batch-concurrency N] [--retry N] [--failed] [--unfinished] [--success] [--job-id ID] [--async] [--executor EXECUTOR] [--executor-option OPTION]",
+		Usage:       "rotari run [--basedir DIR] [--project-name NAME] [--run-id ID] [--overwrite] [--run-name NAME] [--local-concurrency N] [--batch-concurrency N] [--retry N] [--failed] [--unfinished] [--success] [--job-id ID] [--async] [--executor EXECUTOR] [--executor-option OPTION]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "run-id", Description: "repopulate the queue from this run before executing (copy --run-id + run); defaults to the latest run when a result filter is used", ValueName: "ID"},
+			cliFlagSpec{Name: "overwrite", Description: "replace a non-empty queue without prompting; requires --run-id"},
 			cliFlagSpec{Name: "run-name", Description: "run name label", ValueName: "NAME"},
 			cliFlagSpec{Name: "local-concurrency", Description: "local worker concurrency", ValueName: "N"},
 			cliFlagSpec{Name: "batch-concurrency", Description: "scheduler job concurrency (Slurm/PBS/...)", ValueName: "N"},
@@ -179,9 +189,10 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "retry",
 		Description: "alias for run --failed --unfinished",
-		Usage:       "rotari retry [--basedir DIR] [--queue-name NAME] [--run-id ID] [--run-name NAME] [--local-concurrency N] [--batch-concurrency N] [--retry N] [--job-id ID] [--async] [--executor EXECUTOR] [--executor-option OPTION]",
+		Usage:       "rotari retry [--basedir DIR] [--project-name NAME] [--run-id ID] [--overwrite] [--run-name NAME] [--local-concurrency N] [--batch-concurrency N] [--retry N] [--job-id ID] [--async] [--executor EXECUTOR] [--executor-option OPTION]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "run-id", Description: "repopulate the queue from this run before executing; defaults to the latest run", ValueName: "ID"},
+			cliFlagSpec{Name: "overwrite", Description: "replace a non-empty queue without prompting; requires --run-id"},
 			cliFlagSpec{Name: "run-name", Description: "run name label", ValueName: "NAME"},
 			cliFlagSpec{Name: "local-concurrency", Description: "local worker concurrency", ValueName: "N"},
 			cliFlagSpec{Name: "batch-concurrency", Description: "scheduler job concurrency (Slurm/PBS/...)", ValueName: "N"},
@@ -209,7 +220,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "web",
 		Description: "serve the web status UI",
-		Usage:       "rotari web [--basedir DIR] [--queue-name NAME] [--host HOST] [--port PORT] [--static-dir DIR]",
+		Usage:       "rotari web [--basedir DIR] [--project-name NAME] [--host HOST] [--port PORT] [--static-dir DIR]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "host", Description: "HTTP listen host", ValueName: "HOST"},
 			cliFlagSpec{Name: "port", Description: "HTTP listen port", ValueName: "PORT"},
@@ -277,30 +288,56 @@ func cliFlag(name string) cliFlagSpec {
 
 func cliString(fs *flag.FlagSet, name, defaultValue string) *string {
 	spec := cliFlag(name)
-	return fs.String(spec.Name, defaultValue, spec.Description)
+	target := new(string)
+	fs.StringVar(target, spec.Name, defaultValue, spec.Description)
+	if short := cliShortFlagNames[name]; short != "" {
+		fs.StringVar(target, short, defaultValue, spec.Description+" (shorthand)")
+	}
+	return target
 }
 
 func cliStringVar(fs *flag.FlagSet, target *string, name, defaultValue string) {
 	spec := cliFlag(name)
 	fs.StringVar(target, spec.Name, defaultValue, spec.Description)
+	if short := cliShortFlagNames[name]; short != "" {
+		fs.StringVar(target, short, defaultValue, spec.Description+" (shorthand)")
+	}
 }
 
 func cliBool(fs *flag.FlagSet, name string, defaultValue bool) *bool {
 	spec := cliFlag(name)
-	return fs.Bool(spec.Name, defaultValue, spec.Description)
+	target := new(bool)
+	fs.BoolVar(target, spec.Name, defaultValue, spec.Description)
+	if short := cliShortFlagNames[name]; short != "" {
+		fs.BoolVar(target, short, defaultValue, spec.Description+" (shorthand)")
+	}
+	return target
 }
 
 func cliInt(fs *flag.FlagSet, name string, defaultValue int) *int {
 	spec := cliFlag(name)
-	return fs.Int(spec.Name, defaultValue, spec.Description)
+	target := new(int)
+	fs.IntVar(target, spec.Name, defaultValue, spec.Description)
+	if short := cliShortFlagNames[name]; short != "" {
+		fs.IntVar(target, short, defaultValue, spec.Description+" (shorthand)")
+	}
+	return target
 }
 
 func cliDuration(fs *flag.FlagSet, name string, defaultValue time.Duration) *time.Duration {
 	spec := cliFlag(name)
-	return fs.Duration(spec.Name, defaultValue, spec.Description)
+	target := new(time.Duration)
+	fs.DurationVar(target, spec.Name, defaultValue, spec.Description)
+	if short := cliShortFlagNames[name]; short != "" {
+		fs.DurationVar(target, short, defaultValue, spec.Description+" (shorthand)")
+	}
+	return target
 }
 
 func cliValue(fs *flag.FlagSet, target flag.Value, name string) {
 	spec := cliFlag(name)
 	fs.Var(target, spec.Name, spec.Description)
+	if short := cliShortFlagNames[name]; short != "" {
+		fs.Var(target, short, spec.Description+" (shorthand)")
+	}
 }

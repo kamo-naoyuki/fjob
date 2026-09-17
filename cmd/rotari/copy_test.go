@@ -1,9 +1,53 @@
 package main
 
 import (
+	"io"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestCmdCopyRejectsRunningProjectBeforeQueueConfirmation(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := "copy-running-source"
+	if err := writeJSON(filepath.Join(paths.runsDir, runID, "commands.json"), Queue{Commands: []QueuedCommand{{ID: "source", Command: []string{"source"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.queueFile, Queue{Commands: []QueuedCommand{{ID: "existing", Command: []string{"existing"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := acquireLock(paths.lockFile, LockInfo{PID: os.Getpid(), RunID: "active-run"}); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(paths.lockFile)
+
+	oldStderr := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = writer
+	code := cmdCopy([]string{"--basedir", baseDir, "--project-name", "default", "--run-id", runID})
+	os.Stderr = oldStderr
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 1 || !strings.Contains(string(output), `project "default" is running; copy is not allowed`) {
+		t.Fatalf("cmdCopy exit code = %d, stderr = %q", code, output)
+	}
+	if strings.Contains(string(output), "queue is not empty") {
+		t.Fatalf("cmdCopy checked queue before running state: %q", output)
+	}
+}
 
 func TestCopyRunToQueuePreservesSourceJobIDs(t *testing.T) {
 	baseDir := t.TempDir()
