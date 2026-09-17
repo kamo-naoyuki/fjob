@@ -239,25 +239,14 @@ stores its snapshot, logs, and results separately.
 
 ```mermaid
 flowchart LR
-  subgraph project[Project]
-    subgraph current[Current queue]
-      prepare([rotari add]) -->|job: prepare| queue[(queue.json)]
-      train([rotari add]) -->|job: train| queue
-    end
-
-    queue --> start([rotari run])
-    subgraph history[Saved run]
-      snapshot[(runs/run-id/commands.json)] --> summary[(runs/run-id/summary.json)]
-      snapshot --> output[(runs/run-id/job-id/output)]
-    end
-    start --> snapshot
-    start --> cleared[(queue.json: empty)]
-    cleared --> next([rotari add])
-    next -->|next job| nextQueue[(queue.json: pending jobs)]
-  end
+  add([rotari add]) --> queue[(queue.json)]
+  queue --> run([rotari run])
+  run --> history[(runs/run-id/<br/>commands, logs, results)]
+  run --> empty[(queue.json: empty)]
+  empty -. next run .-> add
 
   classDef command fill:#1d4ed8,stroke:#1e3a8a,color:#ffffff
-  class prepare,train,start,next command
+  class add,run command
 ```
 
 The state directory mirrors this lifecycle:
