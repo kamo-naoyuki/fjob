@@ -23,6 +23,19 @@ func TestWebRunGuidanceUsesRunIDOnly(t *testing.T) {
 	}
 }
 
+func TestWebHTMLIncludesEmbeddedThemeFavicons(t *testing.T) {
+	html := webHTML()
+	for _, want := range []string{
+		`media="(prefers-color-scheme: dark)"`,
+		`media="(prefers-color-scheme: light)"`,
+		`data:image/svg+xml;base64,`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("web HTML does not contain %q", want)
+		}
+	}
+}
+
 func TestWebCancelRunRejectsStaleRunID(t *testing.T) {
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "default")
@@ -118,6 +131,9 @@ func TestGenerateStaticWebIncludesCLIDocs(t *testing.T) {
 	}
 	if !strings.Contains(string(index), "rewriteStaticLinks();") || !strings.Contains(string(index), "path===root||path.startsWith(root+'/')") || !strings.Contains(string(index), "new MutationObserver(rewriteStaticLinks)") {
 		t.Fatal("static web page does not rewrite links before rendering")
+	}
+	if !strings.Contains(string(index), "data:image/svg+xml;base64,") {
+		t.Fatal("static web page does not contain embedded favicon data")
 	}
 	for _, obsolete := range []string{"queue_name", "/queue/", "state.queues"} {
 		if strings.Contains(string(index), obsolete) {

@@ -1,6 +1,13 @@
-# Rotari: File-based, flexible job runner for local and batch workloads
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/rotari-logo-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/rotari-logo-light.svg">
+  <img src="docs/assets/rotari-logo-light.svg" alt="rotari logo">
+</picture>
+
+---
 
 [![Go CI](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml/badge.svg)](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml) [![Slurm + PBS CI](https://img.shields.io/github/actions/workflow/status/kamo-naoyuki/rotari/scheduler-integration.yml?branch=main&label=Slurm%20%2B%20PBS%20CI)](https://github.com/kamo-naoyuki/rotari/actions/workflows/scheduler-integration.yml) [![web demo](https://img.shields.io/website?url=https%3A%2F%2Fkamo-naoyuki.github.io%2Frotari%2F&label=web%20demo&style=flat)](https://kamo-naoyuki.github.io/rotari/)
+
 
 Rotari turns trial-and-error into a repeatable loop: run a batch of jobs, see which failed, fix only their commands, and run it again — without losing the history of what already worked.
 

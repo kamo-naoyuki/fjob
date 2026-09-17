@@ -698,7 +698,8 @@ func writeWebError(writer http.ResponseWriter, err error) {
 
 func webHTML() string {
 	executorJSON, _ := json.Marshal(executorNames())
-	template := strings.Replace(webIndexHTML, "<script>\nlet state;", "<script>\nconst executorNames="+string(executorJSON)+";\nlet state;", 1)
+	template := strings.Replace(webIndexHTML, "<title>rotari</title>", "<title>rotari</title>"+faviconLinks(), 1)
+	template = strings.Replace(template, "<script>\nlet state;", "<script>\nconst executorNames="+string(executorJSON)+";\nlet state;", 1)
 	template = strings.NewReplacer(
 		"state.queues", "state.projects",
 		"queue_name", "project_name",
@@ -785,7 +786,7 @@ func cliDocsHTML(homePath string) string {
 		builder.WriteString(`</section>`)
 	}
 	builder.WriteString(`</main></body></html>`)
-	return builder.String()
+	return strings.Replace(builder.String(), `<title>rotari CLI documentation</title>`, `<title>rotari CLI documentation</title>`+faviconLinks(), 1)
 }
 
 const webIndexHTML = `<!doctype html>

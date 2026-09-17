@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-labelledby="title-fav-light">
+<title id="title-fav-light">rotari</title>
+<defs>
+<linearGradient id="fadeIn-fl" x1="0%" y1="100%" x2="100%" y2="0%">
+<stop offset="0%" stop-color="#262626" stop-opacity="0.45"/>
+<stop offset="100%" stop-color="#262626" stop-opacity="0"/>
+</linearGradient>
+<linearGradient id="fadeOut-fl" x1="100%" y1="0%" x2="0%" y2="100%">
+<stop offset="0%" stop-color="#262626" stop-opacity="0.45"/>
+<stop offset="100%" stop-color="#262626" stop-opacity="0"/>
+</linearGradient>
+</defs>
+<g transform="translate(100,100) rotate(45)" fill="none" stroke="#262626" stroke-width="13" stroke-linecap="round">
+  <path d="M 49.5,-49.5 A 70,70 0 0,1 41.7,-139.2" stroke="url(#fadeIn-fl)"/>
+  <path d="M -49.5,49.5 A 70,70 0 0,1 -41.7,139.2" stroke="url(#fadeOut-fl)"/>
+  <circle cx="0" cy="0" r="70" opacity="0.8"/>
+  <circle cx="0" cy="-70" r="19" fill="#e5484d" stroke="none"/>
+  <circle cx="40.15" cy="-57.34" r="19" fill="#ffffff" stroke="#8a8a8a" stroke-width="1.2"/>
+  <circle cx="63.44" cy="29.58" r="19" fill="#ffffff" stroke="#8a8a8a" stroke-width="1.2"/>
+  <circle cx="-57.34" cy="40.15" r="19" fill="#ffffff" stroke="#8a8a8a" stroke-width="1.2"/>
+</g>
+</svg>
