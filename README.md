@@ -9,16 +9,16 @@
 [![Go CI](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml/badge.svg)](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml) [![Slurm + PBS CI](https://img.shields.io/github/actions/workflow/status/kamo-naoyuki/rotari/scheduler-integration.yml?branch=main&label=Slurm%20%2B%20PBS%20CI)](https://github.com/kamo-naoyuki/rotari/actions/workflows/scheduler-integration.yml) [![web demo](https://img.shields.io/website?url=https%3A%2F%2Fkamo-naoyuki.github.io%2Frotari%2F&label=web%20demo&style=flat)](https://kamo-naoyuki.github.io/rotari/)
 
 
-Rotari turns trial-and-error into a repeatable loop: run a batch of jobs, see which failed, fix only their commands, and run it again — without losing the history of what already worked.
+**Rotari turns trial-and-error into a repeatable loop**: run a batch of jobs, see which failed, fix only their commands, and run it again — without losing the history of what already worked.
 
-Local commands and scheduler jobs (Slurm, PBS, LSF) live in the same queue, even when they depend on each other. Every run keeps its own snapshot of commands, status, and logs, so nothing gets lost between "one more try" and the next.
+**Local commands and scheduler jobs (Slurm, PBS, LSF) live in the same queue**, even when they depend on each other. **Every run keeps its own snapshot** of commands, status, and logs, so nothing gets lost between "one more try" and the next.
 
-No DAGs to design, no pipeline to describe up front like
-[Snakemake](https://github.com/snakemake/snakemake) or
-[Nextflow](https://github.com/nextflow-io/nextflow) — powerful tools for
-complex, data-dependent pipelines, but more than most ad-hoc experiment
-loops need. Just queue what you want to run. State lives in plain JSON
-files on disk, with no server or database to set up — it works the same
+**No DAGs to design. No pipeline to describe up front.**
+[Snakemake](https://github.com/snakemake/snakemake) and
+[Nextflow](https://github.com/nextflow-io/nextflow) are powerful for
+complex, data-dependent workflows, but most ad-hoc experiment loops don't
+need that overhead. Just queue what you want to run. **State lives in plain JSON
+files on disk**, with no server or database to set up — it works the same
 whether you're on your laptop or logged into a remote compute node.
 
 | Plain shell (background jobs) | rotari |
