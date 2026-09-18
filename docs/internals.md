@@ -66,6 +66,10 @@ newest run directory where supported. Current state may take precedence:
 `show` displays the active run first, an interrupted run second, then a
 non-empty idle queue, before selecting history.
 
+`wait` is the exception among history consumers: when no run ID is supplied,
+it requires an active `running.lock` and waits for that run; it does not infer
+a historical run.
+
 Run lookup applies to commands consuming existing history (`show`, `wait`,
 `copy`, `change`, `remove`, `delete`, and rerun selection), not commands
 creating or controlling current state such as `add` and a plain new `run`.
@@ -143,6 +147,12 @@ resolving where a job's output lives. `--partial-array=false` restores the
 older whole-array behavior (any match re-executes every task, using only the
 whole-command `Origin`).
 
+`--depends-on` ordering is resolved entirely by rotari itself, wave by wave,
+inside `executeMixedRun`; it never relies on scheduler-native dependency
+features (e.g. Slurm's `--dependency`). This keeps dependency semantics
+identical across every executor, including mixes of local and remote ones in
+the same run.
+
 ## Execution boundaries
 
 `executeMixedRun` (`mixed_run.go`) is the single execution engine for every
@@ -189,9 +199,19 @@ supplied). `show --json` emits one object with the resolved location, run
 summary when available, and saved commands. These modes are additive; default
 CLI output remains human-facing.
 
+`web` binds `--host`/`--port` (default `127.0.0.1:8787`) via `listenWeb`. When
+`--port` is left at its default, a busy port falls back to scanning upward
+(port+1, port+2, ...) until a free one is found or 65535 is reached; an
+explicit `--port` (including `--port 0`, which asks the OS for an ephemeral
+port) never falls back and fails immediately if unavailable. The actually
+bound address is reported after the listener is created, not the requested
+one.
+
 A synchronous client disconnect, including Ctrl-C, requests cancellation and
 returns to the caller immediately (exit code 130); the server-side run keeps
-executing in the background and only then runs normal finalization. Async
+executing in the background and only then runs normal finalization. Ctrl-D
+sends an explicit detach control before disconnecting instead, leaving the run
+uncancelled and transferring completion cleanup to the background waiter. Async
 workers are monitored by the server; their exit decrements the active-run
 count so the server can stop. Manual interrupted-run recovery is reserved for
 failures that bypass finalization.

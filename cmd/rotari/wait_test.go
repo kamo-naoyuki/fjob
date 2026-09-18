@@ -136,3 +136,25 @@ func TestCmdWaitTimesOutForMalformedSummary(t *testing.T) {
 		t.Fatalf("cmdWait exit code = %d, stderr = %q", code, output)
 	}
 }
+
+func TestResolveActiveRunTarget(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.metaFile, defaultMeta()); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.lockFile, LockInfo{PID: os.Getpid(), RunID: "active-run"}); err != nil {
+		t.Fatal(err)
+	}
+
+	runID, err := resolveActiveRunTarget(baseDir, "demo")
+	if err != nil {
+		t.Fatalf("resolveActiveRunTarget returned error: %v", err)
+	}
+	if runID != "active-run" {
+		t.Fatalf("run ID = %q, want active-run", runID)
+	}
+}

@@ -23,8 +23,12 @@ func cmdWait(args []string) int {
 	}
 	runIDs = append(runIDs, fs.Args()...)
 	if len(runIDs) == 0 {
-		printError("usage: " + cliUsage("wait"))
-		return 1
+		runID, err := resolveActiveRunTarget(*basedir, *queueNameOption)
+		if err != nil {
+			printError(err)
+			return 1
+		}
+		runIDs = append(runIDs, runID)
 	}
 	if *timeout < 0 {
 		printError("--timeout must be >= 0")
@@ -45,6 +49,29 @@ func cmdWait(args []string) int {
 		}
 	}
 	return exitCode
+}
+
+func resolveActiveRunTarget(cliBaseDir, cliProjectName string) (string, error) {
+	baseDir, _, err := resolveBaseDir(cliBaseDir)
+	if err != nil {
+		return "", err
+	}
+	queueName, err := resolveProjectName(baseDir, cliProjectName)
+	if err != nil {
+		return "", err
+	}
+	paths, err := resolvePaths(baseDir, queueName)
+	if err != nil {
+		return "", err
+	}
+	state, runID, err := inspectProjectRunState(paths)
+	if err != nil {
+		return "", fmt.Errorf("failed to check project state: %w", err)
+	}
+	if state != projectRunning || runID == "" {
+		return "", fmt.Errorf("project %q has no active run", queueName)
+	}
+	return runID, nil
 }
 
 type waitResult struct {

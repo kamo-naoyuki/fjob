@@ -79,6 +79,16 @@ be rejected as "not allowed" until finalization catches up a moment later —
 that's normal and needs no `unlock`, unless the process is killed outright
 (see the next question).
 
+**Can I detach a synchronous run without cancelling it?**
+Yes. Press Ctrl-D while `rotari run` is waiting for progress. The client exits
+immediately and the run continues in the background; this is equivalent to
+starting the run with `--async` after it has begun.
+
+**Can `wait` find the run ID for me?**
+Yes. With no run ID, `rotari wait` detects the active run for the resolved
+project and waits for it. Specify `--project-name` when the base directory has
+multiple projects.
+
 **How does rotari actually stop a running job on Ctrl-C or `rotari cancel`?**
 It depends on the executor. `local` sends `SIGTERM` to the job's direct child
 process only — not a process group — so a wrapper script that spawns its own

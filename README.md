@@ -133,19 +133,6 @@ Use `--run-name NAME` to label a run; the generated run ID remains available for
 unambiguous paths and commands.
 Use `add --run` to add a command and immediately execute the queue in one command.
 
-Array jobs can be added with a numeric range:
-
-```sh
-rotari add --array 1-10 --executor local ./train.sh
-rotari add --array 1-10 --executor slurm ./train.sh
-```
-
-Each task is tracked separately. Local execution starts one process per task;
-Slurm, PBS, and LSF submit native scheduler arrays when the complete range is
-selected.
-See [Job environment](#job-environment) for the environment variables
-available inside each task.
-
 Use `--depends-on NAME` to make a job wait for a named prerequisite. Repeat the
 option to specify multiple prerequisites:
 
@@ -158,65 +145,21 @@ rotari run
 Jobs without dependencies run in parallel. Dependencies must refer to named
 jobs in the same queue; unknown jobs and dependency cycles are rejected before
 the run starts. If a prerequisite fails, dependent jobs are recorded as
-`blocked` and are not executed. Retries rerun only failed jobs, not jobs that
-already succeeded. `rotari retry` likewise reruns failed and
-unfinished job bodies
-without rerunning successful prerequisites.
+`blocked` and are not executed.
 
-The typical debug loop is deliberately short:
+The shortest retry loop is:
 
 ```sh
 rotari show --project-name build --failed-logs
-rotari change --project-name build --job-name train -- ./train-v2.sh
 rotari retry --project-name build
 ```
 
-Jobs that already succeeded are not re-executed; they are carried forward into
-the new run with their previous result and a link back to the original output,
-so the whole run (old successes and freshly retried jobs) shows up together on
-one run page. This makes it practical to keep debugging until the experiment
-is complete without rerunning work that already succeeded.
-
-Copy jobs from a previous run into the current queue without executing them:
-
-```sh
-rotari copy --project-name build --run-id RUN_ID --failed --unfinished
-rotari change --project-name build --job-name unit-tests -- go test ./...
-rotari run --project-name build --retry 2
-```
-
-`copy` creates new job IDs only if they would collide with jobs already in the
-destination queue; otherwise the source job ID is kept, and dependencies
-between copied jobs are preserved. If the queue is non-empty, the CLI asks for
-confirmation before replacing it; use `--append` to add copied jobs or
-`--overwrite` to replace it without asking. Selection options include
-`--failed`, `--unfinished`, `--success`, and repeated `--job-id`.
-Copied jobs remain pending in the new queue. Their source run, source job,
-source status, and original working directory are retained as metadata so the
-original output can be inspected without copying it.
-
-`run` (and its aliases `retry` and, with explicit filters, `run --failed`
-etc.) can also select jobs directly from a run instead of the live queue.
-`--run-id ID` repopulates the queue from that run first, equivalent to
-`copy --run-id ID --overwrite` followed by `run`; result filters
-(`--failed`/`--unfinished`/`--success`/`--job-id`) then decide which of those
-jobs are actually re-executed. If the current queue is non-empty, confirmation
-is required before replacement; add `--overwrite` to `run --run-id` or
-`retry --run-id` to replace it without asking. Jobs that don't match the filter
-but already finished in the reference run (the given `--run-id`, or the latest
-run when `--run-id` is omitted) are carried forward instead of re-executed. For
-example:
-
-```sh
-rotari run --project-name build --run-id RUN_ID --failed
-```
-
-is equivalent to:
-
-```sh
-rotari copy --project-name build --run-id RUN_ID --overwrite
-rotari run --project-name build --failed
-```
+`rotari retry` reruns failed and unfinished job bodies without rerunning
+successful jobs. Jobs that already succeeded are carried forward into the new
+run with their previous result and a link back to the original output, so the
+whole run shows up together on one run page. When a failed job needs its saved
+command edited before retrying, use `rotari change`; see the inspection and
+recovery commands below.
 
 ## Common options
 
@@ -354,6 +297,25 @@ session, then stores its output, exit status, and destination host in the
 local run directory. SSH jobs use the batch-concurrency limit and are cancelled
 by terminating their local SSH session.
 
+Array jobs can be added with a numeric range:
+
+```sh
+rotari add --array 1-10 --executor local ./train.sh
+rotari add --array 1-10 --executor slurm ./train.sh
+```
+
+Each task is tracked separately. Local execution starts one process per task;
+Slurm, PBS, and LSF submit native scheduler arrays when the complete range is
+selected. For each array task, rotari exposes:
+
+- `ROTARI_ARRAY_TASK_ID`: current task number
+- `ROTARI_ARRAY_FIRST`: first task number in the array
+- `ROTARI_ARRAY_LAST`: last task number in the array
+- `ROTARI_ARRAY_SIZE`: total number of tasks
+
+Scheduler-backed arrays also map the native index variable into these values,
+for example `SLURM_ARRAY_TASK_ID`, `PBS_ARRAY_INDEX`, or `LSB_JOBINDEX`.
+
 The Slurm and PBS executors are integration-tested in CI against a Slurm
 container and an OpenPBS container. These tests do not certify compatibility
 with every real cluster configuration. The LSF executor is covered by unit
@@ -377,6 +339,10 @@ rotari run --project-name test --async
 rotari wait RUN_ID_FROM_BUILD RUN_ID_FROM_TEST
 ```
 
+When the project is already running, `rotari wait` without a run ID waits for
+that active run automatically. Use `--project-name` when more than one
+project exists.
+
 Pressing Ctrl-C during a synchronous `rotari run` requests cancellation and
 returns your terminal immediately (exit code 130) — it does not wait for
 jobs to stop. The supervisor keeps running in the background, cancels the
@@ -384,6 +350,11 @@ still-running jobs, and only then finishes its normal cleanup, including the
 run summary, queue clearing, and run-lock removal; a new `run`/`add`/`copy`
 against the same project may be briefly rejected until that finishes.
 Routine interruption does not require `unlock` or `server shutdown`.
+
+Pressing Ctrl-D during a synchronous `rotari run` detaches the client without
+cancelling the run. The terminal returns immediately and the run continues as
+if it had been started with `--async`; use `rotari wait --run-id RUN_ID` or
+`rotari show --run-id RUN_ID` to follow it.
 
 An async run is started as a detached process in a new session (`setsid`), so
 it keeps running even if the terminal that launched it is closed. Use
@@ -465,8 +436,47 @@ specific jobs by ID instead of filtering by result.
 
 `--job-id` may be repeated to select jobs to execute. It is mutually exclusive
 with the result filters above. `--run-id ID` changes the reference run used
-for both the queue snapshot and the result filters; see the earlier section
-for details.
+for both the queue snapshot and the result filters.
+
+Copy jobs from a previous run into the current queue without executing them:
+
+```sh
+rotari copy --project-name build --run-id RUN_ID --failed --unfinished
+rotari run --project-name build --retry 2
+```
+
+`copy` creates new job IDs only if they would collide with jobs already in the
+destination queue; otherwise the source job ID is kept, and dependencies
+between copied jobs are preserved. If the queue is non-empty, the CLI asks for
+confirmation before replacing it; use `--append` to add copied jobs or
+`--overwrite` to replace it without asking. Selection options include
+`--failed`, `--unfinished`, `--success`, and repeated `--job-id`.
+Copied jobs remain pending in the new queue. Their source run, source job,
+source status, and original working directory are retained as metadata so the
+original output can be inspected without copying it.
+
+`run` (and its aliases `retry` and, with explicit filters, `run --failed`
+etc.) can also select jobs directly from a run instead of the live queue.
+`--run-id ID` repopulates the queue from that run first, equivalent to
+`copy --run-id ID --overwrite` followed by `run`; result filters
+(`--failed`/`--unfinished`/`--success`/`--job-id`) then decide which of those
+jobs are actually re-executed. If the current queue is non-empty, confirmation
+is required before replacement; add `--overwrite` to `run --run-id` or
+`retry --run-id` to replace it without asking. Jobs that don't match the filter
+but already finished in the reference run (the given `--run-id`, or the latest
+run when `--run-id` is omitted) are carried forward instead of re-executed. For
+example:
+
+```sh
+rotari run --project-name build --run-id RUN_ID --failed
+```
+
+is equivalent to:
+
+```sh
+rotari copy --project-name build --run-id RUN_ID --overwrite
+rotari run --project-name build --failed
+```
 
 For an array job (`--array`), result filters default to per-task selection
 (`--partial-array=true`): only the tasks matching the filter (e.g. the failed
@@ -586,7 +596,7 @@ The resolution logic for the project name when `--project-name` is omitted is:
 3. Automatically select if exactly one project exists in the state directory
 4. Default project name (`default`) if no projects exist yet (if multiple projects exist, an error will prompt you to specify one)
 
-For scheduler-backed jobs, rotari converts the scheduler-specific task
+For scheduler-backed array jobs, rotari converts the scheduler-specific task
 variable, such as `SLURM_ARRAY_TASK_ID`, `PBS_ARRAY_INDEX`, or
 `LSB_JOBINDEX`, into the common `ROTARI_ARRAY_*` variables above.
 
@@ -652,10 +662,11 @@ run = rotari.run(async_=True)
 summary = rotari.wait(run.run_id)
 ```
 
-The client invokes the executable without a shell. `wait` and `show` use the
-CLI's machine-readable JSON modes; all queue and run semantics remain owned by
-the CLI. This is intentionally a thin wrapper, not a Python-native job
-executor: it accepts command argument lists such as `['./train.sh']`, not
+The client invokes the `rotari` executable without a shell, so the `rotari`
+command must be available on `PATH` for the Python process. `wait` and `show`
+use the CLI's machine-readable JSON modes; all queue and run semantics remain
+owned by the CLI. This is intentionally a thin wrapper, not a Python-native
+job executor: it accepts command argument lists such as `['./train.sh']`, not
 Python functions to serialize and submit. For a function-oriented Python job
 submission framework, see [Submitit](https://github.com/facebookincubator/submitit);
 Rotari instead exposes the existing CLI and its local, SSH, and scheduler

@@ -55,6 +55,8 @@ type serverResponse struct {
 	Failed    int    `json:"failed,omitempty"`
 }
 
+const runDetachControl byte = 0x04
+
 const serverProtocolVersion = 2
 
 type rotariServer struct {
@@ -561,10 +563,15 @@ func (server *rotariServer) handle(baseDir string, conn net.Conn) {
 			}
 		} else {
 			server.beginRun()
-			defer server.endRun()
-			message, exitCode, err = runServerSyncWithDisconnect(conn, baseDir, request.QueueName, request.RunName, request.LocalConcurrency, request.BatchMaxActive, request.Retry, request.Executor, request.ExecutorOptions, request.Selection, request.JobIDs, request.SourceRunID, request.PartialArray, func(progress serverResponse) {
+			runDetached := false
+			defer func() {
+				if !runDetached {
+					server.endRun()
+				}
+			}()
+			message, exitCode, err, runDetached = runServerSyncWithDisconnectAndDone(conn, baseDir, request.QueueName, request.RunName, request.LocalConcurrency, request.BatchMaxActive, request.Retry, request.Executor, request.ExecutorOptions, request.Selection, request.JobIDs, request.SourceRunID, request.PartialArray, func(progress serverResponse) {
 				_ = encoder.Encode(progress)
-			}, request.CWD)
+			}, server.endRun, request.CWD)
 		}
 		response = serverResponse{OK: err == nil, Message: message, ExitCode: exitCode}
 		if err != nil {
@@ -580,6 +587,11 @@ func (server *rotariServer) handle(baseDir string, conn net.Conn) {
 }
 
 func runServerSyncWithDisconnect(conn net.Conn, baseDir, queueName, runName string, localConcurrency, batchMaxActive, retry int, executor string, executorOptions []string, selection string, jobIDs []string, sourceRunID string, partialArray bool, progress func(serverResponse), cwdOverride ...string) (string, int, error) {
+	message, exitCode, err, _ := runServerSyncWithDisconnectAndDone(conn, baseDir, queueName, runName, localConcurrency, batchMaxActive, retry, executor, executorOptions, selection, jobIDs, sourceRunID, partialArray, progress, nil, cwdOverride...)
+	return message, exitCode, err
+}
+
+func runServerSyncWithDisconnectAndDone(conn net.Conn, baseDir, queueName, runName string, localConcurrency, batchMaxActive, retry int, executor string, executorOptions []string, selection string, jobIDs []string, sourceRunID string, partialArray bool, progress func(serverResponse), onDone func(), cwdOverride ...string) (string, int, error, bool) {
 	cwd := ""
 	if len(cwdOverride) > 0 {
 		cwd = cwdOverride[0]
@@ -594,21 +606,34 @@ func runServerSyncWithDisconnect(conn net.Conn, baseDir, queueName, runName stri
 		message, exitCode, err := runServerSync(baseDir, queueName, runName, localConcurrency, batchMaxActive, retry, executor, executorOptions, selection, jobIDs, sourceRunID, partialArray, progress, cwd)
 		done <- result{message: message, exitCode: exitCode, err: err}
 	}()
-	disconnected := make(chan struct{})
+	disconnected := make(chan bool, 1)
 	go func() {
 		var buffer [1]byte
-		_, err := conn.Read(buffer[:])
+		n, err := conn.Read(buffer[:])
+		if n > 0 && buffer[0] == runDetachControl {
+			disconnected <- true
+			return
+		}
 		if err != nil && (err == io.EOF || !errors.Is(err, os.ErrDeadlineExceeded)) {
-			close(disconnected)
+			disconnected <- false
 		}
 	}()
 	select {
 	case result := <-done:
-		return result.message, result.exitCode, result.err
-	case <-disconnected:
+		return result.message, result.exitCode, result.err, false
+	case detached := <-disconnected:
+		if detached {
+			if onDone != nil {
+				go func() {
+					<-done
+					onDone()
+				}()
+			}
+			return "Run detached; it continues in the background.", 0, nil, true
+		}
 		_, _ = cancelQueue(baseDir, queueName, false)
 		result := <-done
-		return result.message, result.exitCode, result.err
+		return result.message, result.exitCode, result.err, false
 	}
 }
 
@@ -767,10 +792,27 @@ func sendRunRequest(baseDir string, request serverRequest) (serverResponse, erro
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt)
 	defer signal.Stop(signals)
+	input := make(chan bool, 1)
+	if isTerminal(os.Stdin) {
+		go func() {
+			var buffer [1]byte
+			n, err := os.Stdin.Read(buffer[:])
+			if (n == 0 && err == nil) || (n > 0 && buffer[0] == runDetachControl) {
+				input <- true
+			}
+		}()
+	}
 	lastCompleted, lastSucceeded, lastFailed := -1, -1, -1
 	for {
 		var response serverResponse
 		select {
+		case <-input:
+			if _, err := conn.Write([]byte{runDetachControl}); err != nil {
+				return serverResponse{}, err
+			}
+			_ = conn.Close()
+			fmt.Println(cyan("Run detached; it continues in the background."))
+			return serverResponse{OK: true}, nil
 		case <-signals:
 			fmt.Println(yellow("Cancellation requested; stopping running jobs..."))
 			_ = conn.Close()
@@ -788,6 +830,7 @@ func sendRunRequest(baseDir string, request serverRequest) (serverResponse, erro
 					fmt.Printf("%s\n", colorKeyValueMessage(response.Message, yellow))
 				} else if strings.HasPrefix(response.Message, "Run started:") {
 					fmt.Printf("%s\n", colorKeyValueMessage(response.Message, cyan))
+					fmt.Println(cyan("Press Ctrl-D to detach; Ctrl-C to cancel."))
 				} else if strings.HasPrefix(response.Message, "Job running:") {
 					title, details, _ := strings.Cut(response.Message, "\n")
 					fmt.Printf("%s\n%s\n", cyan(title), colorLabeledDetails(details, false))

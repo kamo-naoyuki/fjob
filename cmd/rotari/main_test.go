@@ -2529,3 +2529,67 @@ func TestRunServerSyncWithDisconnectCancelsRunningJob(t *testing.T) {
 		t.Fatalf("job process %d is still running after disconnect", pid)
 	}
 }
+
+func TestRunServerSyncWithDisconnectDetachesRunningJob(t *testing.T) {
+	baseDir := t.TempDir()
+	queueDir := filepath.Join(baseDir, "projects", "default")
+	if err := os.MkdirAll(queueDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(queueDir, "queue.json"), Queue{Commands: []QueuedCommand{{ID: "slow-id", Command: []string{"sleep", "1"}, Name: "slow"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(queueDir, "meta.json"), defaultMeta()); err != nil {
+		t.Fatal(err)
+	}
+
+	client, serverConn := net.Pipe()
+	defer client.Close()
+	defer serverConn.Close()
+	done := make(chan struct{})
+	onDone := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _, _, detached := runServerSyncWithDisconnectAndDone(serverConn, baseDir, "default", "", 1, 1, 0, "", nil, "", nil, "", true, func(serverResponse) {}, func() { close(onDone) })
+		if !detached {
+			t.Errorf("run was not detached")
+		}
+	}()
+
+	var pid int
+	deadline := time.Now().Add(5 * time.Second)
+	for pid == 0 && time.Now().Before(deadline) {
+		matches, err := filepath.Glob(filepath.Join(queueDir, "runs", "*", "slow-id", "pid"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) == 1 {
+			data, err := os.ReadFile(matches[0])
+			if err == nil {
+				pid, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+			}
+		}
+		if pid == 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if pid == 0 {
+		t.Fatal("job did not start")
+	}
+	if _, err := client.Write([]byte{runDetachControl}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("detach did not return promptly")
+	}
+	if !processAlive(pid) {
+		t.Fatalf("running job %d was stopped by detach", pid)
+	}
+	select {
+	case <-onDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("onDone was not called after detached run completed")
+	}
+}
