@@ -17,6 +17,7 @@ func cmdWait(args []string) int {
 	var runIDs stringSliceFlag
 	cliValue(fs, &runIDs, "run-id")
 	timeout := cliDuration(fs, "timeout", 0)
+	jsonOutput := cliBool(fs, "json", false)
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -35,7 +36,7 @@ func cmdWait(args []string) int {
 	}
 	exitCode := 0
 	for _, runID := range runIDs {
-		result := waitForRun(*basedir, *queueNameOption, runID, deadline)
+		result := waitForRun(*basedir, *queueNameOption, runID, deadline, *jsonOutput)
 		if result.exitCode > exitCode {
 			exitCode = result.exitCode
 		}
@@ -51,7 +52,7 @@ type waitResult struct {
 	timedOut bool
 }
 
-func waitForRun(basedir, queueNameOption, runID string, deadline time.Time) waitResult {
+func waitForRun(basedir, queueNameOption, runID string, deadline time.Time, jsonOutput bool) waitResult {
 	baseDir, queueName, err := resolveExistingRunTarget(basedir, queueNameOption, runID)
 	if err != nil {
 		printError(err)
@@ -66,7 +67,11 @@ func waitForRun(basedir, queueNameOption, runID string, deadline time.Time) wait
 	for {
 		summary, err := loadRunSummary(filepath.Join(runDir, "summary.json"))
 		if err == nil {
-			printRunCompletion(paths, runID, summary)
+			if jsonOutput {
+				_ = json.NewEncoder(os.Stdout).Encode(summary)
+			} else {
+				printRunCompletion(paths, runID, summary)
+			}
 			return waitResult{exitCode: summary.ExitCode}
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {

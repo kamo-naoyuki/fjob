@@ -22,8 +22,7 @@ const (
 	envRunRetry     = "ROTARI_RUN_RETRY"
 	envRunAsync     = "ROTARI_RUN_ASYNC"
 	envArrayRange   = "ROTARI_ARRAY_RANGE"
-	envCheckServer  = "ROTARI_CHECK_SERVER"
-	envCheckRecover = "ROTARI_CHECK_RECOVER"
+	envResetRecover = "ROTARI_RESET_RECOVER"
 	envWaitTimeout  = "ROTARI_WAIT_TIMEOUT"
 	envWebHost      = "ROTARI_WEB_HOST"
 	envWebPort      = "ROTARI_WEB_PORT"
@@ -87,8 +86,7 @@ func environmentDefinitions() []environmentDefinition {
 		{Name: envArrayFirst, Array: true, Description: "First array task number."},
 		{Name: envArrayLast, Array: true, Description: "Last array task number."},
 		{Name: envArraySize, Array: true, Description: "Number of tasks in the array."},
-		{Name: envCheckServer, CLIDefault: true, Description: "--server default for check."},
-		{Name: envCheckRecover, CLIDefault: true, Description: "--recover default for check."},
+		{Name: envResetRecover, CLIDefault: true, Description: "--recover default for reset."},
 		{Name: envWaitTimeout, CLIDefault: true, Description: "--timeout default for wait."},
 		{Name: envWebHost, CLIDefault: true, Description: "--host default for web."},
 		{Name: envWebPort, CLIDefault: true, Description: "--port default for web."},

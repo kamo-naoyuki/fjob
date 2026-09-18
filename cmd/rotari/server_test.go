@@ -193,6 +193,28 @@ func TestCmdAddRejectsInvalidEnv(t *testing.T) {
 	}
 }
 
+func TestCmdAddRejectsDuplicateJobNameWithoutWriting(t *testing.T) {
+	baseDir := t.TempDir()
+	if code := cmdAdd([]string{"--basedir", baseDir, "--project-name", "demo", "--job-name", "prepare", "echo", "one"}); code != 0 {
+		t.Fatalf("first cmdAdd exit code = %d, want 0", code)
+	}
+	if code := cmdAdd([]string{"--basedir", baseDir, "--project-name", "demo", "--job-name", "prepare", "echo", "two"}); code == 0 {
+		t.Fatal("cmdAdd accepted a duplicate job name")
+	}
+
+	paths, err := resolvePaths(baseDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.Commands) != 1 || queue.Commands[0].Command[len(queue.Commands[0].Command)-1] != "one" {
+		t.Fatalf("queue commands = %#v, want only the first job (rejected add must not write)", queue.Commands)
+	}
+}
+
 func TestCmdServerRequestFailsWithoutRunningServer(t *testing.T) {
 	baseDir := t.TempDir()
 

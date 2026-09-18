@@ -573,7 +573,7 @@ func loadWebQueueState(paths pathSet) (webQueueState, error) {
 	if err != nil {
 		return webQueueState{}, err
 	}
-	state := webQueueState{QueueName: paths.queueName, Queue: queue}
+	state := webQueueState{QueueName: paths.queueName, Queue: queue, Runs: make([]webRun, 0)}
 	runningStartedAt := ""
 	if data, err := os.ReadFile(paths.lockFile); err == nil {
 		var lock LockInfo
@@ -636,12 +636,6 @@ func formatWebQueueDisplayTimes(state *webQueueState) {
 				job.Origin.SubmittedAt = formatDisplayTimestamp(job.Origin.SubmittedAt)
 				job.Origin.FinishedAt = formatDisplayTimestamp(job.Origin.FinishedAt)
 			}
-		}
-		for timelineIndex := range run.Timeline {
-			run.Timeline[timelineIndex].At = formatDisplayTimestamp(run.Timeline[timelineIndex].At)
-		}
-		for sampleIndex := range run.Context.LoadSamples {
-			run.Context.LoadSamples[sampleIndex].At = formatDisplayTimestamp(run.Context.LoadSamples[sampleIndex].At)
 		}
 	}
 }
@@ -966,14 +960,14 @@ async function saveQueueJob(queue,jobID,row){const parse=(selector,label)=>{try{
 async function removeQueueJob(queue,jobID,label){if(!confirm('Remove '+label+' from the queue?'))return;const response=await fetch('/api/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({queue_name:queue,job_id:jobID})});const text=await response.text();if(!response.ok){alert(text);return}await refresh()}
 async function loadLogChunk(queue,run,job,before){const response=await fetch('/api/log?queue_name='+encodeURIComponent(queue)+'&run_id='+encodeURIComponent(run)+'&job_id='+encodeURIComponent(job)+'&tail=200&before='+before);return response.text()}
 function attachLogLoader(output){output.onscroll=async()=>{if(output.scrollTop>20||!selectedLog||selectedLog.loading||selectedLog.done)return;if(followTimer)clearInterval(followTimer);followTimer=null;selectedLog.loading=true;const previousHeight=output.scrollHeight;const chunk=await loadLogChunk(selectedLog.queue,selectedLog.run,selectedLog.job,selectedLog.before+200);if(!chunk){selectedLog.done=true}else{selectedLog.before+=200;output.textContent=chunk+selectedOutput;selectedOutput=output.textContent;openOutputModal(isCompactOutput(selectedOutput));output.scrollTop=output.scrollHeight-previousHeight}selectedLog.loading=false}}
-async function showOriginalOutput(run,job,trigger){const parts=location.pathname.split('/').filter(Boolean);await showLog(decodeURIComponent(parts[1]),run,job,trigger||window.event?.currentTarget)}
+async function showOriginalOutput(run,job,trigger){const parts=location.pathname.split('/').filter(Boolean);await showLog(decodeURIComponent(parts[1]),run,job,trigger||(window.event&&window.event.currentTarget))}
 async function showLog(queue,run,job){if(followTimer)clearInterval(followTimer);selectedLog={queue:queue,run:run,job:job,before:0,loading:false,done:false};selectedOutput=await loadLogChunk(queue,run,job,0);const output=ensureModalOutput();output.textContent=selectedOutput;openOutputModal(isCompactOutput(selectedOutput));output.scrollTop=output.scrollHeight;attachLogLoader(output);followTimer=setInterval(followOutput,2000)}
 async function followOutput(){if(!selectedLog||selectedLog.before>0||selectedLog.loading)return;const latest=await loadLogChunk(selectedLog.queue,selectedLog.run,selectedLog.job,0);if(latest&&latest!==selectedOutput){selectedOutput=latest;const output=ensureModalOutput();output.textContent=latest;output.scrollTop=output.scrollHeight;openOutputModal(isCompactOutput(latest))}}
-async function log(queue,run,job,trigger){await showLog(queue,run,job,trigger||window.event?.currentTarget)}
+async function log(queue,run,job,trigger){await showLog(queue,run,job,trigger||(window.event&&window.event.currentTarget))}
 function shellQuote(v){return "'"+String(v||'').replace(/'/g,"'\\''")+"'"}
 function keepGlobalOutputBox(){}
 function removeLegacyOutputBox(){document.querySelectorAll('#app pre.log:not(.row-log)').forEach(element=>element.remove())}
-function ensureOutputBox(){let output=document.getElementById('log');if(!output){output=document.createElement('pre');output.id='log';output.className='log';const main=document.querySelector('main');const section=document.getElementById('page-title')?.parentElement;if(main&&section)main.insertBefore(output,section)}return output}
+function ensureOutputBox(){let output=document.getElementById('log');if(!output){output=document.createElement('pre');output.id='log';output.className='log';const main=document.querySelector('main');const pageTitle=document.getElementById('page-title');const section=pageTitle&&pageTitle.parentElement;if(main&&section)main.insertBefore(output,section)}return output}
 function ensureModalOutput(){return document.getElementById('modal-log')||ensureOutputBox()}
 function openOutputModal(compact){const modal=document.getElementById('output-modal');modal.style.display='flex';modal.querySelector('.output-panel').classList.toggle('compact',!!compact)}
 function closeOutputModal(){document.getElementById('output-modal').style.display='none';if(followTimer)clearInterval(followTimer);followTimer=null;selectedLog=null;selectedOutput=''}
@@ -1028,5 +1022,5 @@ function addLoadTimeline(){const parts=location.pathname.split('/').filter(Boole
 function simplifyRunStatistics(){document.querySelectorAll('.run-statistics').forEach(section=>{[...section.children].slice(1).forEach(child=>{child.style.display='none'})})}
 function addRunHostsColumn(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const table=document.querySelector('#app table.runs');if(!run||!table||table.querySelector('.job-host-header'))return;const headers=[...table.querySelectorAll('thead th')];const commandIndex=headers.findIndex(header=>header.textContent.trim()==='Command');if(commandIndex<0)return;const header=document.createElement('th');header.className='job-host-header';header.textContent='Hosts';headers[commandIndex].after(header);table.querySelectorAll('tbody tr').forEach((row,index)=>{const cell=document.createElement('td');const hosts=run.jobs[index]&&run.jobs[index].result&&run.jobs[index].result.hosts||[];cell.textContent=hosts.length?hosts.join(','):'-';row.children[commandIndex].after(cell)})}
 const originalEnhancePage=enhancePage;enhancePage=function(){originalEnhancePage();addRunStatistics();addRunEnvironment();addLoadTimeline();renderJobTimelineScratch();spaceGraphicLegends();simplifyRunStatistics();fixTimelineBarWidths();syncTimelineBar();collapseRunGraphics();alignTimelineHeading();alignGraphicHeadings()}
-function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}const originalRender=render;render=function(){originalRender();enhancePage();enhanceQueueOverview();addQueueOverviewPathActions();const parts=location.pathname.split('/').filter(Boolean);if(parts[0]==='queue'&&!parts[2]){const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));if(queue){const commands=queue.queue.commands||[];addQueueEditors(queue,commands);enhanceQueueSourceContext(commands)}}addRunHostLine();addExecutionGuide();addDeleteRunButton();addPathTableActions();removeLegacyOutputBox();keepGlobalOutputBox();placeOutputBox();renameCopyButtons();labelEquivalentCommand();addRunJobStatusColumn();addRunHostsColumn();addRunningOutputButtons();addRunningCancelButtons();mergeActionColumns();labelJobActionHeaders();styleActionColumns();markJobHeaders();markLatestRun();enableTableSorting();restoreSelectedOutput();applyStatusColors();fixRunStatisticsColors();fixTimelineLegendColors()};window.addEventListener('popstate',render);refresh();setInterval(refresh,2000);
+function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}const originalRender=render;render=function(){originalRender();enhancePage();enhanceQueueOverview();addQueueOverviewPathActions();const parts=location.pathname.split('/').filter(Boolean);if(parts[0]==='queue'&&!parts[2]){const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));if(queue){const commands=queue.queue.commands||[];addQueueEditors(queue,commands);enhanceQueueSourceContext(commands)}}addRunHostLine();addExecutionGuide();addDeleteRunButton();addPathTableActions();removeLegacyOutputBox();keepGlobalOutputBox();placeOutputBox();renameCopyButtons();labelEquivalentCommand();addRunJobStatusColumn();addRunHostsColumn();addRunningOutputButtons();addRunningCancelButtons();mergeActionColumns();labelJobActionHeaders();styleActionColumns();markJobHeaders();markLatestRun();enableTableSorting();restoreSelectedOutput();applyStatusColors();fixRunStatisticsColors();fixTimelineLegendColors()};window.addEventListener('popstate',render);refresh();setInterval(refresh,2000);
 </script></body></html>`

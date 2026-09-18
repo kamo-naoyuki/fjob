@@ -425,7 +425,7 @@ func runBatchLane(workers *sync.WaitGroup, runDir string, queue Queue, executor 
 		for _, handle := range handles {
 			result := executor.Wait(runDir, handle)
 			if result.ExitCode != 0 {
-				fmt.Printf("%s\n", red(fmt.Sprintf("fail job=%s exit=%d command=%s", result.ID, result.ExitCode, strings.Join(result.Command, " "))))
+				fmt.Printf("%s\n", colorKeyValueMessage(fmt.Sprintf("fail job=%s exit=%d command=%s", result.ID, result.ExitCode, strings.Join(result.Command, " ")), red))
 			}
 			results <- result
 		}

@@ -174,8 +174,8 @@ func run(args []string) int {
 	}
 
 	switch args[0] {
-	case "check":
-		return cmdCheck(args[1:])
+	case "reset":
+		return cmdReset(args[1:])
 	case "cancel":
 		return cmdCancel(args[1:])
 	case "suspend":
@@ -232,188 +232,6 @@ func printUsage() {
 	}
 }
 
-func cmdCheck(args []string) int {
-	fs := flag.NewFlagSet("check", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	basedir := cliString(fs, "basedir", "")
-	queueNameOption := cliString(fs, "project-name", "")
-	serverRequired := cliBool(fs, "server", false)
-	recoverOption := cliString(fs, "recover", "")
-	if err := fs.Parse(args); err != nil {
-		return 1
-	}
-	if len(fs.Args()) != 0 || (*recoverOption != "" && *recoverOption != "keep" && *recoverOption != "discard") {
-		printError("usage: " + cliUsage("check"))
-		return 1
-	}
-	baseDir, _, err := resolveBaseDir(*basedir)
-	if err != nil {
-		printErrorf("failed to resolve state directory: %v", err)
-		return 1
-	}
-	queueName, err := resolveProjectName(baseDir, *queueNameOption)
-	if err != nil {
-		printError(err)
-		return 1
-	}
-	paths, err := resolvePaths(baseDir, queueName)
-	if err != nil {
-		printErrorf("failed to resolve paths: %v", err)
-		return 1
-	}
-	state, runID, err := inspectProjectRunState(paths)
-	if err != nil {
-		printErrorf("failed to check project state: %v", err)
-		return 1
-	}
-	if state == projectRunning {
-		meta, metaErr := loadMeta(paths.metaFile)
-		if metaErr == nil && meta.Phase == "cancelling" {
-			if !waitForCancellation(paths, queueName) {
-				return 1
-			}
-			state, runID, err = inspectProjectRunState(paths)
-			if err != nil {
-				printErrorf("failed to check project state: %v", err)
-				return 1
-			}
-		}
-	}
-	if state == projectRunning {
-		fmt.Fprint(os.Stderr, formatCheckRunning(paths, runID))
-		return 1
-	}
-	if state == projectInterrupted {
-		action := interruptedRecoveryCancelled
-		if *recoverOption != "" {
-			discardQueue := *recoverOption == "discard"
-			if err := recoverInterruptedProject(paths, runID, discardQueue); err != nil {
-				printErrorf("failed to recover interrupted run: %v", err)
-				return 1
-			}
-			if discardQueue {
-				action = interruptedRecoveryDiscarded
-			} else {
-				action = interruptedRecoveryKept
-			}
-		} else if !isTerminal(os.Stdin) {
-			printErrorf("project %q has interrupted run %q; recovery requires confirmation\nRecover with:\n  rotari unlock --basedir %s --project-name %s --run-id %s",
-				queueName, runID, shellQuote(paths.baseDir), shellQuote(paths.queueName), shellQuote(runID))
-			return 1
-		} else {
-			action, err = confirmInterruptedRecovery(os.Stdin, os.Stderr, paths, runID)
-			if err != nil {
-				printErrorf("failed to recover interrupted run: %v", err)
-				return 1
-			}
-		}
-		if action == interruptedRecoveryCancelled {
-			printError("recovery cancelled")
-			return 1
-		}
-		if action == interruptedRecoveryDiscarded {
-			fmt.Printf("recovered project=%s run_id=%s; discarded retained queue\n", queueName, runID)
-		} else {
-			fmt.Printf("unlocked project=%s run_id=%s; retained queue\n", queueName, runID)
-		}
-	} else if *recoverOption != "" {
-		printError("--recover requires an interrupted run")
-		return 1
-	}
-	queue, err := loadQueue(paths.queueFile)
-	if err != nil {
-		printErrorf("failed to load queue: %v", err)
-		return 1
-	}
-	if err := validateQueueDependencies(queue); err != nil {
-		printError(err)
-		return 1
-	}
-	serverResponse, serverErr := sendServerRequest(paths.baseDir, serverRequest{Op: "ping"})
-	if serverErr == nil && serverResponse.OK && !*serverRequired {
-		if !isTerminal(os.Stdin) {
-			fmt.Fprintf(os.Stderr, "server is running pid=%d; stop it with: rotari server shutdown --basedir %s\n", serverResponse.PID, shellQuote(paths.baseDir))
-		} else if *recoverOption != "" {
-			fmt.Fprintf(os.Stderr, "server is running pid=%d; stop it with: rotari server shutdown --basedir %s\n", serverResponse.PID, shellQuote(paths.baseDir))
-		} else {
-			stop, confirmErr := confirmServerShutdown(os.Stdin, os.Stderr, paths.baseDir, serverResponse.PID)
-			if confirmErr != nil {
-				printErrorf("failed to confirm server shutdown: %v", confirmErr)
-				return 1
-			}
-			if stop {
-				if err := stopServer(paths.baseDir); err != nil {
-					printErrorf("failed to stop server: %v", err)
-					return 1
-				}
-				fmt.Printf("stopped server pid=%d\n", serverResponse.PID)
-			} else {
-				fmt.Printf("server remains running pid=%d\n", serverResponse.PID)
-			}
-		}
-	}
-	if *serverRequired {
-		if serverErr != nil || !serverResponse.OK {
-			printErrorf("project '%s' is available, but server is not running", queueName)
-			return 1
-		}
-		fmt.Printf("project '%s' is available; server is running pid=%d\n", queueName, serverResponse.PID)
-		return 0
-	}
-	fmt.Printf("%s\n", green(fmt.Sprintf("project '%s' is available", queueName)))
-	return 0
-}
-
-func stopServer(baseDir string) error {
-	_, err := sendServerRequest(baseDir, serverRequest{Op: "shutdown"})
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
-}
-
-type interruptedRecoveryAction int
-
-const (
-	interruptedRecoveryCancelled interruptedRecoveryAction = iota
-	interruptedRecoveryKept
-	interruptedRecoveryDiscarded
-)
-
-func confirmInterruptedRecovery(input io.Reader, output io.Writer, paths pathSet, runID string) (interruptedRecoveryAction, error) {
-	fmt.Fprintf(output, "project %q has interrupted run %q. Confirm all jobs have stopped. Recover and [k]eep queue, [d]iscard queue, [u]nlock, or [c]ancel? [k/d/u/C] ", paths.queueName, runID)
-	answer, err := bufio.NewReader(input).ReadString('\n')
-	if err != nil && len(answer) == 0 {
-		return interruptedRecoveryCancelled, err
-	}
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	discardQueue := false
-	action := interruptedRecoveryCancelled
-	switch answer {
-	case "k", "keep", "u", "unlock", "y", "yes":
-		action = interruptedRecoveryKept
-	case "d", "discard":
-		action = interruptedRecoveryDiscarded
-		discardQueue = true
-	default:
-		return interruptedRecoveryCancelled, nil
-	}
-	if err := recoverInterruptedProject(paths, runID, discardQueue); err != nil {
-		return interruptedRecoveryCancelled, err
-	}
-	return action, nil
-}
-
-func confirmServerShutdown(input io.Reader, output io.Writer, baseDir string, pid int) (bool, error) {
-	fmt.Fprintf(output, "server is running pid=%d for %s. Force stop it? This may interrupt other projects. [y/N] ", pid, baseDir)
-	answer, err := bufio.NewReader(input).ReadString('\n')
-	if err != nil && len(answer) == 0 {
-		return false, err
-	}
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	return answer == "y" || answer == "yes", nil
-}
-
 func recoverInterruptedProject(paths pathSet, runID string, discardQueue bool) error {
 	release, err := acquireStateLock(paths.stateLockFile)
 	if err != nil {
@@ -446,24 +264,24 @@ func recoverInterruptedProject(paths pathSet, runID string, discardQueue bool) e
 	return writeJSON(paths.metaFile, meta)
 }
 
-func formatCheckRunning(paths pathSet, runID string) string {
+func formatProjectRunningError(paths pathSet, runID string) string {
 	return fmt.Sprintf("%s\n  Run: %s\n\nWait for completion:\n  rotari wait --basedir %s --project-name %s --run-id %s\n\nCancel run:\n  rotari cancel --basedir %s --project-name %s\n",
-		red(fmt.Sprintf("project '%s' is running; new jobs are not allowed", paths.queueName)),
+		redError(fmt.Sprintf("project '%s' is running; new jobs are not allowed", paths.queueName)),
 		runID, paths.baseDir, paths.queueName, runID, paths.baseDir, paths.queueName)
 }
 
 const cancellationWaitTimeout = 5 * time.Minute
 
 func waitForCancellation(paths pathSet, projectName string) bool {
-	fmt.Println(cyan(fmt.Sprintf("project '%s' is cancelling", projectName)))
-	fmt.Println(cyan("Waiting for cancellation to finish..."))
+	fmt.Println(yellow(fmt.Sprintf("project '%s' is cancelling", projectName)))
+	fmt.Println(yellow("Waiting for cancellation to finish..."))
 	deadline := time.Now().Add(cancellationWaitTimeout)
 	for {
 		if finalized, err := finalizeCompletedCancellation(paths); err != nil {
 			printErrorf("failed to finalize cancellation: %v", err)
 			return false
 		} else if finalized {
-			fmt.Println(cyan("Cancellation complete"))
+			fmt.Println(green("Cancellation complete"))
 			return true
 		}
 		running, err := isRunning(paths.lockFile)
@@ -472,7 +290,7 @@ func waitForCancellation(paths pathSet, projectName string) bool {
 			return false
 		}
 		if !running {
-			fmt.Println(cyan("Cancellation complete"))
+			fmt.Println(green("Cancellation complete"))
 			return true
 		}
 		if time.Now().After(deadline) {
@@ -897,10 +715,11 @@ func executeRun(paths pathSet, runID string, numParallel int) int {
 		return 1
 	}
 
+	completionMessage := fmt.Sprintf("run finished run_id=%s success=%d failed=%d dir=%s", runID, successCount, failedCount, runDir)
 	if summary.ExitCode == 0 {
-		fmt.Printf("run finished run_id=%s success=%d failed=%d dir=%s\n", runID, successCount, failedCount, runDir)
+		fmt.Println(colorKeyValueMessage(completionMessage, green))
 	} else {
-		fmt.Printf("run finished run_id=%s success=%d failed=%d dir=%s\n", runID, successCount, failedCount, runDir)
+		fmt.Println(colorKeyValueMessage(completionMessage, red))
 		printFailedJobHints(runID, summary.Results)
 	}
 	return summary.ExitCode
@@ -992,9 +811,9 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 	_ = os.WriteFile(filepath.Join(jobDir, "finished_at"), []byte(nowRFC3339()+"\n"), 0o644)
 
 	if exitCode == 0 {
-		fmt.Printf("%s\n", green(fmt.Sprintf("success job=%s", job.ID)))
+		fmt.Printf("%s\n", colorKeyValueMessage(fmt.Sprintf("success job=%s", job.ID), green))
 	} else {
-		fmt.Printf("%s\n", red(fmt.Sprintf("fail job=%s exit=%d command=%s", job.ID, exitCode, strings.Join(job.Command, " "))))
+		fmt.Printf("%s\n", colorKeyValueMessage(fmt.Sprintf("fail job=%s exit=%d command=%s", job.ID, exitCode, strings.Join(job.Command, " ")), red))
 	}
 
 	return JobResult{ID: job.ID, Command: job.Command, ExitCode: exitCode, Hosts: []string{hostname}}
@@ -1284,10 +1103,7 @@ func isRunning(lockPath string) (bool, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
 		}
-		if removeErr := os.Remove(lockPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			return false, removeErr
-		}
-		return false, nil
+		return false, fmt.Errorf("read run lock: %w", err)
 	}
 
 	localHost, err := os.Hostname()
@@ -1330,6 +1146,11 @@ func inspectProjectRunState(paths pathSet) (projectRunState, string, error) {
 	meta, err := loadMeta(paths.metaFile)
 	if err != nil {
 		return projectIdle, "", err
+	}
+	switch meta.Phase {
+	case "collecting", "running", "cancelling", "finished":
+	default:
+		return projectIdle, "", fmt.Errorf("unknown project phase %q", meta.Phase)
 	}
 	if (meta.Phase == "running" || meta.Phase == "cancelling") && meta.LastRunID != "" {
 		return projectInterrupted, meta.LastRunID, nil

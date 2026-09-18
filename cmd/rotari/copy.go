@@ -92,7 +92,7 @@ func cmdCopy(args []string) int {
 		printError(err)
 		return 1
 	}
-	fmt.Println(cyan(message))
+	fmt.Println(colorKeyValueMessage(message, green))
 	return 0
 }
 

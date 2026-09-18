@@ -258,7 +258,7 @@ func cmdAdd(args []string) int {
 		printError(err)
 		return 1
 	}
-	fmt.Println(cyan(message))
+	fmt.Println(colorKeyValueMessage(message, green))
 	if *runAfterAdd {
 		return cmdRun(addRunArgs(baseDir, queueName))
 	}
@@ -357,7 +357,7 @@ func cmdRun(args []string) int {
 			printError(copyErr)
 			return 1
 		}
-		fmt.Println(cyan(message))
+		fmt.Println(colorKeyValueMessage(message, green))
 	}
 
 	if err := ensureServer(baseDir); err != nil {
@@ -785,9 +785,9 @@ func sendRunRequest(baseDir string, request serverRequest) (serverResponse, erro
 					title, details, _ := strings.Cut(response.Message, "\n")
 					fmt.Printf("%s\n%s\n", red(title), colorLabeledDetails(details, true))
 				} else if strings.HasPrefix(response.Message, "Retrying job") {
-					fmt.Printf("%s\n", yellow(response.Message))
+					fmt.Printf("%s\n", colorKeyValueMessage(response.Message, yellow))
 				} else if strings.HasPrefix(response.Message, "Run started:") {
-					fmt.Printf("%s\n", cyan(response.Message))
+					fmt.Printf("%s\n", colorKeyValueMessage(response.Message, cyan))
 				} else if strings.HasPrefix(response.Message, "Job running:") {
 					title, details, _ := strings.Cut(response.Message, "\n")
 					fmt.Printf("%s\n%s\n", cyan(title), colorLabeledDetails(details, false))
@@ -798,7 +798,7 @@ func sendRunRequest(baseDir string, request serverRequest) (serverResponse, erro
 				if response.Completed == lastCompleted && response.Succeeded == lastSucceeded && response.Failed == lastFailed {
 					continue
 				}
-				fmt.Printf("%s\n", cyan(fmt.Sprintf("progress: %d/%d completed=%d failed=%d", response.Completed, response.Total, response.Succeeded, response.Failed)))
+				fmt.Printf("%s\n", colorKeyValueMessage(fmt.Sprintf("progress: %d/%d completed=%d failed=%d", response.Completed, response.Total, response.Succeeded, response.Failed), cyan))
 				lastCompleted, lastSucceeded, lastFailed = response.Completed, response.Succeeded, response.Failed
 			}
 			continue
@@ -1098,6 +1098,14 @@ func enqueueCommand(baseDir, queueName string, command []string, executor string
 	}
 	job := QueuedCommand{
 		ID: makeJobID(), Command: command, Executor: executor, ExecutorOptions: executorOptions, Environment: environment, Name: jobName, DependsOn: dependsOn, Array: array,
+	}
+	// Dependencies may refer to jobs added later, so only duplicate names are checked here.
+	if job.Name != "" {
+		for _, existing := range queue.Commands {
+			if existing.Name == job.Name {
+				return "", fmt.Errorf("invalid dependencies: duplicate job name: %s", job.Name)
+			}
+		}
 	}
 	queue.Commands = append(queue.Commands, job)
 	if err := writeJSON(paths.queueFile, queue); err != nil {

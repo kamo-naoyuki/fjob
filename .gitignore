@@ -9,6 +9,7 @@
 /coverage.html
 /docs/web-demo/
 /docs/demo-*.gif
+/.venv/
 
 # Go workspace files
 /go.work

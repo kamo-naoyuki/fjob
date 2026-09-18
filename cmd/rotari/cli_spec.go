@@ -45,12 +45,11 @@ func commonCLIFlags() []cliFlagSpec {
 
 var cliCommandSpecs = []cliCommandSpec{
 	{
-		Name:        "check",
-		Description: "check queue and dependencies",
-		Usage:       "rotari check [--basedir DIR] [--project-name NAME] [--server] [--recover keep|discard]",
+		Name:        "reset",
+		Description: "discard the current, not-yet-run queue",
+		Usage:       "rotari reset [--basedir DIR] [--project-name NAME] [--recover]",
 		Flags: append(commonCLIFlags(),
-			cliFlagSpec{Name: "server", Description: "also require a running server"},
-			cliFlagSpec{Name: "recover", Description: "recover an interrupted run without prompting", ValueName: "keep|discard", Values: []string{"keep", "discard"}},
+			cliFlagSpec{Name: "recover", Description: "confirm an interrupted run has stopped without prompting"},
 		),
 	},
 	{
@@ -121,7 +120,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "show",
 		Description: "show queue or run status",
-		Usage:       "rotari show [--basedir DIR] [--project-name NAME] [--run-id ID] [--job-id ID] [--failed] [--logs] [--failed-logs] [--follow] [--no-pager] [--runs]",
+		Usage:       "rotari show [--basedir DIR] [--project-name NAME] [--run-id ID] [--job-id ID] [--failed] [--logs] [--failed-logs] [--follow] [--no-pager] [--runs] [--json]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "run-id", Description: "run ID", ValueName: "ID"},
 			cliFlagSpec{Name: "job-id", Description: "job ID", ValueName: "ID"},
@@ -131,15 +130,17 @@ var cliCommandSpecs = []cliCommandSpec{
 			cliFlagSpec{Name: "follow", Description: "follow log output until the run completes"},
 			cliFlagSpec{Name: "no-pager", Description: "print logs directly instead of using a pager"},
 			cliFlagSpec{Name: "runs", Description: "list all runs in the project"},
+			cliFlagSpec{Name: "json", Description: "print machine-readable JSON for a run"},
 		),
 	},
 	{
 		Name:        "wait",
 		Description: "wait for asynchronous runs",
-		Usage:       "rotari wait [--basedir DIR] [--project-name NAME] [--run-id ID]... [--timeout DURATION] [RUN_ID ...]",
+		Usage:       "rotari wait [--basedir DIR] [--project-name NAME] [--run-id ID]... [--timeout DURATION] [--json] [RUN_ID ...]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "run-id", Description: "run ID; may be repeated", ValueName: "ID"},
 			cliFlagSpec{Name: "timeout", Description: "maximum wait duration", ValueName: "DURATION"},
+			cliFlagSpec{Name: "json", Description: "print each completed run as one JSON object"},
 		),
 		HasPositional: true,
 	},
@@ -349,10 +350,8 @@ func cliEnvironmentVariable(name string) string {
 		return envRunAsync
 	case "array":
 		return envArrayRange
-	case "server":
-		return envCheckServer
 	case "recover":
-		return envCheckRecover
+		return envResetRecover
 	case "timeout":
 		return envWaitTimeout
 	case "host":

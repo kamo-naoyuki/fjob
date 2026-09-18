@@ -108,8 +108,12 @@ raw completion scripts.
 ## Quick start
 
 ```sh
+# Set the project once for the current shell. State is shared under
+# ~/.local/state/rotari by default; set ROTARI_BASEDIR to use another location.
+export ROTARI_PROJECT_NAME=build
+# export ROTARI_BASEDIR="$HOME/.local/state/rotari"
+
 # Queue multiple commands, then run them together.
-rotari check
 rotari add make
 rotari add go test ./...
 rotari run
@@ -119,8 +123,9 @@ rotari add --run go test ./...
 ```
 
 `add` adds a command. `run` executes the queued commands and waits for
-completion. A project contains its current queue and saved runs. The project
-name can be supplied with `--project-name`, `ROTARI_PROJECT_NAME`, or omitted.
+completion. A project contains its current queue and saved runs. For regular
+use, set `ROTARI_PROJECT_NAME` once in the shell; the project name can also be
+supplied with `--project-name` or omitted.
 When omitted, if only one project exists in the state directory, it is selected
 automatically; if multiple projects exist, you will be prompted to specify one.
 Use `--job-name NAME` to label a submitted job.
@@ -260,9 +265,10 @@ The example includes local and Slurm jobs in one queue. An array task and a
 plain job fail on their first attempt; `rotari retry` re-executes only what
 failed (just the failing array task, not the whole array) and carries the
 rest forward, so the example ends with a successful run.
-The initial `rotari check` is silent about recovery when the previous run
-finished normally; its interactive keep/discard prompt appears only after an
-interrupted run. `unlock` is the explicit non-interactive recovery command.
+The script begins with `rotari reset --recover`, which discards any queue left
+over from a previous, possibly interrupted, run of the script so its jobs
+never collide with earlier ones; `unlock` is the explicit recovery command for
+when you want to keep a retained queue instead of discarding it.
 
 ## Projects, queues, runs, and state
 
@@ -348,9 +354,11 @@ session, then stores its output, exit status, and destination host in the
 local run directory. SSH jobs use the batch-concurrency limit and are cancelled
 by terminating their local SSH session.
 
-The Slurm and PBS executors are smoke-tested in CI against containerized
-scheduler installations. The LSF executor is covered by unit tests using fake
-scheduler commands, but has not yet been tested against a real LSF installation.
+The Slurm and PBS executors are integration-tested in CI against a Slurm
+container and an OpenPBS container. These tests do not certify compatibility
+with every real cluster configuration. The LSF executor is covered by unit
+tests using fake scheduler commands, but has not yet been tested against a
+real LSF installation.
 
 ## Async runs
 
@@ -369,10 +377,13 @@ rotari run --project-name test --async
 rotari wait RUN_ID_FROM_BUILD RUN_ID_FROM_TEST
 ```
 
-Pressing Ctrl-C during a synchronous `rotari run` requests cancellation. The
-supervisor waits for the runner to finish its normal cleanup, including the
-run summary, queue clearing, and run-lock removal; routine interruption does
-not require `unlock` or `server shutdown`.
+Pressing Ctrl-C during a synchronous `rotari run` requests cancellation and
+returns your terminal immediately (exit code 130) — it does not wait for
+jobs to stop. The supervisor keeps running in the background, cancels the
+still-running jobs, and only then finishes its normal cleanup, including the
+run summary, queue clearing, and run-lock removal; a new `run`/`add`/`copy`
+against the same project may be briefly rejected until that finishes.
+Routine interruption does not require `unlock` or `server shutdown`.
 
 An async run is started as a detached process in a new session (`setsid`), so
 it keeps running even if the terminal that launched it is closed. Use
@@ -403,18 +414,17 @@ Use `--run-id` to inspect a specific saved run.
 If a runner exits before finalizing its run, `show` displays that interrupted
 run and a recovery command instead of presenting the retained queue as new
 work. `add`, `copy`, and `run` remain blocked until the interrupted state is
-acknowledged. Run `rotari check` in a terminal to confirm that all jobs have
-stopped, then choose whether to keep or discard the retained queue. Keeping it
-shows the jobs as queued for the next run; some may already have results in the
-interrupted run, so use `retry` or result filters when appropriate. Discarding
-clears the queued jobs but preserves the interrupted run history. The exact
-choice can be supplied without prompting as `rotari check --recover keep` or
-`rotari check --recover discard`. The exact `rotari unlock` command displayed
-by `show` is another non-interactive recovery path and keeps the queue.
-When a server is still running, interactive `rotari check` also reports its
-PID and asks before forcing it to stop; this warning matters when another
-project shares the same state directory. Piped or redirected `check` output
-does not stop the server and instead prints the shutdown command.
+acknowledged. The exact `rotari unlock` command displayed by `show` keeps the
+retained queue as queued jobs for the next run; some may already have results
+in the interrupted run, so use `retry` or result filters when appropriate.
+`rotari reset` discards the retained queue instead, while preserving the
+interrupted run's history; it asks for confirmation that all jobs have
+stopped, or accepts that confirmation up front as `rotari reset --recover`.
+Outside an interrupted run, `reset` simply discards an ordinary, not-yet-run
+queue, which is useful at the start of a script that may be re-run after being
+interrupted partway through adding jobs. Checking whether the background
+server is running, or stopping it, is a separate concern handled by
+`rotari server status` and `rotari server shutdown`.
 When output is a terminal, log views (including `--job-id`) longer than 24
 lines open in `$PAGER` (or `less -R` by default). Use `--no-pager` to print
 directly; piped and redirected output is always printed directly.
@@ -620,6 +630,42 @@ rotari unlock --project-name build --run-id RUN_ID
 supplied run ID, removes a matching lock when present, and returns the project
 to queue collection. Do not use it while the run could still be executing;
 doing so can allow a second run for the same queue.
+
+## Python interface
+
+The repository includes a small Python client that delegates execution to the
+`rotari` executable. Install it from a checkout with:
+
+```sh
+python3 -m pip install --no-deps ./python
+```
+
+It provides convenient queue, run, wait, and status calls without duplicating
+Rotari's execution logic:
+
+```python
+from rotari import Rotari
+
+rotari = Rotari(basedir=".rotari-state", project="experiment")
+rotari.add(["./train.sh"], job_name="train")
+run = rotari.run(async_=True)
+summary = rotari.wait(run.run_id)
+```
+
+The client invokes the executable without a shell. `wait` and `show` use the
+CLI's machine-readable JSON modes; all queue and run semantics remain owned by
+the CLI. This is intentionally a thin wrapper, not a Python-native job
+executor: it accepts command argument lists such as `['./train.sh']`, not
+Python functions to serialize and submit. For a function-oriented Python job
+submission framework, see [Submitit](https://github.com/facebookincubator/submitit);
+Rotari instead exposes the existing CLI and its local, SSH, and scheduler
+backends to Python.
+
+
+## FAQ
+
+See [FAQ](docs/faq.md) for answers to specific "what happens if...?" questions
+about project/run resolution, retries, array jobs, interrupted runs, and locking.
 
 ## Development
 

@@ -6,12 +6,91 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestWebHTMLJavaScriptSyntax(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	path := filepath.Join(t.TempDir(), "web.js")
+	script := webHTML()
+	start := strings.Index(script, "<script>")
+	end := strings.LastIndex(script, "</script>")
+	if start < 0 || end < start {
+		t.Fatal("web HTML does not contain a script")
+	}
+	if err := os.WriteFile(path, []byte(script[start+len("<script>"):end]), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("node", "--check", path).CombinedOutput(); err != nil {
+		t.Fatalf("web JavaScript syntax check failed: %v\n%s", err, output)
+	}
+}
+
+func TestWebHTMLRendersState(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	script := `
+const fs = require('fs');
+const { JSDOM, VirtualConsole } = require('jsdom');
+const html = fs.readFileSync(process.argv[1], 'utf8');
+const state = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const errors = [];
+const virtualConsole = new VirtualConsole();
+virtualConsole.on('jsdomError', error => errors.push(error.stack || String(error)));
+const dom = new JSDOM(html, {
+  runScripts: 'dangerously',
+  url: 'http://127.0.0.1/',
+  virtualConsole,
+  beforeParse(window) {
+    window.fetch = async () => ({ok: true, json: async () => state});
+    window.setInterval = () => 1;
+  },
+});
+setTimeout(() => {
+  const app = dom.window.document.getElementById('app');
+  if (errors.length) {
+    console.error(errors.join('\n'));
+    process.exit(1);
+  }
+  if (!app || app.textContent.includes('loading...')) process.exit(2);
+}, 50);
+`
+	htmlPath := filepath.Join(t.TempDir(), "index.html")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(htmlPath, []byte(webHTML()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.queueFile, Queue{}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := loadWebState(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("node", "-e", script, htmlPath, statePath).CombinedOutput(); err != nil {
+		t.Fatalf("web runtime check failed: %v\n%s", err, output)
+	}
+}
 
 func TestWebRunGuidanceUsesRunIDOnly(t *testing.T) {
 	html := webHTML()
@@ -111,7 +190,7 @@ func TestLoadWebStateIncludesAllQueues(t *testing.T) {
 
 func TestCLIDocsPageUsesCommandMetadata(t *testing.T) {
 	page := cliDocsHTML("/")
-	for _, want := range []string{`<h1><img class="brand-icon"`, "rotari CLI", "rotari check", "rotari completion", "--project-name", "Generated from the command metadata"} {
+	for _, want := range []string{`<h1><img class="brand-icon"`, "rotari CLI", "rotari reset", "rotari completion", "--project-name", "Generated from the command metadata"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("docs page does not contain %q", want)
 		}
@@ -305,6 +384,9 @@ func TestLoadWebStateIncludesRunContextAndTimeline(t *testing.T) {
 	if err := writeJSON(filepath.Join(runDir, "context.json"), RunContext{CWD: "/work/project", Hostname: "node-a", StartedLoad: &LoadAverage{One: 1.25, Five: 1.5, Fifteen: 2}}); err != nil {
 		t.Fatal(err)
 	}
+	if err := appendLoadSample(loadSamplesPath(paths, "run-1"), LoadSample{At: "2026-09-16T00:00:01Z", LoadAverage: LoadAverage{One: 1.25, Five: 1.5, Fifteen: 2}}); err != nil {
+		t.Fatal(err)
+	}
 	if err := writeJSON(filepath.Join(runDir, "summary.json"), RunSummary{RunID: "run-1", Status: "finished", StartedAt: "2026-09-16T00:00:00Z", FinishedAt: "2026-09-16T00:00:03Z", Results: []JobResult{{ID: "job-1", ExitCode: 0}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -335,6 +417,12 @@ func TestLoadWebStateIncludesRunContextAndTimeline(t *testing.T) {
 	}
 	if len(run.Timeline) != 3 || run.Timeline[1].Running != 1 || run.Timeline[2].Finished != 1 || run.Timeline[2].Success != 1 {
 		t.Fatalf("timeline = %#v, want pending, submitted, and successful finished transitions", run.Timeline)
+	}
+	if run.Timeline[1].At != "2026-09-16T00:00:01Z" {
+		t.Fatalf("timeline timestamp = %q, want RFC3339 timestamp for browser parsing", run.Timeline[1].At)
+	}
+	if run.Context.LoadSamples[0].At != "2026-09-16T00:00:01Z" {
+		t.Fatalf("load sample timestamp = %q, want RFC3339 timestamp for browser parsing", run.Context.LoadSamples[0].At)
 	}
 }
 

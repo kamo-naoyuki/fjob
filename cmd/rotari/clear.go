@@ -91,9 +91,9 @@ func cmdDelete(args []string) int {
 		return 1
 	}
 	if *runIDOption == "" {
-		fmt.Printf("%s\n", green(fmt.Sprintf("cleared logs project=%s directory=%s", queueName, filepath.Join(paths.projectDir, "runs"))))
+		fmt.Printf("%s\n", colorKeyValueMessage(fmt.Sprintf("cleared logs project=%s directory=%s", queueName, filepath.Join(paths.projectDir, "runs")), green))
 	} else {
-		fmt.Printf("%s\n", green(fmt.Sprintf("cleared logs project=%s run=%s", queueName, *runIDOption)))
+		fmt.Printf("%s\n", colorKeyValueMessage(fmt.Sprintf("cleared logs project=%s run=%s", queueName, *runIDOption), green))
 	}
 	return 0
 }

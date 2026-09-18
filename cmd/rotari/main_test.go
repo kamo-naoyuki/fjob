@@ -298,8 +298,8 @@ func TestMakeRunIDFormat(t *testing.T) {
 	}
 }
 
-func TestFormatCheckRunningIncludesWaitAndCancelHints(t *testing.T) {
-	output := formatCheckRunning(pathSet{baseDir: "/state", queueName: "demo"}, "run-1")
+func TestFormatProjectRunningErrorIncludesWaitAndCancelHints(t *testing.T) {
+	output := formatProjectRunningError(pathSet{baseDir: "/state", queueName: "demo"}, "run-1")
 	for _, want := range []string{
 		"project 'demo' is running",
 		"Run: run-1",
@@ -307,131 +307,95 @@ func TestFormatCheckRunningIncludesWaitAndCancelHints(t *testing.T) {
 		"rotari cancel --basedir /state --project-name demo",
 	} {
 		if !strings.Contains(output, want) {
-			t.Errorf("formatCheckRunning() missing %q; got %q", want, output)
+			t.Errorf("formatProjectRunningError() missing %q; got %q", want, output)
 		}
 	}
 }
 
-func TestConfirmInterruptedRecoveryPreservesQueue(t *testing.T) {
+func TestCmdResetClearsQueueButKeepsDefaultsAndHistory(t *testing.T) {
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "demo")
 	if err != nil {
 		t.Fatal(err)
 	}
-	queue := Queue{Commands: []QueuedCommand{{ID: "retained", Command: []string{"echo", "retained"}}}}
+	queue := Queue{DefaultExecutor: "slurm", Commands: []QueuedCommand{{ID: "queued", Command: []string{"echo", "queued"}}}}
 	if err := writeJSON(paths.queueFile, queue); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeJSON(paths.metaFile, Meta{Phase: "running", LastRunID: "run-1"}); err != nil {
+	if err := os.MkdirAll(filepath.Join(paths.runsDir, "run-1"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	var output bytes.Buffer
-	action, err := confirmInterruptedRecovery(strings.NewReader("keep\n"), &output, paths, "run-1")
-	if err != nil {
+	if err := writeJSON(paths.metaFile, Meta{Phase: "finished", LastRunID: "run-1"}); err != nil {
 		t.Fatal(err)
 	}
-	if action != interruptedRecoveryKept || !strings.Contains(output.String(), "Confirm all jobs have stopped") {
-		t.Fatalf("action = %v, output = %q", action, output.String())
-	}
-	meta, err := loadMeta(paths.metaFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if meta.Phase != "collecting" || meta.LastRunID != "run-1" {
-		t.Fatalf("metadata = %#v, want collecting with run-1 retained", meta)
-	}
-	gotQueue, err := loadQueue(paths.queueFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(gotQueue.Commands) != 1 || gotQueue.Commands[0].ID != "retained" {
-		t.Fatalf("queue changed during recovery: %#v", gotQueue.Commands)
-	}
-}
 
-func TestConfirmInterruptedRecoveryDiscardsQueue(t *testing.T) {
-	paths, err := resolvePaths(t.TempDir(), "demo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	queue := Queue{DefaultExecutor: "slurm", Commands: []QueuedCommand{{ID: "retained", Command: []string{"echo", "retained"}}}}
-	if err := writeJSON(paths.queueFile, queue); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeJSON(paths.metaFile, Meta{Phase: "running", LastRunID: "run-1"}); err != nil {
-		t.Fatal(err)
-	}
-	action, err := confirmInterruptedRecovery(strings.NewReader("discard\n"), io.Discard, paths, "run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if action != interruptedRecoveryDiscarded {
-		t.Fatalf("action = %v, want discarded", action)
-	}
-	meta, err := loadMeta(paths.metaFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if meta.Phase != "collecting" || meta.LastRunID != "run-1" {
-		t.Fatalf("metadata = %#v, want collecting with run-1 retained", meta)
+	if code := cmdReset([]string{"--basedir", baseDir, "--project-name", "demo"}); code != 0 {
+		t.Fatalf("cmdReset exit code = %d, want 0", code)
 	}
 	gotQueue, err := loadQueue(paths.queueFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(gotQueue.Commands) != 0 || gotQueue.DefaultExecutor != "slurm" {
-		t.Fatalf("queue after discard = %#v, want no commands and preserved defaults", gotQueue)
+		t.Fatalf("queue after reset = %#v, want no commands and preserved defaults", gotQueue)
 	}
-}
-
-func TestConfirmInterruptedRecoveryDeclineLeavesState(t *testing.T) {
-	paths, err := resolvePaths(t.TempDir(), "demo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := writeJSON(paths.metaFile, Meta{Phase: "running", LastRunID: "run-1"}); err != nil {
-		t.Fatal(err)
-	}
-	action, err := confirmInterruptedRecovery(strings.NewReader("cancel\n"), io.Discard, paths, "run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if action != interruptedRecoveryCancelled {
-		t.Fatalf("declined recovery action = %v, want cancelled", action)
+	if _, err := os.Stat(filepath.Join(paths.runsDir, "run-1")); err != nil {
+		t.Fatalf("run history was removed: %v", err)
 	}
 	meta, err := loadMeta(paths.metaFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.Phase != "running" {
-		t.Fatalf("metadata phase = %q, want running", meta.Phase)
+	if meta.Phase != "collecting" {
+		t.Fatalf("metadata phase = %q, want collecting", meta.Phase)
 	}
 }
 
-func TestConfirmServerShutdown(t *testing.T) {
-	var output bytes.Buffer
-	stop, err := confirmServerShutdown(strings.NewReader("yes\n"), &output, "/state", 123)
-	if err != nil || !stop {
-		t.Fatalf("confirmServerShutdown(yes) = %v, %v", stop, err)
+func TestCmdResetClearsInvalidDuplicateNameQueue(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "demo")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "may interrupt other projects") {
-		t.Fatalf("confirmation output = %q", output.String())
+	queue := Queue{Commands: []QueuedCommand{
+		{ID: "old-prepare", Command: []string{"echo", "old"}, Name: "prepare"},
+		{ID: "new-prepare", Command: []string{"echo", "new"}, Name: "prepare"},
+	}}
+	if err := writeJSON(paths.queueFile, queue); err != nil {
+		t.Fatal(err)
 	}
 
-	stop, err = confirmServerShutdown(strings.NewReader("no\n"), io.Discard, "/state", 123)
-	if err != nil || stop {
-		t.Fatalf("confirmServerShutdown(no) = %v, %v", stop, err)
+	if code := cmdReset([]string{"--basedir", baseDir, "--project-name", "demo"}); code != 0 {
+		t.Fatalf("cmdReset exit code = %d, want 0", code)
+	}
+	gotQueue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotQueue.Commands) != 0 {
+		t.Fatalf("queue commands = %#v, want empty", gotQueue.Commands)
 	}
 }
 
-func TestStopServerAcceptsAlreadyStoppedServer(t *testing.T) {
-	baseDir := fmt.Sprintf(".rotari-missing-server-%d", time.Now().UnixNano())
-	if err := stopServer(baseDir); err != nil {
-		t.Fatalf("stopServer() error = %v, want nil", err)
+func TestCmdResetRejectsRunningProject(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := acquireLock(paths.lockFile, LockInfo{PID: os.Getpid(), RunID: "run-1", StartedAt: nowRFC3339()}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := cmdReset([]string{"--basedir", baseDir, "--project-name", "demo"}); code == 0 {
+		t.Fatal("cmdReset accepted a running project")
 	}
 }
 
-func TestCmdCheckRecoverDiscardWithoutPrompt(t *testing.T) {
+func TestCmdResetRecoversInterruptedRunWithoutPrompt(t *testing.T) {
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "demo")
 	if err != nil {
@@ -444,8 +408,8 @@ func TestCmdCheckRecoverDiscardWithoutPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := cmdCheck([]string{"--basedir", baseDir, "--project-name", "demo", "--recover", "discard"}); code != 0 {
-		t.Fatalf("cmdCheck exit code = %d, want 0", code)
+	if code := cmdReset([]string{"--basedir", baseDir, "--project-name", "demo", "--recover"}); code != 0 {
+		t.Fatalf("cmdReset exit code = %d, want 0", code)
 	}
 	queue, err := loadQueue(paths.queueFile)
 	if err != nil {
@@ -463,22 +427,128 @@ func TestCmdCheckRecoverDiscardWithoutPrompt(t *testing.T) {
 	}
 }
 
-func TestCmdCheckRejectsInvalidDependencies(t *testing.T) {
+func TestCmdResetRequiresRecoverFlagForInterruptedRun(t *testing.T) {
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "demo")
 	if err != nil {
 		t.Fatal(err)
 	}
-	queue := Queue{Commands: []QueuedCommand{
-		{ID: "job-1", Command: []string{"echo", "one"}, Name: "one"},
-		{ID: "job-2", Command: []string{"echo", "two"}, Name: "two", DependsOn: []string{"missing"}},
-	}}
-	if err := writeJSON(paths.queueFile, queue); err != nil {
+	if err := writeJSON(paths.queueFile, Queue{Commands: []QueuedCommand{{ID: "retained", Command: []string{"retained"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.metaFile, Meta{Phase: "running", LastRunID: "run-1"}); err != nil {
 		t.Fatal(err)
 	}
 
-	if code := cmdCheck([]string{"--basedir", baseDir, "--project-name", "demo"}); code == 0 {
-		t.Fatal("cmdCheck accepted an unknown dependency")
+	if code := cmdReset([]string{"--basedir", baseDir, "--project-name", "demo"}); code == 0 {
+		t.Fatal("cmdReset recovered an interrupted run without confirmation")
+	}
+	queue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.Commands) != 1 {
+		t.Fatalf("queue commands = %#v, want unchanged", queue.Commands)
+	}
+}
+
+func TestCmdResetRejectsUnexpectedStateWithoutDiscardingQueue(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, paths pathSet)
+	}{
+		{
+			name: "malformed queue",
+			setup: func(t *testing.T, paths pathSet) {
+				t.Helper()
+				if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(paths.queueFile, []byte("not json\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "malformed metadata",
+			setup: func(t *testing.T, paths pathSet) {
+				t.Helper()
+				if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(paths.metaFile, []byte("not json\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "unknown metadata phase",
+			setup: func(t *testing.T, paths pathSet) {
+				t.Helper()
+				if err := writeJSON(paths.queueFile, Queue{Commands: []QueuedCommand{{ID: "retained", Command: []string{"echo", "retained"}}}}); err != nil {
+					t.Fatal(err)
+				}
+				if err := writeJSON(paths.metaFile, Meta{Phase: "unknown"}); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "malformed run lock",
+			setup: func(t *testing.T, paths pathSet) {
+				t.Helper()
+				if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(paths.lockFile, []byte("not json\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "remote run lock",
+			setup: func(t *testing.T, paths pathSet) {
+				t.Helper()
+				if err := writeJSON(paths.queueFile, Queue{Commands: []QueuedCommand{{ID: "retained", Command: []string{"echo", "retained"}}}}); err != nil {
+					t.Fatal(err)
+				}
+				if err := writeJSON(paths.lockFile, LockInfo{PID: -1, RunID: "run-1", Host: "other-host"}); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			baseDir := t.TempDir()
+			paths, err := resolvePaths(baseDir, "demo")
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.setup(t, paths)
+
+			if code := cmdReset([]string{"--basedir", baseDir, "--project-name", "demo"}); code == 0 {
+				t.Fatal("cmdReset accepted an unexpected project state")
+			}
+			if _, err := os.Stat(paths.queueFile); err == nil {
+				queue, loadErr := loadQueue(paths.queueFile)
+				if loadErr == nil && len(queue.Commands) == 0 {
+					t.Fatal("cmdReset discarded queued commands")
+				}
+			}
+		})
+	}
+}
+
+func TestConfirmResetOfInterruptedRun(t *testing.T) {
+	paths := pathSet{queueName: "demo"}
+	confirmed, err := confirmResetOfInterruptedRun(strings.NewReader("yes\n"), io.Discard, paths, "run-1")
+	if err != nil || !confirmed {
+		t.Fatalf("confirmResetOfInterruptedRun(yes) = %v, %v", confirmed, err)
+	}
+	confirmed, err = confirmResetOfInterruptedRun(strings.NewReader("no\n"), io.Discard, paths, "run-1")
+	if err != nil || confirmed {
+		t.Fatalf("confirmResetOfInterruptedRun(no) = %v, %v", confirmed, err)
 	}
 }
 

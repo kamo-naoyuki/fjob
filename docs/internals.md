@@ -109,7 +109,11 @@ the active lock. Saved runs remain until explicitly deleted.
 Retries and filtered runs create new history. Selected jobs execute; completed
 jobs outside the selection carry forward their result and an origin pointing
 to the original output. Dependencies use unique job names within a queue;
-unknown names, duplicates, and cycles are rejected before execution.
+unknown names, duplicates, and cycles are rejected before execution. `add`
+also rejects a duplicate job name immediately, without writing the queue, so
+that mistake is never deferred to execution time; a `--depends-on` name may
+still refer to a job added later in the same queue, so unknown-name and cycle
+checks remain deferred to the execution boundary.
 
 An array queue command has an inclusive `first-last` range. Runtime expansion
 creates one `JobSpec` and persisted job directory per task. Local executors run
@@ -177,16 +181,43 @@ process remains alive.
 
 The server supervises one base directory and may stop when idle, so durable
 behavior belongs in files, not memory. The web UI is a projection of the same
-model, not a separate database.
+model, not a separate database. The optional Python interface is also a
+projection: it invokes the installed CLI with `subprocess` and must not
+implement queue or execution semantics on its own. `wait --json` emits one
+`RunSummary` JSON object per requested run (NDJSON when multiple IDs are
+supplied). `show --json` emits one object with the resolved location, run
+summary when available, and saved commands. These modes are additive; default
+CLI output remains human-facing.
 
 A synchronous client disconnect, including Ctrl-C, requests cancellation and
-waits for normal run finalization. Async workers are monitored by the server;
-their exit decrements the active-run count so the server can stop. Manual
-interrupted-run recovery is reserved for failures that bypass finalization.
+returns to the caller immediately (exit code 130); the server-side run keeps
+executing in the background and only then runs normal finalization. Async
+workers are monitored by the server; their exit decrements the active-run
+count so the server can stop. Manual interrupted-run recovery is reserved for
+failures that bypass finalization.
 A completed run, sync or async, decrements the active-run count immediately
 via `beginRun`/`endRun`; reaching zero stops the server right away rather than
 waiting for the idle timeout, so tests and callers must not assume the server
 stays up after a run finishes.
+
+CLI terminal colors are semantic presentation, not part of the machine-readable
+output contract. Colors are emitted only when the relevant output stream is a
+TTY, so redirected and piped output remains plain text. Red denotes errors,
+failed runs, failed job output, and failed job results; green denotes successful
+completion or successful state-changing confirmations; yellow denotes warnings,
+running or blocked state, retries, and recovery/cancellation notices; cyan
+denotes informational labels, headings, lifecycle messages, and suggested
+actions. White is used for the values attached to colored labels. New messages
+should preserve these meanings, while parsers and tests must rely on the text,
+not ANSI sequences or color choice.
+
+Human-readable `show` log output uses a lazy pager. With `--no-pager`, or when
+stdout is not a TTY, it is written directly to stdout. On a TTY, output is
+buffered and written directly when it is at most 24 lines; only longer output
+starts the command from `$PAGER`, defaulting to `less -R`. Thus a pager such as
+`less -F` and direct output are distinct paths: `less -F` is only invoked after
+the length threshold is exceeded, while short output does not start a pager at
+all. If the pager cannot be started, the buffered output falls back to stdout.
 
 ## Concurrency and safety
 
@@ -198,17 +229,15 @@ A dead local run lock is removed automatically, but `meta.json` remaining in
 `running` or `cancelling` phase with a `last_run_id` marks an interrupted run.
 Queue-mutating `add`, `copy`, and `run` operations must reject that state so a
 retained execution queue cannot be extended or rerun accidentally. `unlock`
-with the exact run ID acknowledges recovery and returns the phase to
-`collecting`; it works whether the stale lock remains or was already removed.
-Interactive `check` offers the same phase recovery after explicit confirmation
-that all jobs have stopped, with a choice to retain or clear queue commands;
-the retain choice is displayed as `unlock`, and clearing preserves queue
-defaults and run history. If a server is still running, an interactive plain
-`check` displays its PID and asks before forcing shutdown, warning that other
-projects may be interrupted. Non-interactive `check` only prints the exact
-`unlock` and server shutdown commands. `check --server` only pings for an
-already-running server and never shuts it down, since that form must stay a
-side-effect-free inspection.
+with the exact run ID acknowledges recovery, keeps the retained queue, and
+returns the phase to `collecting`; it works whether the stale lock remains or
+was already removed. `reset` discards the current, not-yet-run queue while
+keeping queue defaults and run history; interactively it asks for the same
+confirmation that all jobs have stopped before recovering an interrupted run
+and discarding its retained queue, or that confirmation can be supplied up
+front as `reset --recover`. `reset` rejects an active run outright. Managing
+the background server is a separate concern (`server status`, `server
+shutdown`); no project command pings or offers to stop it as a side effect.
 
 Never silently remove a possibly active remote lock. Destructive commands must
 reject ambiguous targets, and exact IDs must never degrade into latest-item

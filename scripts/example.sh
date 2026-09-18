@@ -8,9 +8,9 @@ export PATH
 export ROTARI_BASEDIR=${ROTARI_BASEDIR:-"${repo_dir}/.rotari-state"}
 export ROTARI_PROJECT_NAME=${ROTARI_PROJECT_NAME:-${1:-demo}}
 
-# This is a normal preflight check. Recovery prompts are shown only when a
-# previous runner left this project interrupted; normal runs do not need them.
-rotari check
+# Discard any queue left over from a previous, possibly interrupted run of
+# this script, so the jobs added below never collide with earlier ones.
+rotari reset --recover
 
 # Stable markers outside any run directory: these jobs fail on their first
 # attempt and succeed afterwards, so "rotari retry" below has a real

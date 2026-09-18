@@ -74,6 +74,7 @@ func cmdUnlock(args []string) int {
 		printErrorf("failed to update metadata: %v", err)
 		return 1
 	}
-	fmt.Printf("recovered queue project=%s run_id=%s\n", queueName, *runID)
+	message := fmt.Sprintf("recovered queue project=%s run_id=%s", queueName, *runID)
+	fmt.Println(colorKeyValueMessage(message, green))
 	return 0
 }

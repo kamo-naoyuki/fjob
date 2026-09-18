@@ -30,6 +30,7 @@ func cmdShow(args []string) int {
 	showFailedLogs := cliBool(fs, "failed-logs", false)
 	followLogs := cliBool(fs, "follow", false)
 	noPager := cliBool(fs, "no-pager", false)
+	jsonOutput := cliBool(fs, "json", false)
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -48,6 +49,10 @@ func cmdShow(args []string) int {
 		return 1
 	}
 	if *showRunsList {
+		if *jsonOutput {
+			printError("--json cannot be combined with --runs")
+			return 1
+		}
 		return showRuns(paths)
 	}
 	selectedRunID := *runIDOption
@@ -76,6 +81,9 @@ func cmdShow(args []string) int {
 				if *jobIDOption != "" {
 					return showQueueJob(paths, queue, *jobIDOption)
 				}
+				if *jsonOutput {
+					return showQueueJSON(paths, queue)
+				}
 				return showQueue(paths, queue)
 			}
 		}
@@ -86,6 +94,10 @@ func cmdShow(args []string) int {
 		return 1
 	}
 	if *jobIDOption != "" {
+		if *jsonOutput {
+			printError("--json cannot be combined with --job-id")
+			return 1
+		}
 		running, err := isRunning(paths.lockFile)
 		if err != nil {
 			printErrorf("failed to check queue state: %v", err)
@@ -103,11 +115,57 @@ func cmdShow(args []string) int {
 		return 1
 	}
 	if *showLogs || *showFailedLogs {
+		if *jsonOutput {
+			printError("--json cannot be combined with log output")
+			return 1
+		}
 		return showWithPager(!*noPager, func(writer io.Writer) int {
 			return showRunLogs(writer, paths, runID, *showFailedLogs)
 		})
 	}
+	if *jsonOutput {
+		return showRunJSON(paths, runID)
+	}
 	return showRun(paths, runID, *failedOnly)
+}
+
+type showJSON struct {
+	BaseDir  string      `json:"base_dir"`
+	Project  string      `json:"project_name"`
+	RunID    string      `json:"run_id"`
+	RunDir   string      `json:"run_dir"`
+	Summary  *RunSummary `json:"summary,omitempty"`
+	Commands Queue       `json:"commands"`
+}
+
+func showRunJSON(paths pathSet, runID string) int {
+	result := showJSON{BaseDir: paths.baseDir, Project: paths.queueName, RunID: runID, RunDir: filepath.Join(paths.runsDir, runID)}
+	if summary, err := loadRunSummary(filepath.Join(result.RunDir, "summary.json")); err == nil {
+		result.Summary = &summary
+	} else if !os.IsNotExist(err) {
+		printErrorf("failed to read summary: %v", err)
+		return 1
+	}
+	commands, err := loadQueue(filepath.Join(result.RunDir, "commands.json"))
+	if err != nil {
+		printErrorf("failed to read commands: %v", err)
+		return 1
+	}
+	result.Commands = commands
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		printErrorf("failed to write JSON: %v", err)
+		return 1
+	}
+	return 0
+}
+
+func showQueueJSON(paths pathSet, queue Queue) int {
+	result := showJSON{BaseDir: paths.baseDir, Project: paths.queueName, Commands: queue}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		printErrorf("failed to write JSON: %v", err)
+		return 1
+	}
+	return 0
 }
 
 func shouldFollowLogs(explicit bool, queueRunning bool, isTTY bool) bool {
