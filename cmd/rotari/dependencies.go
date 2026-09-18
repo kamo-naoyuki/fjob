@@ -2,6 +2,13 @@ package main
 
 import "fmt"
 
+func validateQueueDependencies(queue Queue) error {
+	if err := validateDependencies(queueToJobs(queue.Commands)); err != nil {
+		return fmt.Errorf("invalid dependencies: %w", err)
+	}
+	return nil
+}
+
 func validateDependencies(jobs []JobSpec) error {
 	byName := make(map[string]JobSpec, len(jobs))
 	for _, job := range jobs {

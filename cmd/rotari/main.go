@@ -35,6 +35,7 @@ type QueuedCommand struct {
 	Command         []string   `json:"command"`
 	Executor        string     `json:"executor,omitempty"`
 	ExecutorOptions []string   `json:"executor_options,omitempty"`
+	Environment     []string   `json:"environment,omitempty"`
 	Name            string     `json:"name,omitempty"`
 	DependsOn       []string   `json:"depends_on,omitempty"`
 	Origin          *JobOrigin `json:"origin,omitempty"`
@@ -212,7 +213,7 @@ func run(args []string) int {
 	case "__worker-run":
 		return cmdWorkerRun(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", args[0])
+		printErrorf("unknown subcommand: %s", args[0])
 		printUsage()
 		return 1
 	}
@@ -238,27 +239,27 @@ func cmdCheck(args []string) int {
 		return 1
 	}
 	if len(fs.Args()) != 0 || (*recoverOption != "" && *recoverOption != "keep" && *recoverOption != "discard") {
-		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("check"))
+		printError("usage: " + cliUsage("check"))
 		return 1
 	}
 	baseDir, _, err := resolveBaseDir(*basedir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
+		printErrorf("failed to resolve state directory: %v", err)
 		return 1
 	}
 	queueName, err := resolveProjectName(baseDir, *queueNameOption)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	paths, err := resolvePaths(baseDir, queueName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve paths: %v\n", err)
+		printErrorf("failed to resolve paths: %v", err)
 		return 1
 	}
 	state, runID, err := inspectProjectRunState(paths)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to check project state: %v\n", err)
+		printErrorf("failed to check project state: %v", err)
 		return 1
 	}
 	if state == projectRunning {
@@ -269,7 +270,7 @@ func cmdCheck(args []string) int {
 			}
 			state, runID, err = inspectProjectRunState(paths)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "failed to check project state: %v\n", err)
+				printErrorf("failed to check project state: %v", err)
 				return 1
 			}
 		}
@@ -283,7 +284,7 @@ func cmdCheck(args []string) int {
 		if *recoverOption != "" {
 			discardQueue := *recoverOption == "discard"
 			if err := recoverInterruptedProject(paths, runID, discardQueue); err != nil {
-				fmt.Fprintf(os.Stderr, "failed to recover interrupted run: %v\n", err)
+				printErrorf("failed to recover interrupted run: %v", err)
 				return 1
 			}
 			if discardQueue {
@@ -292,40 +293,79 @@ func cmdCheck(args []string) int {
 				action = interruptedRecoveryKept
 			}
 		} else if !isTerminal(os.Stdin) {
-			fmt.Fprintf(os.Stderr, "project %q has interrupted run %q; recovery requires confirmation\nRecover with:\n  rotari unlock --basedir %s --project-name %s --run-id %s\n",
+			printErrorf("project %q has interrupted run %q; recovery requires confirmation\nRecover with:\n  rotari unlock --basedir %s --project-name %s --run-id %s",
 				queueName, runID, shellQuote(paths.baseDir), shellQuote(paths.queueName), shellQuote(runID))
 			return 1
 		} else {
 			action, err = confirmInterruptedRecovery(os.Stdin, os.Stderr, paths, runID)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "failed to recover interrupted run: %v\n", err)
+				printErrorf("failed to recover interrupted run: %v", err)
 				return 1
 			}
 		}
 		if action == interruptedRecoveryCancelled {
-			fmt.Fprintln(os.Stderr, "recovery cancelled")
+			printError("recovery cancelled")
 			return 1
 		}
 		if action == interruptedRecoveryDiscarded {
 			fmt.Printf("recovered project=%s run_id=%s; discarded retained queue\n", queueName, runID)
 		} else {
-			fmt.Printf("recovered queue project=%s run_id=%s\n", queueName, runID)
+			fmt.Printf("unlocked project=%s run_id=%s; retained queue\n", queueName, runID)
 		}
 	} else if *recoverOption != "" {
-		fmt.Fprintln(os.Stderr, "--recover requires an interrupted run")
+		printError("--recover requires an interrupted run")
 		return 1
 	}
+	queue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		printErrorf("failed to load queue: %v", err)
+		return 1
+	}
+	if err := validateQueueDependencies(queue); err != nil {
+		printError(err)
+		return 1
+	}
+	serverResponse, serverErr := sendServerRequest(paths.baseDir, serverRequest{Op: "ping"})
+	if serverErr == nil && serverResponse.OK && !*serverRequired {
+		if !isTerminal(os.Stdin) {
+			fmt.Fprintf(os.Stderr, "server is running pid=%d; stop it with: rotari server shutdown --basedir %s\n", serverResponse.PID, shellQuote(paths.baseDir))
+		} else if *recoverOption != "" {
+			fmt.Fprintf(os.Stderr, "server is running pid=%d; stop it with: rotari server shutdown --basedir %s\n", serverResponse.PID, shellQuote(paths.baseDir))
+		} else {
+			stop, confirmErr := confirmServerShutdown(os.Stdin, os.Stderr, paths.baseDir, serverResponse.PID)
+			if confirmErr != nil {
+				printErrorf("failed to confirm server shutdown: %v", confirmErr)
+				return 1
+			}
+			if stop {
+				if err := stopServer(paths.baseDir); err != nil {
+					printErrorf("failed to stop server: %v", err)
+					return 1
+				}
+				fmt.Printf("stopped server pid=%d\n", serverResponse.PID)
+			} else {
+				fmt.Printf("server remains running pid=%d\n", serverResponse.PID)
+			}
+		}
+	}
 	if *serverRequired {
-		response, err := sendServerRequest(paths.baseDir, serverRequest{Op: "ping"})
-		if err != nil || !response.OK {
-			fmt.Fprintf(os.Stderr, "project '%s' is available, but server is not running\n", queueName)
+		if serverErr != nil || !serverResponse.OK {
+			printErrorf("project '%s' is available, but server is not running", queueName)
 			return 1
 		}
-		fmt.Printf("project '%s' is available; server is running pid=%d\n", queueName, response.PID)
+		fmt.Printf("project '%s' is available; server is running pid=%d\n", queueName, serverResponse.PID)
 		return 0
 	}
 	fmt.Printf("%s\n", green(fmt.Sprintf("project '%s' is available", queueName)))
 	return 0
+}
+
+func stopServer(baseDir string) error {
+	_, err := sendServerRequest(baseDir, serverRequest{Op: "shutdown"})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 type interruptedRecoveryAction int
@@ -337,7 +377,7 @@ const (
 )
 
 func confirmInterruptedRecovery(input io.Reader, output io.Writer, paths pathSet, runID string) (interruptedRecoveryAction, error) {
-	fmt.Fprintf(output, "project %q has interrupted run %q. Confirm all jobs have stopped. Recover and [k]eep queue, [d]iscard queue, or [c]ancel? [k/d/C] ", paths.queueName, runID)
+	fmt.Fprintf(output, "project %q has interrupted run %q. Confirm all jobs have stopped. Recover and [k]eep queue, [d]iscard queue, [u]nlock, or [c]ancel? [k/d/u/C] ", paths.queueName, runID)
 	answer, err := bufio.NewReader(input).ReadString('\n')
 	if err != nil && len(answer) == 0 {
 		return interruptedRecoveryCancelled, err
@@ -346,7 +386,7 @@ func confirmInterruptedRecovery(input io.Reader, output io.Writer, paths pathSet
 	discardQueue := false
 	action := interruptedRecoveryCancelled
 	switch answer {
-	case "k", "keep", "y", "yes":
+	case "k", "keep", "u", "unlock", "y", "yes":
 		action = interruptedRecoveryKept
 	case "d", "discard":
 		action = interruptedRecoveryDiscarded
@@ -358,6 +398,16 @@ func confirmInterruptedRecovery(input io.Reader, output io.Writer, paths pathSet
 		return interruptedRecoveryCancelled, err
 	}
 	return action, nil
+}
+
+func confirmServerShutdown(input io.Reader, output io.Writer, baseDir string, pid int) (bool, error) {
+	fmt.Fprintf(output, "server is running pid=%d for %s. Force stop it? This may interrupt other projects. [y/N] ", pid, baseDir)
+	answer, err := bufio.NewReader(input).ReadString('\n')
+	if err != nil && len(answer) == 0 {
+		return false, err
+	}
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "y" || answer == "yes", nil
 }
 
 func recoverInterruptedProject(paths pathSet, runID string, discardQueue bool) error {
@@ -402,12 +452,19 @@ const cancellationWaitTimeout = 5 * time.Minute
 
 func waitForCancellation(paths pathSet, projectName string) bool {
 	fmt.Println(cyan(fmt.Sprintf("project '%s' is cancelling", projectName)))
-	fmt.Println(cyan("Waiting for jobs to stop..."))
+	fmt.Println(cyan("Waiting for cancellation to finish..."))
 	deadline := time.Now().Add(cancellationWaitTimeout)
 	for {
+		if finalized, err := finalizeCompletedCancellation(paths); err != nil {
+			printErrorf("failed to finalize cancellation: %v", err)
+			return false
+		} else if finalized {
+			fmt.Println(cyan("Cancellation complete"))
+			return true
+		}
 		running, err := isRunning(paths.lockFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to check queue: %v\n", err)
+			printErrorf("failed to check queue: %v", err)
 			return false
 		}
 		if !running {
@@ -415,11 +472,32 @@ func waitForCancellation(paths pathSet, projectName string) bool {
 			return true
 		}
 		if time.Now().After(deadline) {
-			fmt.Fprintln(os.Stderr, "cancellation is still in progress")
+			printError("cancellation is still in progress")
 			return false
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+func finalizeCompletedCancellation(paths pathSet) (bool, error) {
+	lock, err := loadLockInfo(paths.lockFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	summary, err := loadRunSummary(filepath.Join(paths.runsDir, lock.RunID, "summary.json"))
+	if err != nil || summary.FinishedAt == "" {
+		return false, nil
+	}
+	if err := finishRun(paths, lock.RunID, summary.ExitCode); err != nil {
+		return false, err
+	}
+	if err := os.Remove(paths.lockFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	return true, nil
 }
 
 func cmdWorkerRun(args []string) int {
@@ -434,12 +512,12 @@ func cmdWorkerRun(args []string) int {
 	cliValue(fs, &jobIDs, "job-id")
 	sourceRunID := cliString(fs, "source-run-id", "")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to parse worker args: %v\n", err)
+		printErrorf("failed to parse worker args: %v", err)
 		return 1
 	}
 	left := fs.Args()
 	if len(left) != 7 {
-		fmt.Fprintln(os.Stderr, "usage: rotari __worker-run [--basedir DIR] <project_name> <run_id> <run_name> <local_concurrency> <batch_max_active> <retry> <cwd>")
+		printError("usage: rotari __worker-run [--basedir DIR] <project_name> <run_id> <run_name> <local_concurrency> <batch_max_active> <retry> <cwd>")
 		return 1
 	}
 	queueName := left[0]
@@ -450,17 +528,17 @@ func cmdWorkerRun(args []string) int {
 	retry, retryErr := strconv.Atoi(left[5])
 	cwd := left[6]
 	if err != nil || batchErr != nil || retryErr != nil || localConcurrency < 1 || batchMaxActive < 1 || retry < -1 {
-		fmt.Fprintf(os.Stderr, "invalid run options: local=%s batch=%s retry=%s\n", left[2], left[3], left[4])
+		printErrorf("invalid run options: local=%s batch=%s retry=%s", left[2], left[3], left[4])
 		return 1
 	}
 
 	paths, err := resolvePaths(*basedir, queueName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve paths: %v\n", err)
+		printErrorf("failed to resolve paths: %v", err)
 		return 1
 	}
 	if err := writeRunContext(paths, runID, cwd); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to save run context: %v\n", err)
+		printErrorf("failed to save run context: %v", err)
 		return 1
 	}
 
@@ -469,24 +547,24 @@ func cmdWorkerRun(args []string) int {
 	meta.LastRunID = runID
 	meta.UpdatedAt = nowRFC3339()
 	if err := writeJSON(paths.metaFile, meta); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to update metadata: %v\n", err)
+		printErrorf("failed to update metadata: %v", err)
 		return 1
 	}
 
 	stopLoadSampling := startRunLoadSampling(paths, runID)
-	exitCode := executeMixedRun(paths, runID, runName, localConcurrency, batchMaxActive, retry, *executor, executorOptions, *selection, jobIDs, *sourceRunID, nil)
+	exitCode := executeMixedRun(paths, runID, runName, localConcurrency, batchMaxActive, retry, *executor, executorOptions, *selection, jobIDs, *sourceRunID, nil, nil)
 	stopLoadSampling()
 	if err := finishRunContext(paths, runID); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to save run context: %v\n", err)
+		printErrorf("failed to save run context: %v", err)
 		return 1
 	}
 	if err := finishRun(paths, runID, exitCode); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to finalize metadata: %v\n", err)
+		printErrorf("failed to finalize metadata: %v", err)
 		return 1
 	}
 
 	if err := os.Remove(paths.lockFile); err != nil && !errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintf(os.Stderr, "failed to remove lock file: %v\n", err)
+		printErrorf("failed to remove lock file: %v", err)
 	}
 
 	return exitCode
@@ -524,7 +602,7 @@ func finishRun(paths pathSet, runID string, exitCode int) error {
 
 func launchAsyncRun(paths pathSet, queueName, runID, runName string, localConcurrency, batchMaxActive, retry int, executor string, executorOptions []string, selection string, jobIDs []string, sourceRunID string, cwd string, onDone func()) int {
 	if err := acquireLock(paths.lockFile, LockInfo{PID: os.Getpid(), RunID: runID, StartedAt: nowRFC3339()}); err != nil {
-		fmt.Fprintf(os.Stderr, "project '%s' is running; run is not allowed: %v\n", queueName, err)
+		printErrorf("project '%s' is running; run is not allowed: %v", queueName, err)
 		return 1
 	}
 
@@ -534,25 +612,25 @@ func launchAsyncRun(paths pathSet, queueName, runID, runName string, localConcur
 	meta.UpdatedAt = nowRFC3339()
 	if err := writeJSON(paths.metaFile, meta); err != nil {
 		_ = os.Remove(paths.lockFile)
-		fmt.Fprintf(os.Stderr, "failed to update metadata: %v\n", err)
+		printErrorf("failed to update metadata: %v", err)
 		return 1
 	}
 	if err := writeRunContext(paths, runID, cwd); err != nil {
 		_ = os.Remove(paths.lockFile)
-		fmt.Fprintf(os.Stderr, "failed to save run context: %v\n", err)
+		printErrorf("failed to save run context: %v", err)
 		return 1
 	}
 	if err := registerRun(paths, runID); err != nil {
 		_ = os.Remove(paths.lockFile)
 		_ = os.RemoveAll(filepath.Join(paths.runsDir, runID))
-		fmt.Fprintf(os.Stderr, "failed to register run: %v\n", err)
+		printErrorf("failed to register run: %v", err)
 		return 1
 	}
 
 	exe, err := os.Executable()
 	if err != nil {
 		_ = os.Remove(paths.lockFile)
-		fmt.Fprintf(os.Stderr, "failed to detect executable path: %v\n", err)
+		printErrorf("failed to detect executable path: %v", err)
 		return 1
 	}
 
@@ -584,7 +662,7 @@ func launchAsyncRun(paths pathSet, queueName, runID, runName string, localConcur
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(paths.lockFile)
-		fmt.Fprintf(os.Stderr, "failed to launch async runner: %v\n", err)
+		printErrorf("failed to launch async runner: %v", err)
 		return 1
 	}
 
@@ -592,13 +670,13 @@ func launchAsyncRun(paths pathSet, queueName, runID, runName string, localConcur
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = os.Remove(paths.lockFile)
-		fmt.Fprintf(os.Stderr, "failed to determine lock host: %v\n", err)
+		printErrorf("failed to determine lock host: %v", err)
 		return 1
 	}
 	if err := writeJSON(paths.lockFile, LockInfo{PID: cmd.Process.Pid, RunID: runID, StartedAt: nowRFC3339(), Host: host}); err != nil {
 		_ = cmd.Process.Kill()
 		_ = os.Remove(paths.lockFile)
-		fmt.Fprintf(os.Stderr, "failed to update lock with child pid: %v\n", err)
+		printErrorf("failed to update lock with child pid: %v", err)
 		return 1
 	}
 	waitForAsyncRun(cmd, onDone)
@@ -741,27 +819,27 @@ func readLoadAverage() *LoadAverage {
 func executeRun(paths pathSet, runID string, numParallel int) int {
 	queue, err := loadQueue(paths.queueFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load queue: %v\n", err)
+		printErrorf("failed to load queue: %v", err)
 		return 1
 	}
 	if len(queue.Commands) == 0 {
-		fmt.Fprintf(os.Stderr, "queue '%s' has no queued commands\n", paths.queueName)
+		printErrorf("queue '%s' has no queued commands", paths.queueName)
 		return 1
 	}
 
 	runDir := filepath.Join(paths.runsDir, runID)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create run directory: %v\n", err)
+		printErrorf("failed to create run directory: %v", err)
 		return 1
 	}
 	if err := writeJSON(filepath.Join(runDir, "commands.json"), queue); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to write command snapshot: %v\n", err)
+		printErrorf("failed to write command snapshot: %v", err)
 		return 1
 	}
 
 	jobs := queueToJobs(queue.Commands)
 	if len(jobs) == 0 {
-		fmt.Fprintf(os.Stderr, "queue '%s' has no valid commands\n", paths.queueName)
+		printErrorf("queue '%s' has no valid commands", paths.queueName)
 		return 1
 	}
 
@@ -809,7 +887,7 @@ func executeRun(paths pathSet, runID string, numParallel int) int {
 	}
 
 	if err := writeJSON(filepath.Join(runDir, "summary.json"), summary); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to write summary: %v\n", err)
+		printErrorf("failed to write summary: %v", err)
 		return 1
 	}
 
@@ -817,18 +895,18 @@ func executeRun(paths pathSet, runID string, numParallel int) int {
 		fmt.Printf("run finished run_id=%s success=%d failed=%d dir=%s\n", runID, successCount, failedCount, runDir)
 	} else {
 		fmt.Printf("run finished run_id=%s success=%d failed=%d dir=%s\n", runID, successCount, failedCount, runDir)
-		printFailedJobHints(paths, runID, summary.Results)
+		printFailedJobHints(runID, summary.Results)
 	}
 	return summary.ExitCode
 }
 
-func printFailedJobHints(paths pathSet, runID string, results []JobResult) {
-	if hints := failedJobHints(paths, runID, results); hints != "" {
+func printFailedJobHints(runID string, results []JobResult) {
+	if hints := failedJobHints(runID, results); hints != "" {
 		fmt.Print(hints)
 	}
 }
 
-func failedJobHints(paths pathSet, runID string, results []JobResult) string {
+func failedJobHints(runID string, results []JobResult) string {
 	var hints strings.Builder
 	seen := make(map[string]bool)
 	for _, result := range results {
@@ -843,8 +921,8 @@ func failedJobHints(paths pathSet, runID string, results []JobResult) string {
 		if hints.Len() > 0 {
 			hints.WriteString("  ----\n")
 		}
-		fmt.Fprintf(&hints, "  Job: %s\n  Hosts: %s\n  Command: %s\n  Show output:\n    rotari show --basedir %s --project-name %s --run-id %s --job-id %s\n",
-			result.ID, hosts, strings.Join(result.Command, " "), paths.baseDir, paths.queueName, runID, result.ID)
+		fmt.Fprintf(&hints, "  Job: %s\n  Hosts: %s\n  Command: %s\n  Show output:\n    rotari show --run-id %s --job-id %s\n",
+			result.ID, hosts, strings.Join(result.Command, " "), runID, result.ID)
 	}
 	return hints.String()
 }
@@ -964,7 +1042,7 @@ func queueToJobs(commands []QueuedCommand) []JobSpec {
 		if queued.Array == nil {
 			jobs = append(jobs, JobSpec{
 				ID: queued.ID, Command: queued.Command, Name: queued.Name,
-				Executor: queued.Executor, ExecutorOptions: queued.ExecutorOptions, DependsOn: queued.DependsOn,
+				Executor: queued.Executor, ExecutorOptions: queued.ExecutorOptions, Environment: queued.Environment, DependsOn: queued.DependsOn,
 			})
 			continue
 		}
@@ -977,7 +1055,7 @@ func queueToJobs(commands []QueuedCommand) []JobSpec {
 			taskID := task
 			jobs = append(jobs, JobSpec{
 				ID: id, Command: queued.Command, Name: name,
-				Executor: queued.Executor, ExecutorOptions: queued.ExecutorOptions, DependsOn: queued.DependsOn,
+				Executor: queued.Executor, ExecutorOptions: queued.ExecutorOptions, Environment: queued.Environment, DependsOn: queued.DependsOn,
 				ArrayGroup: queued.ID, ArrayTaskID: &taskID, ArrayFirst: queued.Array.First, ArrayLast: queued.Array.Last,
 			})
 		}
@@ -1317,4 +1395,15 @@ func nowRFC3339() string {
 
 func nowRFC3339Nano() string {
 	return time.Now().UTC().Format(time.RFC3339Nano)
+}
+
+func formatDisplayTimestamp(value string) string {
+	if value == "" || value == "-" {
+		return value
+	}
+	timestamp, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return value
+	}
+	return timestamp.In(time.FixedZone("JST", 9*60*60)).Format("2006-01-02 15:04:05 JST")
 }

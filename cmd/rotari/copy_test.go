@@ -214,3 +214,51 @@ func TestCopyRunToQueueCanOverwriteNonEmptyQueue(t *testing.T) {
 		t.Fatalf("commands after overwrite = %#v, want only copied command", queue.Commands)
 	}
 }
+func TestConfirmQueueOverwriteSkipsPromptWhenAppendRequested(t *testing.T) {
+	baseDir := t.TempDir()
+	confirmed, err := confirmQueueOverwrite(baseDir, "default", true, false)
+	if err != nil || confirmed {
+		t.Fatalf("confirmQueueOverwrite(append) = %v, %v, want false, nil", confirmed, err)
+	}
+}
+
+func TestConfirmQueueOverwriteSkipsPromptWhenOverwriteRequested(t *testing.T) {
+	baseDir := t.TempDir()
+	confirmed, err := confirmQueueOverwrite(baseDir, "default", false, true)
+	if err != nil || !confirmed {
+		t.Fatalf("confirmQueueOverwrite(overwrite) = %v, %v, want true, nil", confirmed, err)
+	}
+}
+
+func TestConfirmQueueOverwriteAllowsEmptyQueueWithoutPrompt(t *testing.T) {
+	baseDir := t.TempDir()
+	confirmed, err := confirmQueueOverwrite(baseDir, "default", false, false)
+	if err != nil || confirmed {
+		t.Fatalf("confirmQueueOverwrite(empty queue) = %v, %v, want false, nil", confirmed, err)
+	}
+}
+
+func TestConfirmQueueOverwriteRejectsNonEmptyQueueWithoutTerminal(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.queueFile, Queue{Commands: []QueuedCommand{{ID: "existing", Command: []string{"existing"}}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	stdin, err := os.CreateTemp(t.TempDir(), "not-a-tty-stdin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	oldStdin := os.Stdin
+	os.Stdin = stdin
+	defer func() { os.Stdin = oldStdin }()
+
+	_, err = confirmQueueOverwrite(baseDir, "default", false, false)
+	if err == nil || !strings.Contains(err.Error(), "queue is not empty; use --append or --overwrite") {
+		t.Fatalf("confirmQueueOverwrite error = %v, want non-empty queue error", err)
+	}
+}

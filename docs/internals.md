@@ -50,6 +50,11 @@ Projects resolve from `--project-name`, then `ROTARI_PROJECT_NAME`, then the
 only project in the resolved base directory. With no projects the name is
 `default`; multiple projects require an explicit choice.
 
+Persisted timestamps use UTC RFC3339 values. Human-readable CLI and web
+projections convert them to the display location: a valid IANA timezone name
+from `TZ` takes precedence; otherwise Go's local location is used, which on
+Linux follows the system timezone configured through `/etc/localtime`.
+
 A supplied `--run-id` is exact, never an alias for latest. Existing-run
 commands use the master registry to fill in its base directory and project.
 Explicit location options take priority, but a conflict with the registry must
@@ -127,6 +132,18 @@ Task wrappers normalize scheduler-specific task indexes into
 also expose stable run, project, job, directory, current-working-directory,
 and executable-path variables prefixed with `ROTARI_`.
 
+`QueuedCommand.Environment` stores user-supplied `KEY=VALUE` entries from the
+common `--env` option. Its values are passed to every executor and copied into
+run snapshots. Generated `ROTARI_*` variables override user values with the
+same name; invalid variable names are rejected at all queue mutation boundaries.
+
+The SSH executor treats its first executor option as the target host and the
+remaining options as `ssh` options. It manages a local SSH session per job,
+records output and final status locally, and does not require the remote host
+to mount the run directory. Its native ID is the local SSH process ID, so
+running SSH jobs can only be resumed or cancelled while the supervising rotari
+process remains alive.
+
 The server supervises one base directory and may stop when idle, so durable
 behavior belongs in files, not memory. The web UI is a projection of the same
 model, not a separate database.
@@ -150,8 +167,13 @@ with the exact run ID acknowledges recovery and returns the phase to
 `collecting`; it works whether the stale lock remains or was already removed.
 Interactive `check` offers the same phase recovery after explicit confirmation
 that all jobs have stopped, with a choice to retain or clear queue commands;
-clearing preserves queue defaults and run history. Non-interactive `check`
-only prints the exact `unlock` command, which retains the queue.
+the retain choice is displayed as `unlock`, and clearing preserves queue
+defaults and run history. If a server is still running, an interactive plain
+`check` displays its PID and asks before forcing shutdown, warning that other
+projects may be interrupted. Non-interactive `check` only prints the exact
+`unlock` and server shutdown commands. `check --server` only pings for an
+already-running server and never shuts it down, since that form must stay a
+side-effect-free inspection.
 
 Never silently remove a possibly active remote lock. Destructive commands must
 reject ambiguous targets, and exact IDs must never degrade into latest-item

@@ -111,199 +111,6 @@ func (flag *stringSliceFlag) Set(value string) error {
 	return nil
 }
 
-func executeSlurmRun(paths pathSet, runID string, maxActive int, executorOptions []string) (int, int, int) {
-	if maxActive < 1 {
-		fmt.Fprintln(os.Stderr, "slurm max active must be >= 1")
-		return 1, 0, 0
-	}
-	queue, err := loadQueue(paths.queueFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load queue: %v\n", err)
-		return 1, 0, 0
-	}
-	jobs := queueToJobs(queue.Commands)
-	if len(jobs) == 0 {
-		fmt.Fprintf(os.Stderr, "queue '%s' has no valid commands\n", paths.queueName)
-		return 1, 0, 0
-	}
-	runDir := filepath.Join(paths.runsDir, runID)
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create run directory: %v\n", err)
-		return 1, 0, 0
-	}
-	if err := writeJSON(filepath.Join(runDir, "commands.json"), queue); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to write command snapshot: %v\n", err)
-		return 1, 0, 0
-	}
-
-	metadata := make([]slurmJobMetadata, 0, len(jobs))
-	results := make([]JobResult, 0, len(jobs))
-	for start := 0; start < len(jobs); start += maxActive {
-		end := start + maxActive
-		if end > len(jobs) {
-			end = len(jobs)
-		}
-		batch := jobs[start:end]
-		batchMetadata := make([]slurmJobMetadata, 0, len(batch))
-		for _, job := range batch {
-			jobOptions := executorOptions
-			if len(jobOptions) == 0 {
-				jobOptions = job.ExecutorOptions
-			}
-			if len(jobOptions) == 0 {
-				jobOptions = queue.DefaultExecutorOptions
-			}
-			jobMetadata, err := submitSlurmJob(runDir, job, jobOptions)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "failed to submit job %s: %v\n", job.ID, err)
-				return 1, 0, 0
-			}
-			metadata = append(metadata, jobMetadata)
-			batchMetadata = append(batchMetadata, jobMetadata)
-		}
-		for _, job := range batchMetadata {
-			results = append(results, waitSlurmJob(runDir, job))
-		}
-	}
-	if err := writeJSON(filepath.Join(runDir, "slurm_jobs.json"), metadata); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to write Slurm metadata: %v\n", err)
-		return 1, 0, 0
-	}
-
-	summary := RunSummary{
-		RunID:      runID,
-		Status:     "finished",
-		StartedAt:  nowRFC3339(),
-		FinishedAt: nowRFC3339(),
-		ExitCode:   0,
-		Results:    results,
-	}
-	for _, result := range results {
-		if result.ExitCode != 0 {
-			summary.ExitCode = 1
-		}
-	}
-	summary.Status = runStatus(summary.ExitCode)
-	successCount := 0
-	failedCount := 0
-	for _, result := range results {
-		if result.ExitCode == 0 {
-			successCount++
-		} else {
-			failedCount++
-		}
-	}
-	if err := writeJSON(filepath.Join(runDir, "summary.json"), summary); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to write summary: %v\n", err)
-		return 1, successCount, failedCount
-	}
-	if summary.ExitCode != 0 {
-		printFailedJobHints(paths, runID, results)
-	}
-	return summary.ExitCode, successCount, failedCount
-}
-
-func prepareSlurmRun(baseDir, queueName string) (pathSet, string, Meta, func(), error) {
-	paths, err := resolvePaths(baseDir, queueName)
-	if err != nil {
-		return pathSet{}, "", Meta{}, nil, err
-	}
-	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
-		return pathSet{}, "", Meta{}, nil, err
-	}
-	release, err := acquireStateLock(paths.stateLockFile)
-	if err != nil {
-		return pathSet{}, "", Meta{}, nil, err
-	}
-	queue, err := loadQueue(paths.queueFile)
-	if err != nil {
-		release()
-		return pathSet{}, "", Meta{}, nil, err
-	}
-	if len(queue.Commands) == 0 {
-		release()
-		return pathSet{}, "", Meta{}, nil, fmt.Errorf("queue %q has no queued commands", queueName)
-	}
-	runID := makeRunID()
-	if err := acquireLock(paths.lockFile, LockInfo{PID: os.Getpid(), RunID: runID, StartedAt: nowRFC3339()}); err != nil {
-		release()
-		return pathSet{}, "", Meta{}, nil, fmt.Errorf("project %q is already running", queueName)
-	}
-	if err := registerRun(paths, runID); err != nil {
-		_ = os.Remove(paths.lockFile)
-		release()
-		return pathSet{}, "", Meta{}, nil, fmt.Errorf("failed to register run: %w", err)
-	}
-	meta, err := loadMeta(paths.metaFile)
-	if err != nil {
-		_ = os.Remove(paths.lockFile)
-		release()
-		return pathSet{}, "", Meta{}, nil, err
-	}
-	meta.Phase = "running"
-	meta.LastRunID = runID
-	meta.UpdatedAt = nowRFC3339()
-	if err := writeJSON(paths.metaFile, meta); err != nil {
-		_ = os.Remove(paths.lockFile)
-		release()
-		return pathSet{}, "", Meta{}, nil, err
-	}
-	return paths, runID, meta, release, nil
-}
-
-func finishSlurmRun(paths pathSet, runID string, meta Meta, exitCode int) error {
-	meta.Phase = "finished"
-	meta.LastRunID = runID
-	meta.LastRunExitCode = exitCode
-	meta.UpdatedAt = nowRFC3339()
-	if err := writeJSON(paths.metaFile, meta); err != nil {
-		return err
-	}
-	if err := os.Remove(paths.lockFile); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
-}
-
-func runSlurmServerSync(baseDir, queueName string, maxActive int, executorOptions []string) (string, int, error) {
-	paths, runID, meta, release, err := prepareSlurmRun(baseDir, queueName)
-	if err != nil {
-		return "", 1, err
-	}
-	release()
-	exitCode, successCount, failedCount := executeSlurmRun(paths, runID, maxActive, executorOptions)
-	if err := finishSlurmRun(paths, runID, meta, exitCode); err != nil {
-		return "", 1, err
-	}
-	runDir := filepath.Join(paths.runsDir, runID)
-	message := fmt.Sprintf("Run finished:\n  Project: %s\n  Run: %s\n  Exit code: %d\n  Success: %d\n  Failed: %d\n  Directory: %s", queueName, runID, exitCode, successCount, failedCount, runDir)
-	if summaryData, err := os.ReadFile(filepath.Join(runDir, "summary.json")); err == nil {
-		var summary RunSummary
-		if json.Unmarshal(summaryData, &summary) == nil {
-			message = formatRunCompletion(paths, runID, summary)
-		}
-	}
-	return message, exitCode, nil
-}
-
-func startSlurmServerRun(baseDir, queueName string, maxActive int, executorOptions []string, onDone func()) (string, error) {
-	paths, runID, meta, release, err := prepareSlurmRun(baseDir, queueName)
-	if err != nil {
-		return "", err
-	}
-	release()
-	go func() {
-		exitCode, _, _ := executeSlurmRun(paths, runID, maxActive, executorOptions)
-		_ = finishSlurmRun(paths, runID, meta, exitCode)
-		if onDone != nil {
-			onDone()
-		}
-	}()
-	runDir := filepath.Join(paths.runsDir, runID)
-	return fmt.Sprintf("Run started (Slurm):\n  Project: %s\n  Run: %s\n  Directory: %s\n\nCheck status:\n  rotari show --basedir %s --project-name %s --run-id %s\n\nCancel run:\n  rotari cancel --basedir %s --project-name %s",
-		queueName, runID, runDir, paths.baseDir, queueName, runID, paths.baseDir, queueName), nil
-}
-
 func submitSlurmJob(runDir string, job JobSpec, executorOptions []string) (slurmJobMetadata, error) {
 	jobDir := filepath.Join(runDir, job.ID)
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
@@ -375,7 +182,13 @@ func submitSlurmArray(runDir string, jobs []JobSpec, executorOptions []string) (
 			return nil, errors.New("executor options must not include --array when rotari --array is used")
 		}
 	}
-	args := []string{"--parsable", fmt.Sprintf("--array=%d-%d", first, last), "--job-name=rotari-array"}
+	args := []string{
+		"--parsable",
+		fmt.Sprintf("--array=%d-%d", first, last),
+		"--job-name=rotari-array",
+		"--output=/dev/null",
+		"--error=/dev/null",
+	}
 	args = append(args, expandedOptions...)
 	args = append(args, wrapperPath)
 	output, err := runSlurmCommand("sbatch", args...)
@@ -434,13 +247,21 @@ func schedulerArrayWrapperScript(jobs []JobSpec, taskVariable string) string {
 	caseLines := make([]string, 0, len(jobs))
 	for _, job := range jobs {
 		exports := make([]string, 0, len(job.Environment))
+		jobDir := ""
 		for _, entry := range job.Environment {
 			parts := strings.SplitN(entry, "=", 2)
 			if len(parts) == 2 {
+				if parts[0] == envJobDir {
+					jobDir = parts[1]
+					continue
+				}
 				exports = append(exports, "export "+parts[0]+"="+shellQuote(parts[1]))
 			}
 		}
-		caseLines = append(caseLines, fmt.Sprintf("    %d)\n        %s\n        job_dir=\"$ROTARI_JOB_DIR\"\n        ;;", *job.ArrayTaskID, strings.Join(exports, "\n        ")))
+		if jobDir == "" {
+			jobDir = filepath.Join("$ROTARI_RUN_DIR", job.ID)
+		}
+		caseLines = append(caseLines, fmt.Sprintf("    %d)\n        %s\n        job_dir=%s\n        export %s=%s\n        mkdir -p \"$job_dir\" || exit 1\n        ;;", *job.ArrayTaskID, strings.Join(exports, "\n        "), shellQuote(jobDir), envJobDir, shellQuote(jobDir)))
 	}
 	return "#!/bin/sh\nset +e\ncase \"$" + taskVariable + "\" in\n" + strings.Join(caseLines, "\n") + "\n    *) exit 1 ;;\nesac\nexec >\"$job_dir/output\" 2>&1\nstatus_path=\"$job_dir/status.json\"\nhostname=$(hostname 2>/dev/null || true)\nwrite_status() {\n    phase=$1\n    code=$2\n    tmp=\"${status_path}.tmp.$$\"\n    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)\n    if [ \"$phase\" = \"running\" ]; then\n        printf '{\"phase\":\"running\",\"hosts\":[\"%s\"],\"started_at\":\"%s\"}\n' \"$hostname\" \"$now\" > \"$tmp\"\n    else\n        printf '{\"phase\":\"%s\",\"hosts\":[\"%s\"],\"exit_code\":%s,\"finished_at\":\"%s\"}\n' \"$phase\" \"$hostname\" \"$code\" \"$now\" > \"$tmp\"\n    fi\n    mv -f \"$tmp\" \"$status_path\"\n}\nwrite_status running 0\ntrap 'write_status cancelled 143; exit 143' TERM\ntrap 'write_status cancelled 130; exit 130' INT\n" + strings.Join(quoted, " ") + "\ncode=$?\nwrite_status finished \"$code\"\nexit \"$code\"\n"
 }

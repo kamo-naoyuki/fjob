@@ -10,6 +10,82 @@ import (
 	"time"
 )
 
+func TestFormatDisplayTimestampUsesJST(t *testing.T) {
+	t.Setenv("TZ", "Asia/Tokyo")
+	if got := formatDisplayTimestamp("2026-09-16T00:00:01Z"); got != "2026-09-16 09:00:01 JST" {
+		t.Fatalf("formatDisplayTimestamp() = %q, want JST display", got)
+	}
+	if got := formatDisplayTimestamp("-"); got != "-" {
+		t.Fatalf("formatDisplayTimestamp(-) = %q, want unchanged marker", got)
+	}
+}
+
+func TestJobStatusTerminalUsesFinishedAtMarker(t *testing.T) {
+	if !jobStatusTerminal(slurmStatus{Phase: "running", FinishedAt: "2026-09-18T00:00:00Z"}) {
+		t.Fatal("status with finished_at was not treated as terminal")
+	}
+	if jobStatusTerminal(slurmStatus{Phase: "running"}) {
+		t.Fatal("running status without finished_at was treated as terminal")
+	}
+}
+
+func TestLoadTerminalSchedulerState(t *testing.T) {
+	jobDir := t.TempDir()
+	writeSchedulerStatus(jobDir, "COMPLETED")
+	if status, ok := loadTerminalSchedulerState(jobDir); !ok || status != 0 {
+		t.Fatalf("completed scheduler status = %d, %v", status, ok)
+	}
+	writeSchedulerStatus(jobDir, "RUNNING")
+	if _, ok := loadTerminalSchedulerState(jobDir); ok {
+		t.Fatal("running scheduler status was treated as terminal")
+	}
+}
+
+func TestCmdShowDisplaysFinishedArrayTaskFromStatusJSON(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := "array-run"
+	task := 1
+	queue := Queue{Commands: []QueuedCommand{{ID: "array", Command: []string{"true"}, Executor: "slurm", Array: &ArraySpec{First: 1, Last: 1}}}}
+	if err := writeJSON(filepath.Join(paths.runsDir, runID, "commands.json"), queue); err != nil {
+		t.Fatal(err)
+	}
+	jobDir := filepath.Join(paths.runsDir, runID, "array-1")
+	if err := writeJSON(filepath.Join(jobDir, "command.json"), JobSpec{ID: "array-1", Command: []string{"true"}, Executor: "slurm", ArrayTaskID: &task, ArrayFirst: 1, ArrayLast: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(jobDir, "status.json"), slurmStatus{Phase: "running", ExitCode: 0, FinishedAt: "2026-09-18T00:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(paths.metaFile), Meta{Phase: "running", LastRunID: runID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.lockFile, LockInfo{RunID: runID, PID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(paths.lockFile) })
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	code := cmdShow([]string{"--basedir", baseDir, "--project-name", "demo", "--no-pager"})
+	_ = writer.Close()
+	os.Stdout = oldStdout
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 || !strings.Contains(string(output), "array-1") || !strings.Contains(string(output), " 0 ") {
+		t.Fatalf("code=%d output=%q", code, output)
+	}
+}
+
 func TestSelectRunIDUsesValidMetaLastRun(t *testing.T) {
 	paths, err := resolvePaths(t.TempDir(), "demo")
 	if err != nil {
@@ -423,5 +499,159 @@ func TestShowJobFollowsCarriedForwardOrigin(t *testing.T) {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("showJob output does not contain %q:\n%s", want, output.String())
 		}
+	}
+}
+
+func TestIsTerminalRejectsRegularFile(t *testing.T) {
+	regular, err := os.CreateTemp(t.TempDir(), "not-a-tty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer regular.Close()
+	if isTerminal(regular) {
+		t.Fatal("regular file was treated as a terminal")
+	}
+}
+
+func TestShowQueueJobPrintsMatchingJob(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := Queue{Commands: []QueuedCommand{
+		{ID: "job-1", Name: "build", Command: []string{"echo", "build"}, DependsOn: []string{"prepare"}},
+	}}
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	code := showQueueJob(paths, queue, "job-1")
+	os.Stdout = oldStdout
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 {
+		t.Fatalf("showQueueJob exit code = %d, want 0", code)
+	}
+	for _, want := range []string{"Job: job-1", "Name: build", "Depends on: prepare", "Command: echo build"} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("showQueueJob output does not contain %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestShowQueueJobReportsMissingJob(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := Queue{Commands: []QueuedCommand{{ID: "job-1", Command: []string{"echo", "build"}}}}
+
+	oldStderr := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = writer
+	code := showQueueJob(paths, queue, "missing")
+	os.Stderr = oldStderr
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 1 || !strings.Contains(string(output), `job "missing" not found in current queue`) {
+		t.Fatalf("showQueueJob exit code = %d, stderr = %q", code, output)
+	}
+}
+
+func TestShowRunsListsRunsSortedByRecency(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	olderRun := filepath.Join(paths.runsDir, "run-old")
+	newerRun := filepath.Join(paths.runsDir, "run-new")
+	if err := writeJSON(filepath.Join(olderRun, "summary.json"), RunSummary{
+		RunID: "run-old", Status: "finished", ExitCode: 0, StartedAt: "2026-09-16T00:00:00Z", FinishedAt: "2026-09-16T00:00:01Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(newerRun, "summary.json"), RunSummary{
+		RunID: "run-new", Status: "failed", ExitCode: 1, StartedAt: "2026-09-17T00:00:00Z", FinishedAt: "2026-09-17T00:00:01Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	newerTime := time.Now()
+	olderTime := newerTime.Add(-time.Hour)
+	if err := os.Chtimes(olderRun, olderTime, olderTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newerRun, newerTime, newerTime); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	code := showRuns(paths)
+	os.Stdout = oldStdout
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 {
+		t.Fatalf("showRuns exit code = %d, want 0", code)
+	}
+	text := string(output)
+	newIndex := strings.Index(text, "run-new")
+	oldIndex := strings.Index(text, "run-old")
+	if newIndex == -1 || oldIndex == -1 || newIndex > oldIndex {
+		t.Fatalf("showRuns did not list run-new before run-old:\n%s", text)
+	}
+}
+
+func TestShowRunsReportsNoRunsWhenDirectoryMissing(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	code := showRuns(paths)
+	os.Stdout = oldStdout
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 || !strings.Contains(string(output), "No runs found.") {
+		t.Fatalf("showRuns exit code = %d, stdout = %q", code, output)
 	}
 }

@@ -154,7 +154,7 @@ func submitLSFArray(runDir string, jobs []JobSpec, executorOptions []string) ([]
 	if err := rejectArraySchedulerOptions(executorOptions, "-J"); err != nil {
 		return nil, err
 	}
-	wrapper := schedulerArrayWrapperScript(jobs, "LSB_JOBINDEX")
+	wrapper := "#BSUB -o /dev/null\n#BSUB -e /dev/null\n" + schedulerArrayWrapperScript(jobs, "LSB_JOBINDEX")
 	expandedOptions, err := expandShellOptions(executorOptions)
 	if err != nil {
 		return nil, err

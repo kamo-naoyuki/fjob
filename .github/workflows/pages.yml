@@ -34,7 +34,7 @@ jobs:
 
       - name: Generate static web demo
         run: |
-          GO_BINARY="$(command -v go)" docs/generate-static-web.sh
+          GO_BINARY="$(command -v go)" scripts/generate-static-web.sh
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -51,7 +51,7 @@ jobs:
 
       - name: Generate terminal demos
         run: |
-          docs/generate-demos.sh
+          scripts/generate-demos.sh
           cp docs/demo-shell.gif docs/demo-rotari.gif docs/web-demo/
 
       - name: Configure GitHub Pages

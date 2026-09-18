@@ -99,6 +99,7 @@ var executorRegistry = map[string]JobExecutor{
 	"slurm": slurmExecutor{},
 	"pbs":   pbsExecutor{},
 	"lsf":   lsfExecutor{},
+	"ssh":   sshExecutor{},
 }
 
 func lookupExecutor(name string) (JobExecutor, bool) {

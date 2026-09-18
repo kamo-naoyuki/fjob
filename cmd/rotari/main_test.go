@@ -387,6 +387,29 @@ func TestConfirmInterruptedRecoveryDeclineLeavesState(t *testing.T) {
 	}
 }
 
+func TestConfirmServerShutdown(t *testing.T) {
+	var output bytes.Buffer
+	stop, err := confirmServerShutdown(strings.NewReader("yes\n"), &output, "/state", 123)
+	if err != nil || !stop {
+		t.Fatalf("confirmServerShutdown(yes) = %v, %v", stop, err)
+	}
+	if !strings.Contains(output.String(), "may interrupt other projects") {
+		t.Fatalf("confirmation output = %q", output.String())
+	}
+
+	stop, err = confirmServerShutdown(strings.NewReader("no\n"), io.Discard, "/state", 123)
+	if err != nil || stop {
+		t.Fatalf("confirmServerShutdown(no) = %v, %v", stop, err)
+	}
+}
+
+func TestStopServerAcceptsAlreadyStoppedServer(t *testing.T) {
+	baseDir := fmt.Sprintf(".rotari-missing-server-%d", time.Now().UnixNano())
+	if err := stopServer(baseDir); err != nil {
+		t.Fatalf("stopServer() error = %v, want nil", err)
+	}
+}
+
 func TestCmdCheckRecoverDiscardWithoutPrompt(t *testing.T) {
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "demo")
@@ -416,6 +439,25 @@ func TestCmdCheckRecoverDiscardWithoutPrompt(t *testing.T) {
 	}
 	if meta.Phase != "collecting" {
 		t.Fatalf("metadata phase = %q, want collecting", meta.Phase)
+	}
+}
+
+func TestCmdCheckRejectsInvalidDependencies(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := Queue{Commands: []QueuedCommand{
+		{ID: "job-1", Command: []string{"echo", "one"}, Name: "one"},
+		{ID: "job-2", Command: []string{"echo", "two"}, Name: "two", DependsOn: []string{"missing"}},
+	}}
+	if err := writeJSON(paths.queueFile, queue); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := cmdCheck([]string{"--basedir", baseDir, "--project-name", "demo"}); code == 0 {
+		t.Fatal("cmdCheck accepted an unknown dependency")
 	}
 }
 
@@ -509,7 +551,8 @@ func TestPrepareJobEnvironmentsIncludesRunOptions(t *testing.T) {
 
 func TestEnqueueCommandPersistsStableJobID(t *testing.T) {
 	baseDir := t.TempDir()
-	if _, err := enqueueCommand(baseDir, "default", []string{"echo", "old"}, "", nil, "job", nil); err != nil {
+	message, err := enqueueCommand(baseDir, "default", []string{"echo", "old"}, "", nil, nil, "job", nil)
+	if err != nil {
 		t.Fatal(err)
 	}
 	paths, err := resolvePaths(baseDir, "default")
@@ -524,10 +567,68 @@ func TestEnqueueCommandPersistsStableJobID(t *testing.T) {
 		t.Fatalf("queue command ID = %q, want a persisted ID", queue.Commands[0].ID)
 	}
 	id := queue.Commands[0].ID
+	if !strings.Contains(message, "submitted project=default job_id="+id+" job_name=job command=[echo old]") {
+		t.Fatalf("enqueue message = %q, want job metadata and command", message)
+	}
 	queue.Commands[0].Command = []string{"echo", "new"}
 	jobs := queueToJobs(queue.Commands)
 	if len(jobs) != 1 || jobs[0].ID != id {
 		t.Fatalf("changed command ID = %q, want %q", jobs[0].ID, id)
+	}
+}
+
+func TestEnqueueCommandKeepsPerJobExecutorOutOfQueueDefault(t *testing.T) {
+	baseDir := t.TempDir()
+	if _, err := enqueueCommand(baseDir, "default", []string{"echo", "job"}, "slurm", []string{"-p short"}, nil, "job", nil); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queue.DefaultExecutor != "" || len(queue.Commands) != 1 || queue.Commands[0].Executor != "slurm" {
+		t.Fatalf("queue = %#v, want only the job to use slurm", queue)
+	}
+}
+
+func TestEnqueueCommandPersistsEnvironment(t *testing.T) {
+	baseDir := t.TempDir()
+	if _, err := enqueueCommand(baseDir, "default", []string{"echo", "job"}, "", nil, []string{"TOKEN=secret", "MODE=test"}, "job", nil); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(queue.Commands[0].Environment, "\x00"); got != "TOKEN=secret\x00MODE=test" {
+		t.Fatalf("environment = %q", got)
+	}
+	jobs := queueToJobs(queue.Commands)
+	prepareJobEnvironments(paths, "run-1", jobs, "", 1, 1, 0, nil)
+	values := make(map[string]string)
+	for _, entry := range jobs[0].Environment {
+		name, value, _ := strings.Cut(entry, "=")
+		values[name] = value
+	}
+	if values["TOKEN"] != "secret" || values["MODE"] != "test" {
+		t.Fatalf("job environment = %#v", values)
+	}
+}
+
+func TestValidateEnvironment(t *testing.T) {
+	if err := validateEnvironment([]string{"KEY=value", "EMPTY="}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateEnvironment([]string{"not-an-assignment"}); err == nil {
+		t.Fatal("validateEnvironment accepted a missing equals sign")
 	}
 }
 
@@ -555,7 +656,7 @@ func TestEnqueueCommandKeepsFinishedRunHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := enqueueCommand(baseDir, "default", []string{"echo", "new"}, "", nil, "new-job", nil); err != nil {
+	if _, err := enqueueCommand(baseDir, "default", []string{"echo", "new"}, "", nil, nil, "new-job", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(paths.runsDir, "run-1", "summary.json")); err != nil {
@@ -809,7 +910,7 @@ func TestShowRunIncludesCarriedJobFromCommands(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("showRun exit code = %d, want 0", code)
 	}
-	for _, want := range []string{"carried", "carried-job", "2026-09-16T00:00:01Z", "2026-09-16T00:00:02Z", "echo done"} {
+	for _, want := range []string{"carried", "carried-job", "2026-09-16 09:00:01 JST", "2026-09-16 09:00:02 JST", "echo done"} {
 		if !strings.Contains(string(output), want) {
 			t.Fatalf("showRun output does not contain %q:\n%s", want, output)
 		}
@@ -819,6 +920,28 @@ func TestShowRunIncludesCarriedJobFromCommands(t *testing.T) {
 	}
 	if strings.Contains(string(output), "rotari delete --basedir") {
 		t.Fatalf("showRun output contains verbose delete command:\n%s", output)
+	}
+}
+
+func TestPrintChangeHintsUsesRetryLabel(t *testing.T) {
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	printChangeHints(pathSet{baseDir: "/tmp/rotari", queueName: "demo"}, "run-1", Queue{}, []JobSpec{{ID: "job-1"}})
+	os.Stdout = oldStdout
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(output)
+	if !strings.Contains(text, "Retry:") || strings.Contains(text, "Rerun:") {
+		t.Fatalf("change hints have incorrect retry label:\n%s", text)
 	}
 }
 
@@ -1173,7 +1296,7 @@ func TestExecuteMixedRunRetriesFailedJob(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := executeMixedRun(paths, "retry-run", "", 1, 1, 1, "", nil, "", nil, "", nil); code != 0 {
+	if code := executeMixedRun(paths, "retry-run", "", 1, 1, 1, "", nil, "", nil, "", nil, nil); code != 0 {
 		t.Fatalf("executeMixedRun exit = %d, want 0", code)
 	}
 	if _, err := os.Stat(marker); err != nil {
@@ -1194,6 +1317,89 @@ func TestExecuteMixedRunRetriesFailedJob(t *testing.T) {
 	}
 }
 
+type recordingExecutor struct {
+	name      string
+	submitted []string
+}
+
+func (executor *recordingExecutor) Name() string { return executor.name }
+
+func (executor *recordingExecutor) Submit(_ string, job JobSpec, _ []string) (JobHandle, error) {
+	executor.submitted = append(executor.submitted, job.ID)
+	return JobHandle{Job: job}, nil
+}
+
+func (executor *recordingExecutor) Wait(_ string, handle JobHandle) JobResult {
+	return JobResult{ID: handle.Job.ID, Command: handle.Job.Command, ExitCode: 0}
+}
+
+func TestExecuteMixedRunKeepsPerJobExecutorOverrides(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scheduler := &recordingExecutor{name: "slurm"}
+	previous, existed := executorRegistry["slurm"]
+	executorRegistry["slurm"] = scheduler
+	t.Cleanup(func() {
+		if existed {
+			executorRegistry["slurm"] = previous
+		} else {
+			delete(executorRegistry, "slurm")
+		}
+	})
+	queue := Queue{Commands: []QueuedCommand{
+		{ID: "local-job", Command: []string{"sh", "-c", "exit 0"}},
+		{ID: "slurm-job", Command: []string{"echo", "scheduler"}, Executor: "slurm"},
+	}}
+	if err := writeJSON(paths.queueFile, queue); err != nil {
+		t.Fatal(err)
+	}
+	if code := executeMixedRun(paths, "mixed-run", "", 1, 1, 0, "", nil, "", nil, "", nil, nil); code != 0 {
+		t.Fatalf("executeMixedRun exit = %d, want 0", code)
+	}
+	if len(scheduler.submitted) != 1 || scheduler.submitted[0] != "slurm-job" {
+		t.Fatalf("scheduler submissions = %#v, want only slurm-job", scheduler.submitted)
+	}
+	summary, err := loadRunSummary(filepath.Join(paths.runsDir, "mixed-run", "summary.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Results) != 2 {
+		t.Fatalf("summary results = %#v, want local and slurm jobs", summary.Results)
+	}
+}
+
+func TestExecuteMixedRunExecutesAllArrayTasks(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.queueFile, Queue{Commands: []QueuedCommand{{
+		ID: "array", Command: []string{"sh", "-c", "exit 0"}, Array: &ArraySpec{First: 1, Last: 2},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if code := executeMixedRun(paths, "array-run", "", 2, 1, 0, "", nil, "", nil, "", nil, nil); code != 0 {
+		t.Fatalf("executeMixedRun exit = %d, want 0", code)
+	}
+	summary, err := loadRunSummary(filepath.Join(paths.runsDir, "array-run", "summary.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Results) != 2 || summary.Results[0].ID == "array" || summary.Results[1].ID == "array" {
+		t.Fatalf("summary results = %#v, want two array tasks", summary.Results)
+	}
+}
+
 func TestExecuteMixedRunPersistsRunName(t *testing.T) {
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "default")
@@ -1209,7 +1415,7 @@ func TestExecuteMixedRunPersistsRunName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := executeMixedRun(paths, "named-run", "nightly-build", 1, 1, 0, "", nil, "", nil, "", nil); code != 0 {
+	if code := executeMixedRun(paths, "named-run", "nightly-build", 1, 1, 0, "", nil, "", nil, "", nil, nil); code != 0 {
 		t.Fatalf("executeMixedRun exit = %d, want 0", code)
 	}
 	summary, err := loadRunSummary(filepath.Join(paths.runsDir, "named-run", "summary.json"))
@@ -1349,7 +1555,7 @@ func TestChangeBatchRestoresAndEditsPreviousRun(t *testing.T) {
 	}
 
 	message, err := changeBatch(baseDir, "default", "", "train-id", "", "slurm",
-		[]string{"-p gpu"}, false, "", []string{"prepare"}, false, []string{"./train-v2"})
+		[]string{"-p gpu"}, false, nil, false, "", []string{"prepare"}, false, []string{"./train-v2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1466,7 +1672,7 @@ func TestExecuteMixedRunBlocksWhenDependencyFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := executeMixedRun(paths, "blocked-run", "", 1, 1, 0, "", nil, "", nil, "", nil); code != 1 {
+	if code := executeMixedRun(paths, "blocked-run", "", 1, 1, 0, "", nil, "", nil, "", nil, nil); code != 1 {
 		t.Fatalf("executeMixedRun exit = %d, want 1", code)
 	}
 
@@ -1502,7 +1708,7 @@ func TestExecuteMixedRunCarriesForwardNonSelectedResults(t *testing.T) {
 	if err := writeJSON(paths.queueFile, queue); err != nil {
 		t.Fatal(err)
 	}
-	if code := executeMixedRun(paths, "run-1", "", 1, 1, 0, "", nil, "", nil, "", nil); code != 1 {
+	if code := executeMixedRun(paths, "run-1", "", 1, 1, 0, "", nil, "", nil, "", nil, nil); code != 1 {
 		t.Fatalf("first run exit = %d, want 1", code)
 	}
 	meta := defaultMeta()
@@ -1514,7 +1720,7 @@ func TestExecuteMixedRunCarriesForwardNonSelectedResults(t *testing.T) {
 	if err := writeJSON(paths.queueFile, queue); err != nil {
 		t.Fatal(err)
 	}
-	if code := executeMixedRun(paths, "run-2", "", 1, 1, 0, "", nil, "failed", nil, "", nil); code != 1 {
+	if code := executeMixedRun(paths, "run-2", "", 1, 1, 0, "", nil, "failed", nil, "", nil, nil); code != 1 {
 		t.Fatalf("second run exit = %d, want 1 (beta still fails)", code)
 	}
 
@@ -1621,6 +1827,56 @@ func TestFinishCancelMessageWaitsUntilLockDisappears(t *testing.T) {
 	}
 	if !strings.Contains(message, "Cancellation complete") {
 		t.Fatalf("message = %q, want cancellation complete", message)
+	}
+}
+
+func TestFinalizeCompletedCancellationRemovesStaleServerLock(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(paths.runsDir, "run-1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.lockFile, LockInfo{PID: os.Getpid(), RunID: "run-1", StartedAt: nowRFC3339()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.metaFile, Meta{Phase: "cancelling", LastRunID: "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.queueFile, Queue{Commands: []QueuedCommand{{ID: "job-1", Command: []string{"echo", "stale"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(paths.runsDir, "run-1", "summary.json"), RunSummary{
+		RunID: "run-1", Status: "failed", FinishedAt: nowRFC3339(), ExitCode: 143,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	finalized, err := finalizeCompletedCancellation(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !finalized {
+		t.Fatal("finalizeCompletedCancellation returned false")
+	}
+	if _, err := os.Stat(paths.lockFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("lock still exists, stat error = %v", err)
+	}
+	meta, err := loadMeta(paths.metaFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Phase != "finished" {
+		t.Fatalf("meta phase = %q, want finished", meta.Phase)
+	}
+	queue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.Commands) != 0 {
+		t.Fatalf("queue commands = %d, want 0", len(queue.Commands))
 	}
 }
 
@@ -1835,7 +2091,7 @@ func TestFinishCancelMessageIncludesInspectHintWhenNotWaiting(t *testing.T) {
 	if !strings.Contains(message, "Inspect status") {
 		t.Fatalf("message = %q, want inspect status hint", message)
 	}
-	if !strings.Contains(message, "rotari show --basedir") {
+	if !strings.Contains(message, "rotari show --run-id run-1") {
 		t.Fatalf("message = %q, want show command hint", message)
 	}
 }

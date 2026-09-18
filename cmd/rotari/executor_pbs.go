@@ -162,7 +162,7 @@ func submitPBSArray(runDir string, jobs []JobSpec, executorOptions []string) ([]
 	if err != nil {
 		return nil, err
 	}
-	args := []string{"-j", "oe", "-J", fmt.Sprintf("%d-%d", first, last)}
+	args := []string{"-j", "oe", "-o", "/dev/null", "-J", fmt.Sprintf("%d-%d", first, last)}
 	args = append(args, expandedOptions...)
 	args = append(args, wrapperPath)
 	output, err := runPBSCommand("qsub", args...)

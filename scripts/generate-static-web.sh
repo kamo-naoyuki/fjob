@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd "${script_dir}/.." && pwd)
-output_dir=${1:-"${script_dir}/web-demo"}
+output_dir=${1:-"${repo_dir}/docs/web-demo"}
 work_dir=$(mktemp -d)
 trap 'rm -rf "${work_dir}"' EXIT INT TERM
 

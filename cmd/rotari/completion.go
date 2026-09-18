@@ -10,12 +10,12 @@ import (
 
 func cmdCompletion(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: rotari completion <bash|zsh|install [bash|zsh]>")
+		printError("usage: rotari completion <bash|zsh|install [bash|zsh]>")
 		return 1
 	}
 	if args[0] == "install" {
 		if len(args) > 2 {
-			fmt.Fprintln(os.Stderr, "usage: rotari completion install [bash|zsh]")
+			printError("usage: rotari completion install [bash|zsh]")
 			return 1
 		}
 		shell := ""
@@ -23,13 +23,13 @@ func cmdCompletion(args []string) int {
 			shell = args[1]
 		}
 		if err := installCompletion(shell); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			printError(err)
 			return 1
 		}
 		return 0
 	}
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("completion"))
+		printError("usage: " + cliUsage("completion"))
 		return 1
 	}
 	switch args[0] {
@@ -38,7 +38,7 @@ func cmdCompletion(args []string) int {
 	case "zsh":
 		fmt.Print(generateZshCompletion())
 	default:
-		fmt.Fprintf(os.Stderr, "unsupported shell: %s\n", args[0])
+		printErrorf("unsupported shell: %s", args[0])
 		return 1
 	}
 	return 0

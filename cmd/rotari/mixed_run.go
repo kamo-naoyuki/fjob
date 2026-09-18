@@ -9,19 +9,19 @@ import (
 	"sync"
 )
 
-func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, batchMaxActive, retry int, requestedExecutor string, executorOptions []string, selection string, jobIDs []string, referenceRunID string, progress func(JobResult, int, int, int, int)) int {
+func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, batchMaxActive, retry int, requestedExecutor string, executorOptions []string, selection string, jobIDs []string, referenceRunID string, progress func(JobResult, int, int, int, int), onStart func(JobSpec)) int {
 	queue, err := loadQueue(paths.queueFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load queue: %v\n", err)
+		printErrorf("failed to load queue: %v", err)
 		return 1
 	}
 	jobs := queueToJobs(queue.Commands)
 	if len(jobs) == 0 {
-		fmt.Fprintf(os.Stderr, "queue '%s' has no valid commands\n", paths.queueName)
+		printErrorf("queue '%s' has no valid commands", paths.queueName)
 		return 1
 	}
 	if err := validateDependencies(jobs); err != nil {
-		fmt.Fprintf(os.Stderr, "invalid dependencies: %v\n", err)
+		printErrorf("invalid dependencies: %v", err)
 		return 1
 	}
 	defaultExecutor := requestedExecutor
@@ -40,9 +40,10 @@ func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, bat
 
 	plan, err := planRerunSelection(paths, queue, selection, jobIDs, referenceRunID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to prepare job selection: %v\n", err)
+		printErrorf("failed to prepare job selection: %v", err)
 		return 1
 	}
+	expandArrayPlan(queue.Commands, jobs, plan.Execute)
 	for index := range queue.Commands {
 		if origin, ok := plan.CarriedOrigins[queue.Commands[index].ID]; ok {
 			queue.Commands[index].Origin = origin
@@ -117,7 +118,7 @@ func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, bat
 			if len(ready) == 0 {
 				break
 			}
-			waveResults := executeMixedAttempt(runDir, queue, ready, localConcurrency, batchMaxActive, requestedExecutor, executorOptions)
+			waveResults := executeMixedAttempt(runDir, queue, ready, localConcurrency, batchMaxActive, requestedExecutor, executorOptions, onStart)
 			for _, result := range waveResults {
 				finalResults[result.ID] = result
 			}
@@ -174,6 +175,20 @@ func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, bat
 	return summary.ExitCode
 }
 
+func expandArrayPlan(commands []QueuedCommand, jobs []JobSpec, execute map[string]bool) {
+	for _, command := range commands {
+		if command.Array == nil || !execute[command.ID] {
+			continue
+		}
+		delete(execute, command.ID)
+		for _, job := range jobs {
+			if job.ArrayGroup == command.ID {
+				execute[job.ID] = true
+			}
+		}
+	}
+}
+
 func prepareJobEnvironments(paths pathSet, runID string, jobs []JobSpec, runName string, localConcurrency, batchConcurrency, retry int, executorOptions []string) {
 	runDir := filepath.Join(paths.runsDir, runID)
 	cwd := ""
@@ -228,7 +243,7 @@ func prepareJobEnvironments(paths pathSet, runID string, jobs []JobSpec, runName
 				environment = append(environment, name+"="+value)
 			}
 		}
-		job.Environment = environment
+		job.Environment = mergeEnvironment(job.Environment, environment)
 	}
 }
 
@@ -260,7 +275,7 @@ func removeFinishedJobs(jobs []JobSpec, results map[string]JobResult) []JobSpec 
 	return remaining
 }
 
-func executeMixedAttempt(runDir string, queue Queue, jobs []JobSpec, localConcurrency, batchMaxActive int, requestedExecutor string, executorOptions []string) []JobResult {
+func executeMixedAttempt(runDir string, queue Queue, jobs []JobSpec, localConcurrency, batchMaxActive int, requestedExecutor string, executorOptions []string, onStart func(JobSpec)) []JobResult {
 	defaultExecutor := requestedExecutor
 	if defaultExecutor == "" {
 		defaultExecutor = queue.DefaultExecutor
@@ -289,9 +304,9 @@ func executeMixedAttempt(runDir string, queue Queue, jobs []JobSpec, localConcur
 		}
 		workers.Add(1)
 		if executorName == "local" {
-			go runLocalLane(&workers, runDir, executor, executorJobs, localConcurrency, results)
+			go runLocalLane(&workers, runDir, executor, executorJobs, localConcurrency, results, onStart)
 		} else {
-			go runBatchLane(&workers, runDir, queue, executor, executorJobs, batchMaxActive, executorOptions, results)
+			go runBatchLane(&workers, runDir, queue, executor, executorJobs, batchMaxActive, executorOptions, results, onStart)
 		}
 	}
 	workers.Wait()
@@ -305,7 +320,7 @@ func executeMixedAttempt(runDir string, queue Queue, jobs []JobSpec, localConcur
 
 // runLocalLane runs jobs concurrently up to concurrency, used for the local
 // executor where jobs are cheap OS subprocesses rather than scheduler batches.
-func runLocalLane(workers *sync.WaitGroup, runDir string, executor JobExecutor, jobs []JobSpec, concurrency int, results chan<- JobResult) {
+func runLocalLane(workers *sync.WaitGroup, runDir string, executor JobExecutor, jobs []JobSpec, concurrency int, results chan<- JobResult, onStart func(JobSpec)) {
 	defer workers.Done()
 	sem := make(chan struct{}, concurrency)
 	var jobsWait sync.WaitGroup
@@ -318,6 +333,9 @@ func runLocalLane(workers *sync.WaitGroup, runDir string, executor JobExecutor, 
 			if err != nil {
 				results <- JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 			} else {
+				if onStart != nil {
+					onStart(job)
+				}
 				results <- executor.Wait(runDir, handle)
 			}
 			<-sem
@@ -328,7 +346,7 @@ func runLocalLane(workers *sync.WaitGroup, runDir string, executor JobExecutor, 
 
 // runBatchLane submits jobs to a scheduler-style executor (Slurm, PBS, ...) in
 // waves of at most maxActive concurrently-tracked jobs.
-func runBatchLane(workers *sync.WaitGroup, runDir string, queue Queue, executor JobExecutor, jobs []JobSpec, maxActive int, executorOptions []string, results chan<- JobResult) {
+func runBatchLane(workers *sync.WaitGroup, runDir string, queue Queue, executor JobExecutor, jobs []JobSpec, maxActive int, executorOptions []string, results chan<- JobResult, onStart func(JobSpec)) {
 	defer workers.Done()
 	for start := 0; start < len(jobs); {
 		if jobs[start].ArrayGroup != "" {
@@ -350,6 +368,11 @@ func runBatchLane(workers *sync.WaitGroup, runDir string, queue Queue, executor 
 						results <- JobResult{ID: job.ID, ExitCode: 1, Error: err.Error()}
 					}
 				} else {
+					if onStart != nil {
+						for _, job := range jobs[start:end] {
+							onStart(job)
+						}
+					}
 					for _, handle := range handles {
 						results <- executor.Wait(runDir, handle)
 					}
@@ -380,6 +403,9 @@ func runBatchLane(workers *sync.WaitGroup, runDir string, queue Queue, executor 
 			if err != nil {
 				results <- JobResult{ID: job.ID, ExitCode: 1, Error: err.Error()}
 				continue
+			}
+			if onStart != nil {
+				onStart(job)
 			}
 			handles = append(handles, handle)
 		}

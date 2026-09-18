@@ -81,6 +81,9 @@ printf '123[].server\n'
 	if !strings.Contains(string(arguments), "-J\n1-2\n") {
 		t.Fatalf("qsub arguments = %q", arguments)
 	}
+	if !strings.Contains(string(arguments), "-o\n/dev/null\n") {
+		t.Fatalf("qsub arguments = %q, want PBS output files disabled", arguments)
+	}
 	wrapper, err := os.ReadFile(filepath.Join(runDir, "array-pbs-array-wrapper.sh"))
 	if err != nil {
 		t.Fatal(err)
@@ -232,7 +235,7 @@ exit 1
 		t.Fatal(err)
 	}
 
-	exitCode := executeMixedRun(paths, "run-1", "", 1, 1, 0, "", nil, "", nil, "", nil)
+	exitCode := executeMixedRun(paths, "run-1", "", 1, 1, 0, "", nil, "", nil, "", nil, nil)
 	if exitCode != 0 {
 		t.Fatalf("executeMixedRun exit code = %d, want 0", exitCode)
 	}

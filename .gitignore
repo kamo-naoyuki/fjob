@@ -16,3 +16,9 @@
 
 # NFS temporary files
 .nfs*
+
+# Slurm log
+slurm-*.out
+
+# Local Go build cache (sandbox fallback)
+/.gocache/

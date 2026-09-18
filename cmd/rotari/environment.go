@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 )
 
 const (
@@ -40,6 +42,16 @@ var propagatedEnvironmentVariables = []string{
 	envBaseDir, envProjectName, envMasterDir, envRunID, envJobID, envJobName,
 	envExecutor, envExecutorOpts, envRunName, envRunLocalConc, envRunBatchConc,
 	envRunRetry, envRunAsync, envArrayRange,
+}
+
+func validateEnvironment(environment []string) error {
+	for _, entry := range environment {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok || name == "" || strings.ContainsAny(name, " \t\n=") {
+			return errors.New("expected KEY=VALUE")
+		}
+	}
+	return nil
 }
 
 type environmentDefinition struct {
@@ -86,7 +98,7 @@ func environmentDefinitions() []environmentDefinition {
 
 func cmdEnvironment(args []string) int {
 	if len(args) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("env"))
+		printError("usage: " + cliUsage("env"))
 		return 1
 	}
 	fmt.Println("VARIABLE\tVALUE\tCLI\tJOB\tARRAY\tDESCRIPTION")

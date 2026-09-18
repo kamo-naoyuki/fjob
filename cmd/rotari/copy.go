@@ -59,7 +59,7 @@ func cmdCopy(args []string) int {
 		return 1
 	}
 	if len(fs.Args()) != 0 || *runID == "" || (*appendJobs && *overwriteJobs) {
-		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("copy"))
+		printError("usage: " + cliUsage("copy"))
 		return 1
 	}
 
@@ -75,21 +75,21 @@ func cmdCopy(args []string) int {
 
 	baseDir, queueName, err := resolveExistingRunTarget(*basedir, *queueNameOption, *runID)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	if err := ensureProjectIdle(baseDir, queueName, "copy"); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	overwriteConfirmed, err := confirmQueueOverwrite(baseDir, queueName, *appendJobs, *overwriteJobs)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	message, err := copyRunToQueue(baseDir, queueName, *runID, selection, jobIDs, *appendJobs, overwriteConfirmed)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	fmt.Println(cyan(message))

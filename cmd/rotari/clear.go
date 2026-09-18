@@ -18,64 +18,64 @@ func cmdDelete(args []string) int {
 		return 1
 	}
 	if len(fs.Args()) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("delete"))
+		printError("usage: " + cliUsage("delete"))
 		return 1
 	}
 
 	baseDir, queueName, err := resolveExistingRunTarget(*basedir, *queueNameOption, *runIDOption)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	paths, err := resolvePaths(baseDir, queueName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve paths: %v\n", err)
+		printErrorf("failed to resolve paths: %v", err)
 		return 1
 	}
 	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create queue directory: %v\n", err)
+		printErrorf("failed to create queue directory: %v", err)
 		return 1
 	}
 	release, err := acquireStateLock(paths.stateLockFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to lock queue: %v\n", err)
+		printErrorf("failed to lock queue: %v", err)
 		return 1
 	}
 	defer release()
 	running, err := isRunning(paths.lockFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to check queue: %v\n", err)
+		printErrorf("failed to check queue: %v", err)
 		return 1
 	}
 	if running {
-		fmt.Fprintf(os.Stderr, "project '%s' is running; clear is not allowed\n", queueName)
+		printErrorf("project '%s' is running; clear is not allowed", queueName)
 		return 1
 	}
 
 	if *runIDOption == "" {
 		if err := os.RemoveAll(paths.runsDir); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to clear run history: %v\n", err)
+			printErrorf("failed to clear run history: %v", err)
 			return 1
 		}
 	} else {
 		if filepath.Base(*runIDOption) != *runIDOption || *runIDOption == "." || *runIDOption == ".." {
-			fmt.Fprintf(os.Stderr, "run %q not found\n", *runIDOption)
+			printErrorf("run %q not found", *runIDOption)
 			return 1
 		}
 		runDir := filepath.Join(paths.runsDir, *runIDOption)
 		info, err := os.Stat(runDir)
 		if err != nil || !info.IsDir() {
-			fmt.Fprintf(os.Stderr, "run %q not found\n", *runIDOption)
+			printErrorf("run %q not found", *runIDOption)
 			return 1
 		}
 		if err := os.RemoveAll(runDir); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to clear run %q: %v\n", *runIDOption, err)
+			printErrorf("failed to clear run %q: %v", *runIDOption, err)
 			return 1
 		}
 	}
 	meta, err := loadMeta(paths.metaFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load metadata: %v\n", err)
+		printErrorf("failed to load metadata: %v", err)
 		return 1
 	}
 	if *runIDOption == "" || meta.LastRunID == *runIDOption {
@@ -87,7 +87,7 @@ func cmdDelete(args []string) int {
 	meta.Phase = "collecting"
 	meta.UpdatedAt = nowRFC3339()
 	if err := writeJSON(paths.metaFile, meta); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to update metadata: %v\n", err)
+		printErrorf("failed to update metadata: %v", err)
 		return 1
 	}
 	if *runIDOption == "" {

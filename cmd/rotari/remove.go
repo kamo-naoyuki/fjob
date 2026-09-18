@@ -19,18 +19,18 @@ func cmdRemove(args []string) int {
 		return 1
 	}
 	if len(fs.Args()) > 0 || (*jobName == "" && len(jobIDs) == 0) || (*jobName != "" && len(jobIDs) > 0) {
-		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("remove"))
+		printError("usage: " + cliUsage("remove"))
 		return 1
 	}
 
 	baseDir, queueName, err := resolveExistingRunTarget(*basedir, *queueNameOption, *runID)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	message, err := removeBatch(baseDir, queueName, *runID, jobIDs, *jobName)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	fmt.Println(cyan(message))
@@ -70,16 +70,20 @@ func removeBatch(baseDir, queueName, requestedRunID string, requestedJobIDs []st
 	for _, id := range requestedJobIDs {
 		removeIDs[id] = true
 	}
+	foundIDs := make(map[string]bool, len(requestedJobIDs))
 	removed := make([]QueuedCommand, 0, len(queue.Commands))
 	for _, job := range queue.Commands {
-		if removeIDs[job.ID] || (requestedJobName != "" && job.Name == requestedJobName) {
+		if removeIDs[job.ID] {
+			foundIDs[job.ID] = true
+			removed = append(removed, job)
+		} else if requestedJobName != "" && job.Name == requestedJobName {
 			removed = append(removed, job)
 		}
 	}
 	if len(removed) == 0 {
 		return "", fmt.Errorf("job not found")
 	}
-	if len(removed) != len(removeIDs) {
+	if len(requestedJobIDs) > 0 && len(foundIDs) != len(removeIDs) {
 		return "", fmt.Errorf("one or more jobs not found")
 	}
 	removedNames := make(map[string]bool, len(removed))

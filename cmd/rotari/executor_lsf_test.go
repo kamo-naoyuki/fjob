@@ -41,11 +41,12 @@ printf 'Job <123> is submitted to default queue.\n'
 func TestSubmitLSFArrayWithFakeLSF(t *testing.T) {
 	binDir := t.TempDir()
 	argumentsPath := filepath.Join(t.TempDir(), "bsub-array-args")
+	wrapperPath := filepath.Join(t.TempDir(), "bsub-array-wrapper")
 	writeExecutable(t, binDir, "bsub", fmt.Sprintf(`#!/bin/sh
-cat >/dev/null
+cat > %q
 printf 'Job <123> is submitted to default queue.\n'
 printf '%%s\n' "$@" > %q
-`, argumentsPath))
+`, wrapperPath, argumentsPath))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	runDir := t.TempDir()
 	taskOne, taskTwo := 1, 2
@@ -66,6 +67,14 @@ printf '%%s\n' "$@" > %q
 	}
 	if !strings.Contains(string(arguments), "-J\nrotari[1-2]\n") {
 		t.Fatalf("bsub arguments = %q", arguments)
+	}
+	// LSF array output is controlled by directives in the submitted wrapper.
+	wrapper, err := os.ReadFile(wrapperPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wrapper), "#BSUB -o /dev/null\n") || !strings.Contains(string(wrapper), "#BSUB -e /dev/null\n") {
+		t.Fatalf("LSF array wrapper = %q, want scheduler output files disabled", wrapper)
 	}
 }
 
@@ -241,7 +250,7 @@ exit 1
 		t.Fatal(err)
 	}
 
-	if exitCode := executeMixedRun(paths, "run-1", "", 1, 1, 0, "", nil, "", nil, "", nil); exitCode != 0 {
+	if exitCode := executeMixedRun(paths, "run-1", "", 1, 1, 0, "", nil, "", nil, "", nil, nil); exitCode != 0 {
 		t.Fatalf("executeMixedRun exit code = %d, want 0", exitCode)
 	}
 }

@@ -21,6 +21,9 @@ func cmdChange(args []string) int {
 	var executorOptions stringSliceFlag
 	cliValue(fs, &executorOptions, "executor-option")
 	clearExecutorOptions := cliBool(fs, "clear-executor-options", false)
+	var environment stringSliceFlag
+	cliValue(fs, &environment, "env")
+	clearEnvironment := cliBool(fs, "clear-env", false)
 	setJobName := cliString(fs, "set-job-name", "")
 	var dependsOn stringSliceFlag
 	cliValue(fs, &dependsOn, "depends-on")
@@ -29,22 +32,26 @@ func cmdChange(args []string) int {
 		return 1
 	}
 	if (*jobID == "" && *jobName == "") || (*jobID != "" && *jobName != "") ||
-		(len(fs.Args()) == 0 && *executor == "" && len(executorOptions) == 0 && !*clearExecutorOptions &&
+		(len(fs.Args()) == 0 && *executor == "" && len(executorOptions) == 0 && !*clearExecutorOptions && len(environment) == 0 && !*clearEnvironment &&
 			*setJobName == "" && len(dependsOn) == 0 && !*clearDependsOn) ||
 		(*executor != "" && !isKnownExecutor(*executor)) {
-		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("change"))
+		printError("usage: " + cliUsage("change"))
+		return 1
+	}
+	if err := validateEnvironment(environment); err != nil {
+		printErrorf("invalid --env: %v", err)
 		return 1
 	}
 
 	baseDir, queueName, err := resolveExistingRunTarget(*basedir, *queueNameOption, *runID)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	message, err := changeBatch(baseDir, queueName, *runID, *jobID, *jobName, *executor,
-		executorOptions, *clearExecutorOptions, *setJobName, dependsOn, *clearDependsOn, fs.Args())
+		executorOptions, *clearExecutorOptions, environment, *clearEnvironment, *setJobName, dependsOn, *clearDependsOn, fs.Args())
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	fmt.Println(cyan(message))
@@ -52,8 +59,11 @@ func cmdChange(args []string) int {
 }
 
 func changeBatch(baseDir, queueName, requestedRunID, requestedJobID, requestedJobName, executor string,
-	executorOptions []string, clearExecutorOptions bool, setJobName string, dependsOn []string,
+	executorOptions []string, clearExecutorOptions bool, environment []string, clearEnvironment bool, setJobName string, dependsOn []string,
 	clearDependsOn bool, command []string) (string, error) {
+	if err := validateEnvironment(environment); err != nil {
+		return "", fmt.Errorf("invalid environment: %w", err)
+	}
 	paths, err := resolvePaths(baseDir, queueName)
 	if err != nil {
 		return "", err
@@ -102,6 +112,9 @@ func changeBatch(baseDir, queueName, requestedRunID, requestedJobID, requestedJo
 	}
 	if len(executorOptions) > 0 || clearExecutorOptions {
 		changed.ExecutorOptions = append([]string(nil), executorOptions...)
+	}
+	if len(environment) > 0 || clearEnvironment {
+		changed.Environment = append([]string(nil), environment...)
 	}
 	if setJobName != "" && setJobName != changed.Name {
 		for index, job := range queueToJobs(queue.Commands) {

@@ -22,11 +22,11 @@ func cmdWait(args []string) int {
 	}
 	runIDs = append(runIDs, fs.Args()...)
 	if len(runIDs) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("wait"))
+		printError("usage: " + cliUsage("wait"))
 		return 1
 	}
 	if *timeout < 0 {
-		fmt.Fprintln(os.Stderr, "--timeout must be >= 0")
+		printError("--timeout must be >= 0")
 		return 1
 	}
 	deadline := time.Time{}
@@ -54,12 +54,12 @@ type waitResult struct {
 func waitForRun(basedir, queueNameOption, runID string, deadline time.Time) waitResult {
 	baseDir, queueName, err := resolveExistingRunTarget(basedir, queueNameOption, runID)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return waitResult{exitCode: 1}
 	}
 	paths, err := resolvePaths(baseDir, queueName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve paths: %v\n", err)
+		printErrorf("failed to resolve paths: %v", err)
 		return waitResult{exitCode: 1}
 	}
 	runDir := filepath.Join(paths.runsDir, runID)
@@ -70,7 +70,7 @@ func waitForRun(basedir, queueNameOption, runID string, deadline time.Time) wait
 			return waitResult{exitCode: summary.ExitCode}
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {
-			fmt.Fprintf(os.Stderr, "timed out waiting for run %s\n", runID)
+			printErrorf("timed out waiting for run %s", runID)
 			return waitResult{exitCode: 1, timedOut: true}
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -110,13 +110,11 @@ func formatRunCompletion(paths pathSet, runID string, summary RunSummary) string
 	} else {
 		title = green(title)
 	}
-	message := fmt.Sprintf("%s\n  Project: %s\n  Run: %s\n  Status: %s\n  Exit code: %d\n  Success: %d\n  Failed: %d\n  Directory: %s\n",
-		title,
-		paths.queueName, formatRunLabel(runID, summary.RunName), summary.Status, summary.ExitCode, successCount, failedCount, runDir)
+	message := title + "\n" + colorLabeledDetails(fmt.Sprintf("  Project: %s\n  Run: %s\n  Status: %s\n  Exit code: %d\n  Success: %d\n  Failed: %d\n  Directory: %s\n",
+		paths.queueName, formatRunLabel(runID, summary.RunName), summary.Status, summary.ExitCode, successCount, failedCount, runDir), summary.ExitCode != 0)
 	if failedCount > 0 {
-		message += fmt.Sprintf("\nInspect run:\n  rotari show --basedir %s --project-name %s --run-id %s\n\nSee failed job output below.\n\nFailed job output:\n%s",
-			paths.baseDir, paths.queueName, runID, failedJobHints(paths, runID, summary.Results))
-		message += fmt.Sprintf("\nRerun failed jobs:\n  rotari retry --basedir %s --project-name %s\n", paths.baseDir, paths.queueName)
+		message += colorLabeledDetails(fmt.Sprintf("\nInspect run:\n  rotari show --run-id %s\n\nSee failed job output below.\n\nFailed job output:\n%s\nRerun failed jobs:\n  rotari retry --basedir %s --project-name %s\n",
+			runID, failedJobHints(runID, summary.Results), paths.baseDir, paths.queueName), summary.ExitCode != 0)
 	}
 	return message
 }

@@ -34,17 +34,17 @@ func cmdShow(args []string) int {
 		return 1
 	}
 	if len(fs.Args()) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("show"))
+		printError("usage: " + cliUsage("show"))
 		return 1
 	}
 	baseDir, queueName, err := resolveExistingRunTarget(*basedir, *queueNameOption, *runIDOption)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	paths, err := resolvePaths(baseDir, queueName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve paths: %v\n", err)
+		printErrorf("failed to resolve paths: %v", err)
 		return 1
 	}
 	if *showRunsList {
@@ -54,7 +54,7 @@ func cmdShow(args []string) int {
 	if selectedRunID == "" {
 		state, stateRunID, err := inspectProjectRunState(paths)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to check project state: %v\n", err)
+			printErrorf("failed to check project state: %v", err)
 			return 1
 		}
 		if state == projectRunning {
@@ -65,12 +65,12 @@ func cmdShow(args []string) int {
 		} else {
 			queue, err := loadQueue(paths.queueFile)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "failed to load queue: %v\n", err)
+				printErrorf("failed to load queue: %v", err)
 				return 1
 			}
 			if len(queue.Commands) > 0 {
 				if *showLogs || *showFailedLogs || *failedOnly {
-					fmt.Fprintln(os.Stderr, "logs and failed filters require --run-id")
+					printError("logs and failed filters require --run-id")
 					return 1
 				}
 				if *jobIDOption != "" {
@@ -82,13 +82,13 @@ func cmdShow(args []string) int {
 	}
 	runID, err := selectRunID(paths, selectedRunID)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	if *jobIDOption != "" {
 		running, err := isRunning(paths.lockFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to check queue state: %v\n", err)
+			printErrorf("failed to check queue state: %v", err)
 			return 1
 		}
 		if shouldFollowLogs(*followLogs, running, isTerminal(os.Stdout)) {
@@ -99,7 +99,7 @@ func cmdShow(args []string) int {
 		})
 	}
 	if *followLogs {
-		fmt.Fprintln(os.Stderr, "--follow requires --job-id")
+		printError("--follow requires --job-id")
 		return 1
 	}
 	if *showLogs || *showFailedLogs {
@@ -125,7 +125,7 @@ func showWithPager(usePager bool, show func(io.Writer) int) int {
 	writer := &pagerWriter{output: os.Stdout}
 	exitCode := show(writer)
 	if err := writer.Close(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		if exitCode == 0 {
 			return 1
 		}
@@ -284,7 +284,7 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 	summaryOK := err == nil
 	if err == nil {
 		if err := json.Unmarshal(summaryData, &summary); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to read summary: %v\n", err)
+			printErrorf("failed to read summary: %v", err)
 			return 1
 		}
 	}
@@ -296,7 +296,7 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 	}
 	fmt.Printf("%s %s\n", cyan("Directory:"), runDir)
 	if summaryOK {
-		fmt.Printf("%s %s\n%s %s\n%s %s\n%s %d\n", cyan("Status:"), summary.Status, cyan("Started:"), summary.StartedAt, cyan("Finished:"), summary.FinishedAt, cyan("Exit code:"), summary.ExitCode)
+		fmt.Printf("%s %s\n%s %s\n%s %s\n%s %d\n", cyan("Status:"), summary.Status, cyan("Started:"), formatDisplayTimestamp(summary.StartedAt), cyan("Finished:"), formatDisplayTimestamp(summary.FinishedAt), cyan("Exit code:"), summary.ExitCode)
 	}
 	fmt.Printf("%s %s\n", cyan("Output directory:"), runDir)
 	queue, queueErr := loadQueue(paths.queueFile)
@@ -324,7 +324,7 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 	} else {
 		entries, err := os.ReadDir(runDir)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to read run directory: %v\n", err)
+			printErrorf("failed to read run directory: %v", err)
 			return 1
 		}
 		for _, entry := range entries {
@@ -356,8 +356,14 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		status, statusOK := readJobStatus(filepath.Join(runDir, jobID, "status"))
 		blocked := false
 		if !statusOK {
-			if slurm, ok := loadSlurmStatus(filepath.Join(runDir, jobID, "status.json")); ok && slurmStatusTerminal(slurm.Phase) {
+			if slurm, ok := loadSlurmStatus(filepath.Join(runDir, jobID, "status.json")); ok && jobStatusTerminal(slurm) {
 				status = slurm.ExitCode
+				statusOK = true
+			}
+		}
+		if !statusOK {
+			if schedulerState, ok := loadTerminalSchedulerState(filepath.Join(runDir, jobID)); ok {
+				status = schedulerState
 				statusOK = true
 			}
 		}
@@ -386,6 +392,8 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 			command = strings.Join(jobSpec.Command, " ")
 		}
 		submittedAt, finishedAt := readShowJobTimestamps(runDir, jobID, originByID[jobID])
+		submittedAt = formatDisplayTimestamp(submittedAt)
+		finishedAt = formatDisplayTimestamp(finishedAt)
 		if statusOK {
 			statusText := green(strconv.Itoa(status))
 			if blocked {
@@ -399,8 +407,24 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		}
 	}
 	printChangeHints(paths, runID, runQueue, changeHints)
+	printFailedLogHints(runID, changeHints)
 	fmt.Printf("\n%s\n  rotari delete --run-id %s\n", cyan("To delete this run's saved logs:"), runID)
 	return 0
+}
+
+func printFailedLogHints(runID string, failedJobs []JobSpec) {
+	if len(failedJobs) == 0 {
+		return
+	}
+	selector := "--job-id JOB_ID"
+	if len(failedJobs) == 1 {
+		selector = "--job-id " + failedJobs[0].ID
+	}
+	fmt.Println("\n" + cyan("Logs:"))
+	fmt.Println("  " + cyan("e.g., Show logs for every failed job:"))
+	fmt.Printf("    rotari show --run-id %s --failed-logs\n", runID)
+	fmt.Println("  " + cyan("e.g., Show the log for one failed job:"))
+	fmt.Printf("    rotari show --run-id %s %s\n", runID, selector)
 }
 
 func printChangeHints(paths pathSet, runID string, queue Queue, jobs []JobSpec) {
@@ -436,7 +460,7 @@ func printChangeHints(paths pathSet, runID string, queue Queue, jobs []JobSpec) 
 		fmt.Println("  " + cyan("e.g., Replace the dependencies:"))
 		fmt.Printf("    rotari change --run-id %s %s --depends-on <job-name>\n", runID, selector)
 	}
-	fmt.Println("\n" + cyan("Rerun:"))
+	fmt.Println("\n" + cyan("Retry:"))
 	fmt.Printf("    rotari retry --basedir %s --project-name %s\n", paths.baseDir, paths.queueName)
 }
 
@@ -478,7 +502,7 @@ func showQueueJob(paths pathSet, queue Queue, jobID string) int {
 		fmt.Printf("Command: %s\n", strings.Join(job.Command, " "))
 		return 0
 	}
-	fmt.Fprintf(os.Stderr, "job %q not found in current queue\n", jobID)
+	printErrorf("job %q not found in current queue", jobID)
 	return 1
 }
 
@@ -585,7 +609,7 @@ func showRuns(paths pathSet) int {
 			fmt.Println("No runs found.")
 			return 0
 		}
-		fmt.Fprintf(os.Stderr, "failed to read runs directory: %v\n", err)
+		printErrorf("failed to read runs directory: %v", err)
 		return 1
 	}
 
@@ -648,10 +672,12 @@ func showRuns(paths pathSet) int {
 		if started == "" {
 			started = "-"
 		}
+		started = formatDisplayTimestamp(started)
 		finished := r.finishedAt
 		if finished == "" {
 			finished = "-"
 		}
+		finished = formatDisplayTimestamp(finished)
 		statusText := r.status
 		if statusText == "finished" {
 			statusText = green(statusText)
@@ -681,6 +707,22 @@ func colorExecutor(executor string) string {
 		return cyan(executor)
 	default:
 		return yellow(executor)
+	}
+}
+
+func jobStatusTerminal(status slurmStatus) bool {
+	return status.FinishedAt != "" || slurmStatusTerminal(status.Phase)
+}
+
+func loadTerminalSchedulerState(jobDir string) (int, bool) {
+	state := strings.ToLower(loadSchedulerStatus(jobDir))
+	switch state {
+	case "completed", "complete", "success", "succeeded":
+		return 0, true
+	case "failed", "cancelled", "canceled", "timeout", "out_of_memory", "oom":
+		return 1, true
+	default:
+		return 0, false
 	}
 }
 
@@ -801,7 +843,7 @@ func showJob(writer io.Writer, paths pathSet, runID, jobID string) int {
 			fmt.Fprintf(writer, "%s carried forward from run %s (no re-execution)\n\n", cyan("Note:"), origin.RunID)
 			return showJob(writer, paths, origin.RunID, origin.JobID)
 		}
-		fmt.Fprintf(os.Stderr, "job %q not found in run %q\n", jobID, runID)
+		printErrorf("job %q not found in run %q", jobID, runID)
 		return 1
 	}
 	writeShowTargetHeader(writer, paths)
@@ -825,8 +867,8 @@ func showJob(writer io.Writer, paths pathSet, runID, jobID string) int {
 	if dependencies := jobSpecs[jobID].DependsOn; len(dependencies) > 0 {
 		fmt.Fprintf(writer, "%s %s\n", cyan("Depends on:"), strings.Join(dependencies, ", "))
 	}
-	fmt.Fprintf(writer, "%s %s\n", cyan("Submitted:"), readSubmittedAt(runDir, jobID))
-	fmt.Fprintf(writer, "%s %s\n", cyan("Finished:"), readFinishedAt(runDir, jobID))
+	fmt.Fprintf(writer, "%s %s\n", cyan("Submitted:"), formatDisplayTimestamp(readSubmittedAt(runDir, jobID)))
+	fmt.Fprintf(writer, "%s %s\n", cyan("Finished:"), formatDisplayTimestamp(readFinishedAt(runDir, jobID)))
 	if summary, err := loadRunSummary(filepath.Join(runDir, "summary.json")); err == nil {
 		for _, result := range summary.Results {
 			if result.ID == jobSpecs[jobID].ID {
@@ -907,7 +949,7 @@ func showRunLogs(writer io.Writer, paths pathSet, runID string, failedOnly bool)
 	runDir := filepath.Join(paths.runsDir, runID)
 	entries, err := os.ReadDir(runDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to read run directory: %v\n", err)
+		printErrorf("failed to read run directory: %v", err)
 		return 1
 	}
 	jobSpecs := loadRunJobSpecs(runDir)
@@ -923,7 +965,7 @@ func showRunLogs(writer io.Writer, paths pathSet, runID string, failedOnly bool)
 
 		status, statusOK := readJobStatus(filepath.Join(jobDir, "status"))
 		if !statusOK {
-			if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok && slurmStatusTerminal(slurm.Phase) {
+			if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok && jobStatusTerminal(slurm) {
 				status = slurm.ExitCode
 				statusOK = true
 			}
@@ -943,17 +985,20 @@ func showRunLogs(writer io.Writer, paths pathSet, runID string, failedOnly bool)
 		if name != "" {
 			header += fmt.Sprintf(" (Name: %s)", name)
 		}
+		headerColor := cyan
 		if statusOK {
 			if status == 0 {
 				header += fmt.Sprintf(" [Status: %d (success)]", status)
+				headerColor = green
 			} else {
 				header += fmt.Sprintf(" [Status: %d (failed)]", status)
+				headerColor = red
 			}
 		} else {
 			header += " [Status: running]"
 		}
 		header += " ==="
-		fmt.Fprintln(writer, cyan(header))
+		fmt.Fprintln(writer, headerColor(header))
 		fmt.Fprintf(writer, "Command: %s\n", command)
 		fmt.Fprintf(writer, "Output path: %s\n", filepath.Join(jobDir, "output"))
 
@@ -990,7 +1035,14 @@ func showRunLogs(writer io.Writer, paths pathSet, runID string, failedOnly bool)
 				header += fmt.Sprintf(" (Name: %s)", command.Name)
 			}
 			header += fmt.Sprintf(" [carried forward from run %s: %s] ===", command.Origin.RunID, command.Origin.Status)
-			fmt.Fprintln(writer, cyan(header))
+			headerColor := cyan
+			switch command.Origin.Status {
+			case "failed":
+				headerColor = red
+			case "success":
+				headerColor = green
+			}
+			fmt.Fprintln(writer, headerColor(header))
 			fmt.Fprintf(writer, "Command: %s\n", strings.Join(command.Command, " "))
 			originDir := filepath.Join(paths.runsDir, command.Origin.RunID, command.Origin.JobID)
 			fmt.Fprintf(writer, "Output path: %s\n", filepath.Join(originDir, "output"))
@@ -1025,7 +1077,7 @@ func followJobLog(writer io.Writer, paths pathSet, runID, jobID string) int {
 			}
 			return 0
 		}
-		fmt.Fprintf(os.Stderr, "failed to read job output: %v\n", err)
+		printErrorf("failed to read job output: %v", err)
 		return 1
 	}
 	if _, err := writer.Write(output); err != nil {
@@ -1036,7 +1088,7 @@ func followJobLog(writer io.Writer, paths pathSet, runID, jobID string) int {
 		data, err := os.ReadFile(outputPath)
 		if err != nil {
 			if !os.IsNotExist(err) {
-				fmt.Fprintf(os.Stderr, "failed to read job output: %v\n", err)
+				printErrorf("failed to read job output: %v", err)
 				return 1
 			}
 			continue
@@ -1050,7 +1102,7 @@ func followJobLog(writer io.Writer, paths pathSet, runID, jobID string) int {
 		statusPath := filepath.Join(jobDir, "status")
 		status, statusOK := readJobStatus(statusPath)
 		if !statusOK {
-			if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok && slurmStatusTerminal(slurm.Phase) {
+			if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok && jobStatusTerminal(slurm) {
 				status = slurm.ExitCode
 				statusOK = true
 			}

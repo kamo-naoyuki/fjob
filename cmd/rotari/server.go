@@ -31,6 +31,7 @@ type serverRequest struct {
 	Async            bool       `json:"async,omitempty"`
 	Executor         string     `json:"executor,omitempty"`
 	ExecutorOptions  []string   `json:"executor_options,omitempty"`
+	Environment      []string   `json:"environment,omitempty"`
 	JobIDs           []string   `json:"job_ids,omitempty"`
 	Selection        string     `json:"selection,omitempty"`
 	SourceRunID      string     `json:"source_run_id,omitempty"`
@@ -80,7 +81,7 @@ func serverPIDPath(baseDir string) string {
 
 func cmdServer(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("server"))
+		printError("usage: " + cliUsage("server"))
 		return 1
 	}
 
@@ -92,7 +93,7 @@ func cmdServer(args []string) int {
 	case "list":
 		return cmdServerList(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown server command: %s\n", args[0])
+		printErrorf("unknown server command: %s", args[0])
 		return 1
 	}
 }
@@ -147,12 +148,12 @@ func cmdServerStatus(args []string) int {
 	}
 	baseDir, _, err := resolveBaseDir(*basedir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
+		printErrorf("failed to resolve state directory: %v", err)
 		return 1
 	}
 	response, err := sendServerRequest(baseDir, serverRequest{Op: "ping"})
 	if err != nil || !response.OK {
-		fmt.Fprintln(os.Stderr, "server is not running")
+		printError("server is not running")
 		return 1
 	}
 	fmt.Printf("server is running pid=%d state=%s\n", response.PID, baseDir)
@@ -168,12 +169,12 @@ func cmdServerList(args []string) int {
 	}
 	masterDir, err := resolveMasterDir(*masterdir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve master directory: %v\n", err)
+		printErrorf("failed to resolve master directory: %v", err)
 		return 1
 	}
 	servers, err := listServers(masterDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to list servers: %v\n", err)
+		printErrorf("failed to list servers: %v", err)
 		return 1
 	}
 	fmt.Printf("master=%s\n%s\n", masterDir, formatServerList(servers))
@@ -189,16 +190,16 @@ func cmdServerRequest(args []string, op string) int {
 	}
 	baseDir, _, err := resolveBaseDir(*basedir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
+		printErrorf("failed to resolve state directory: %v", err)
 		return 1
 	}
 	response, err := sendServerRequest(baseDir, serverRequest{Op: op})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to contact server: %v\n", err)
+		printErrorf("failed to contact server: %v", err)
 		return 1
 	}
 	if !response.OK {
-		fmt.Fprintln(os.Stderr, response.Message)
+		printError(response.Message)
 		return 1
 	}
 	fmt.Print(colorMessage(response.Message))
@@ -213,6 +214,8 @@ func cmdAdd(args []string) int {
 	executor := cliString(fs, "executor", "")
 	var executorOptions stringSliceFlag
 	cliValue(fs, &executorOptions, "executor-option")
+	var environment stringSliceFlag
+	cliValue(fs, &environment, "env")
 	jobName := cliString(fs, "job-name", "")
 	var dependsOn stringSliceFlag
 	cliValue(fs, &dependsOn, "depends-on")
@@ -223,31 +226,35 @@ func cmdAdd(args []string) int {
 	}
 	left := fs.Args()
 	if len(left) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("add"))
+		printError("usage: " + cliUsage("add"))
 		return 1
 	}
 	var array *ArraySpec
 	if *arrayRange != "" {
 		parsed, parseErr := parseArrayRange(*arrayRange)
 		if parseErr != nil {
-			fmt.Fprintf(os.Stderr, "invalid --array: %v\n", parseErr)
+			printErrorf("invalid --array: %v", parseErr)
 			return 1
 		}
 		array = &parsed
 	}
 	baseDir, _, err := resolveBaseDir(*basedir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
+		printErrorf("failed to resolve state directory: %v", err)
 		return 1
 	}
 	queueName, err := resolveProjectName(baseDir, *queueNameOption)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
-	message, err := enqueueCommand(baseDir, queueName, left, *executor, executorOptions, *jobName, dependsOn, array)
+	if err := validateEnvironment(environment); err != nil {
+		printErrorf("invalid --env: %v", err)
+		return 1
+	}
+	message, err := enqueueCommand(baseDir, queueName, left, *executor, executorOptions, environment, *jobName, dependsOn, array)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	fmt.Println(cyan(message))
@@ -290,16 +297,16 @@ func cmdRun(args []string) int {
 		selection = "job-id"
 	}
 	if len(left) != 0 || *localConcurrency < 1 || *batchConcurrency < 1 || *retry < -1 || (*overwriteQueue && *runIDOption == "") {
-		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("run"))
+		printError("usage: " + cliUsage("run"))
 		return 1
 	}
 	baseDir, queueName, err := resolveExistingRunTarget(*basedir, *queueNameOption, *runIDOption)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	if err := ensureProjectIdle(baseDir, queueName, "run"); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 
@@ -315,22 +322,22 @@ func cmdRun(args []string) int {
 	if sourceRunID == "" && selection != "" {
 		paths, pathErr := resolvePaths(baseDir, queueName)
 		if pathErr != nil {
-			fmt.Fprintln(os.Stderr, pathErr)
+			printError(pathErr)
 			return 1
 		}
 		meta, metaErr := loadMeta(paths.metaFile)
 		if metaErr != nil {
-			fmt.Fprintf(os.Stderr, "failed to load metadata: %v\n", metaErr)
+			printErrorf("failed to load metadata: %v", metaErr)
 			return 1
 		}
 		if meta.LastRunID == "" {
-			fmt.Fprintf(os.Stderr, "queue %q has no previous run\n", queueName)
+			printErrorf("queue %q has no previous run", queueName)
 			return 1
 		}
 		sourceRunID = meta.LastRunID
 		queue, queueErr := loadQueue(paths.queueFile)
 		if queueErr != nil {
-			fmt.Fprintf(os.Stderr, "failed to load queue: %v\n", queueErr)
+			printErrorf("failed to load queue: %v", queueErr)
 			return 1
 		}
 		forceCopy = len(queue.Commands) == 0
@@ -340,24 +347,24 @@ func cmdRun(args []string) int {
 		// queue (the common "auto-copy" case) is overwritten silently.
 		overwriteConfirmed, confirmErr := confirmQueueOverwrite(baseDir, queueName, false, *overwriteQueue)
 		if confirmErr != nil {
-			fmt.Fprintln(os.Stderr, confirmErr)
+			printError(confirmErr)
 			return 1
 		}
 		message, copyErr := copyRunToQueue(baseDir, queueName, sourceRunID, "all", nil, false, overwriteConfirmed)
 		if copyErr != nil {
-			fmt.Fprintln(os.Stderr, copyErr)
+			printError(copyErr)
 			return 1
 		}
 		fmt.Println(cyan(message))
 	}
 
 	if err := ensureServer(baseDir); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to determine working directory: %v\n", err)
+		printErrorf("failed to determine working directory: %v", err)
 		return 1
 	}
 	request := serverRequest{
@@ -372,11 +379,11 @@ func cmdRun(args []string) int {
 		response, err = sendRunRequest(baseDir, request)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to contact server: %v\n", err)
+		printErrorf("failed to contact server: %v", err)
 		return 1
 	}
 	if !response.OK {
-		fmt.Fprintln(os.Stderr, response.Message)
+		printError(response.Message)
 		return 1
 	}
 	fmt.Print(colorMessage(response.Message))
@@ -396,7 +403,7 @@ func cmdServerProcess(args []string) int {
 	}
 	baseDir, _, err := resolveBaseDir(*basedir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
+		printErrorf("failed to resolve state directory: %v", err)
 		return 1
 	}
 	return runServer(baseDir)
@@ -404,17 +411,17 @@ func cmdServerProcess(args []string) int {
 
 func runServer(baseDir string) int {
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create state directory: %v\n", err)
+		printErrorf("failed to create state directory: %v", err)
 		return 1
 	}
 	lease, err := os.OpenFile(serverLockPath(baseDir), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to open server lock: %v\n", err)
+		printErrorf("failed to open server lock: %v", err)
 		return 1
 	}
 	defer lease.Close()
 	if err := syscall.Flock(int(lease.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		fmt.Fprintln(os.Stderr, "server is already running")
+		printError("server is already running")
 		return 1
 	}
 
@@ -422,18 +429,18 @@ func runServer(baseDir string) int {
 	_ = os.Remove(socketPath)
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to listen on server socket: %v\n", err)
+		printErrorf("failed to listen on server socket: %v", err)
 		return 1
 	}
 	defer os.Remove(socketPath)
 	defer os.Remove(serverPIDPath(baseDir))
 	if err := os.WriteFile(serverPIDPath(baseDir), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to write server pid: %v\n", err)
+		printErrorf("failed to write server pid: %v", err)
 		return 1
 	}
 	masterDir, err := resolveMasterDir("")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve master directory: %v\n", err)
+		printErrorf("failed to resolve master directory: %v", err)
 		return 1
 	}
 	record := serverRecord{
@@ -441,7 +448,7 @@ func runServer(baseDir string) int {
 		StartedAt: nowRFC3339(), LastSeen: nowRFC3339(),
 	}
 	if err := registerServer(masterDir, record); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to register server: %v\n", err)
+		printErrorf("failed to register server: %v", err)
 		return 1
 	}
 	defer unregisterServer(masterDir, baseDir)
@@ -521,7 +528,7 @@ func (server *rotariServer) handle(baseDir string, conn net.Conn) {
 	case "ping":
 		response = serverResponse{OK: true, PID: os.Getpid(), Protocol: serverProtocolVersion}
 	case "submit":
-		message, err := enqueueCommand(baseDir, request.QueueName, request.Command, request.Executor, request.ExecutorOptions, request.JobName, request.DependsOn, request.Array)
+		message, err := enqueueCommand(baseDir, request.QueueName, request.Command, request.Executor, request.ExecutorOptions, request.Environment, request.JobName, request.DependsOn, request.Array)
 		response = serverResponse{OK: err == nil, Message: message}
 		if err != nil {
 			response.Message = err.Error()
@@ -615,34 +622,34 @@ func cmdCancel(args []string) int {
 		return 1
 	}
 	if len(fs.Args()) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: "+cliUsage("cancel"))
+		printError("usage: " + cliUsage("cancel"))
 		return 1
 	}
 	if len(jobIDs) > 0 && *wait {
-		fmt.Fprintln(os.Stderr, "--wait may not be used with --job-id")
+		printError("--wait may not be used with --job-id")
 		return 1
 	}
 	baseDir, _, err := resolveBaseDir(*basedir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
+		printErrorf("failed to resolve state directory: %v", err)
 		return 1
 	}
 	queueName, err := resolveProjectName(baseDir, *queueNameOption)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	if err := ensureServer(baseDir); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	response, err := sendServerRequest(baseDir, serverRequest{Op: "cancel", QueueName: queueName, JobIDs: jobIDs, Wait: *wait})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to contact server: %v\n", err)
+		printErrorf("failed to contact server: %v", err)
 		return 1
 	}
 	if !response.OK {
-		fmt.Fprintln(os.Stderr, response.Message)
+		printError(response.Message)
 		return 1
 	}
 	fmt.Println(response.Message)
@@ -660,30 +667,30 @@ func cmdJobSignal(args []string, operation string) int {
 		return 1
 	}
 	if len(fs.Args()) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: "+cliUsage(operation))
+		printError("usage: " + cliUsage(operation))
 		return 1
 	}
 	baseDir, _, err := resolveBaseDir(*basedir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve state directory: %v\n", err)
+		printErrorf("failed to resolve state directory: %v", err)
 		return 1
 	}
 	queueName, err := resolveProjectName(baseDir, *queueNameOption)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	if err := ensureServer(baseDir); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		printError(err)
 		return 1
 	}
 	response, err := sendServerRequest(baseDir, serverRequest{Op: operation, QueueName: queueName, JobIDs: jobIDs})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to contact server: %v\n", err)
+		printErrorf("failed to contact server: %v", err)
 		return 1
 	}
 	if !response.OK {
-		fmt.Fprintln(os.Stderr, response.Message)
+		printError(response.Message)
 		return 1
 	}
 	fmt.Println(response.Message)
@@ -773,11 +780,15 @@ func sendRunRequest(baseDir string, request serverRequest) (serverResponse, erro
 		if response.Progress {
 			if response.Message != "" {
 				if strings.HasPrefix(response.Message, "Job failed") {
-					fmt.Printf("%s\n", red(response.Message))
+					title, details, _ := strings.Cut(response.Message, "\n")
+					fmt.Printf("%s\n%s\n", red(title), colorLabeledDetails(details, true))
 				} else if strings.HasPrefix(response.Message, "Retrying job") {
 					fmt.Printf("%s\n", yellow(response.Message))
 				} else if strings.HasPrefix(response.Message, "Run started:") {
 					fmt.Printf("%s\n", cyan(response.Message))
+				} else if strings.HasPrefix(response.Message, "Job running:") {
+					title, details, _ := strings.Cut(response.Message, "\n")
+					fmt.Printf("%s\n%s\n", cyan(title), colorLabeledDetails(details, false))
 				} else {
 					fmt.Printf("%s\n", yellow(response.Message))
 				}
@@ -933,37 +944,30 @@ func cancelQueueJobs(baseDir, queueName string, jobIDs []string, wait bool) (str
 	if err := markQueueCancelling(paths); err != nil {
 		return "", err
 	}
-	metadataPath := filepath.Join(runDir, "slurm_jobs.json")
-	if metadata, err := os.ReadFile(metadataPath); err == nil {
-		var jobs []slurmJobMetadata
-		if err := json.Unmarshal(metadata, &jobs); err != nil {
-			return "", fmt.Errorf("invalid Slurm metadata: %w", err)
-		}
-		for _, job := range jobs {
-			if _, err := runSlurmCommand("scancel", job.SlurmJobID); err != nil {
-				return "", fmt.Errorf("scancel %s: %w", job.SlurmJobID, err)
-			}
-		}
-		return finishCancelMessage(fmt.Sprintf("Cancel requested\n  Project: %s\n  Run: %s\n  Slurm jobs: %d", queueName, lock.RunID, len(jobs)), paths, queueName, lock.RunID, wait)
-	}
-
 	if lock.PID == os.Getpid() {
-		cancelled := 0
-		entries, _ := os.ReadDir(runDir)
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			pidData, err := os.ReadFile(filepath.Join(runDir, entry.Name(), "pid"))
-			if err != nil {
-				continue
-			}
-			pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
-			if err == nil && syscall.Kill(pid, syscall.SIGTERM) == nil {
-				cancelled++
+		// Cancel every still-running job directly through its owning
+		// executor (job.json for schedulers, pid file for local), instead of
+		// relying on an aggregate metadata file that schedulers only write
+		// once the whole run finishes -- otherwise a cancel issued mid-run
+		// never reaches an already-submitted Slurm/PBS/LSF job.
+		var commandSnapshot Queue
+		if data, err := os.ReadFile(filepath.Join(runDir, "commands.json")); err == nil {
+			if err := json.Unmarshal(data, &commandSnapshot); err != nil {
+				return "", fmt.Errorf("invalid command snapshot: %w", err)
 			}
 		}
-		return finishCancelMessage(fmt.Sprintf("Cancel requested\n  Project: %s\n  Run: %s\n  Local jobs: %d", queueName, lock.RunID, cancelled), paths, queueName, lock.RunID, wait)
+		targets := make([]string, 0, len(commandSnapshot.Commands))
+		for _, job := range queueToJobs(commandSnapshot.Commands) {
+			if jobFinished(filepath.Join(runDir, job.ID)) {
+				continue
+			}
+			targets = append(targets, job.ID)
+		}
+		message, err := cancelJobs(runDir, queueName, lock.RunID, targets)
+		if err != nil {
+			return "", err
+		}
+		return finishCancelMessage(message, paths, queueName, lock.RunID, wait)
 	}
 	if err := syscall.Kill(-lock.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return "", fmt.Errorf("cancel local worker: %w", err)
@@ -1052,11 +1056,11 @@ func finishCancelMessage(message string, paths pathSet, queueName, runID string,
 			time.Sleep(500 * time.Millisecond)
 		}
 	}
-	message += fmt.Sprintf("\n\nInspect status:\n  rotari show --basedir %s --project-name %s --run-id %s", paths.baseDir, queueName, runID)
+	message += fmt.Sprintf("\n\nInspect status:\n  rotari show --run-id %s", runID)
 	return message, nil
 }
 
-func enqueueCommand(baseDir, queueName string, command []string, executor string, executorOptions []string, jobName string, dependsOn []string, arrays ...*ArraySpec) (string, error) {
+func enqueueCommand(baseDir, queueName string, command []string, executor string, executorOptions, environment []string, jobName string, dependsOn []string, arrays ...*ArraySpec) (string, error) {
 	if queueName == "" || len(command) == 0 {
 		return "", errors.New("project name and command are required")
 	}
@@ -1086,17 +1090,14 @@ func enqueueCommand(baseDir, queueName string, command []string, executor string
 	if executor != "" && !isKnownExecutor(executor) {
 		return "", fmt.Errorf("unsupported executor: %s", executor)
 	}
-	if executor != "" && queue.DefaultExecutor == "" {
-		queue.DefaultExecutor = executor
-		queue.DefaultExecutorOptions = append([]string(nil), executorOptions...)
-	}
 	var array *ArraySpec
 	if len(arrays) > 0 {
 		array = arrays[0]
 	}
-	queue.Commands = append(queue.Commands, QueuedCommand{
-		ID: makeJobID(), Command: command, Executor: executor, ExecutorOptions: executorOptions, Name: jobName, DependsOn: dependsOn, Array: array,
-	})
+	job := QueuedCommand{
+		ID: makeJobID(), Command: command, Executor: executor, ExecutorOptions: executorOptions, Environment: environment, Name: jobName, DependsOn: dependsOn, Array: array,
+	}
+	queue.Commands = append(queue.Commands, job)
 	if err := writeJSON(paths.queueFile, queue); err != nil {
 		return "", err
 	}
@@ -1105,7 +1106,11 @@ func enqueueCommand(baseDir, queueName string, command []string, executor string
 	if err := writeJSON(paths.metaFile, meta); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("submitted project=%s command=%s", queueName, joinCommand(command)), nil
+	message := fmt.Sprintf("submitted project=%s job_id=%s", queueName, job.ID)
+	if job.Name != "" {
+		message += fmt.Sprintf(" job_name=%s", job.Name)
+	}
+	return fmt.Sprintf("%s command=%s", message, joinCommand(command)), nil
 }
 
 func startServerRun(baseDir, queueName, runName string, localConcurrency, batchMaxActive, retry int, executor string, executorOptions []string, selection string, jobIDs []string, sourceRunID string, onDone func(), cwd string) (string, error) {
@@ -1135,6 +1140,9 @@ func startServerRun(baseDir, queueName, runName string, localConcurrency, batchM
 	if err != nil {
 		return "", err
 	}
+	if err := validateQueueDependencies(queue); err != nil {
+		return "", err
+	}
 	if len(queue.Commands) == 0 {
 		return "", fmt.Errorf("queue %q has no queued commands", queueName)
 	}
@@ -1143,8 +1151,8 @@ func startServerRun(baseDir, queueName, runName string, localConcurrency, batchM
 		return "", errors.New("queue is already running")
 	}
 	runDir := filepath.Join(paths.runsDir, runID)
-	return fmt.Sprintf("Run started:\n  Project: %s\n  Run: %s\n  Directory: %s\n\nCheck status:\n  rotari show --basedir %s --project-name %s --run-id %s\n\nCancel run:\n  rotari cancel --basedir %s --project-name %s",
-		queueName, formatRunLabel(runID, runName), runDir, paths.baseDir, queueName, runID, paths.baseDir, queueName), nil
+	return fmt.Sprintf("Run started:\n  Project: %s\n  Run: %s\n  Directory: %s\n\nCheck status:\n  rotari show --run-id %s\n\nCancel run:\n  rotari cancel --basedir %s --project-name %s",
+		queueName, formatRunLabel(runID, runName), runDir, runID, paths.baseDir, queueName), nil
 }
 
 func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMaxActive, retry int, executor string, executorOptions []string, selection string, jobIDs []string, sourceRunID string, progress func(serverResponse), cwd string) (string, int, error) {
@@ -1172,6 +1180,10 @@ func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMa
 	}
 	queue, err := loadQueue(paths.queueFile)
 	if err != nil {
+		release()
+		return "", 1, err
+	}
+	if err := validateQueueDependencies(queue); err != nil {
 		release()
 		return "", 1, err
 	}
@@ -1208,9 +1220,17 @@ func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMa
 		release()
 		return "", 1, err
 	}
+	plan, err := planRerunSelection(paths, queue, selection, jobIDs, sourceRunID)
+	if err != nil {
+		_ = os.Remove(paths.lockFile)
+		release()
+		return "", 1, err
+	}
+	submitted := len(plan.Execute)
+	excluded := len(queue.Commands) - submitted
 	release()
 	if progress != nil {
-		progress(serverResponse{Progress: true, Message: fmt.Sprintf("Run started: run_id=%s", runID)})
+		progress(serverResponse{Progress: true, Message: fmt.Sprintf("Run started: run_id=%s submitted=%d excluded=%d total=%d", runID, submitted, excluded, len(queue.Commands))})
 	}
 
 	stopLoadSampling := startRunLoadSampling(paths, runID)
@@ -1222,14 +1242,25 @@ func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMa
 				if retry > 0 {
 					failureTitle = "Job failed after retry:"
 				}
-				message = fmt.Sprintf("%s\n  ID: %s\n  Command: %s\n  Show output:\n    rotari show --basedir %s --project-name %s --run-id %s --job-id %s",
+				message = fmt.Sprintf("%s\n  ID: %s\n  Command: %s\n  Show output:\n    rotari show --run-id %s --job-id %s",
 					failureTitle,
-					result.ID, strings.Join(result.Command, " "), paths.baseDir, paths.queueName, runID, result.ID)
+					result.ID, strings.Join(result.Command, " "), runID, result.ID)
 			} else if strings.HasPrefix(result.Error, "retry:") {
 				message = fmt.Sprintf("Retrying job: attempt=%s job=%s command=%v", strings.TrimPrefix(result.Error, "retry:"), result.ID, result.Command)
 			}
 			progress(serverResponse{OK: true, Progress: true, Message: message, JobID: result.ID, Completed: completed, Total: total, Succeeded: succeeded, Failed: failed})
 		}
+	}, func(job JobSpec) {
+		if progress == nil {
+			return
+		}
+		name := job.Name
+		if name == "" {
+			name = "-"
+		}
+		message := fmt.Sprintf("Job running:\n  ID: %s\n  Name: %s\n  Show:\n    rotari show --run-id %s --job-id %s",
+			job.ID, name, runID, job.ID)
+		progress(serverResponse{OK: true, Progress: true, Message: message, JobID: job.ID})
 	})
 	stopLoadSampling()
 	if err := finishRunContext(paths, runID); err != nil {

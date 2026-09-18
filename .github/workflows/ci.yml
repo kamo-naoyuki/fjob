@@ -34,10 +34,17 @@ jobs:
         run: go vet ./...
 
       - name: Run tests
-        run: go test ./...
+        run: go test -coverprofile=coverage.out ./...
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.out
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
       - name: Build
         run: go build ./cmd/rotari
 
       - name: Check example script
-        run: bash -n example.sh
+        run: bash -n scripts/example.sh

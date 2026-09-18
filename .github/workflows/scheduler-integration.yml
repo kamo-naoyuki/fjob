@@ -86,22 +86,29 @@ jobs:
       - name: Run unit tests
         run: go test ./...
 
+      - name: Run scheduler container unit tests
+        env:
+          ROTARI_SCHEDULER_CONTAINER_TEST: "1"
+          ROTARI_SCHEDULER_EXECUTOR: ${{ matrix.executor }}
+        run: go test ./cmd/rotari -run '^TestSchedulerContainer' -count=1
+
       - name: Build rotari
         run: CGO_ENABLED=0 go build -o rotari ./cmd/rotari
 
-      - name: Run scheduler smoke test
+      - name: Run scheduler array smoke test
         shell: bash
         run: |
           set -euo pipefail
           rotari=(docker exec --user "$SCHEDULER_USER" "$SCHEDULER_CONTAINER" /workspace/rotari)
           "${rotari[@]}" add --basedir /state --project-name integration \
-            --executor "${{ matrix.executor }}" \
-            --job-name smoke \
-            -- sh -c 'printf "rotari scheduler integration\\n"'
-          "${rotari[@]}" run --basedir /state --project-name integration \
-            --batch-concurrency 1
+            --executor "${{ matrix.executor }}" --job-name array --array 1-2 \
+            -- sh -c 'printf "task=%s\\n" "$ROTARI_ARRAY_TASK_ID"'
+          "${rotari[@]}" run --basedir /state --project-name integration --batch-concurrency 2
           run_id="$(docker exec --user "$SCHEDULER_USER" "$SCHEDULER_CONTAINER" find /state/projects/integration/runs -mindepth 1 -maxdepth 1 -type d -print | sed 's#^.*/##' | sort | tail -1)"
           "${rotari[@]}" show --basedir /state --project-name integration --run-id "$run_id" --logs
+          for task in 1 2; do
+            docker exec --user "$SCHEDULER_USER" "$SCHEDULER_CONTAINER" sh -c "test -s /state/projects/integration/runs/$run_id/*-$task/status.json"
+          done
 
       - name: Stop scheduler
         if: always()

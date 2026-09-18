@@ -118,7 +118,7 @@ func TestEnqueueCommandRejectsInterruptedRunWithoutChangingQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = enqueueCommand(baseDir, "default", []string{"duplicate"}, "", nil, "", nil)
+	_, err = enqueueCommand(baseDir, "default", []string{"duplicate"}, "", nil, nil, "", nil)
 	if err == nil || !strings.Contains(err.Error(), `project "default" has interrupted run "interrupted-run"; add is not allowed`) {
 		t.Fatalf("enqueueCommand error = %v, want interrupted run error", err)
 	}
@@ -128,6 +128,171 @@ func TestEnqueueCommandRejectsInterruptedRunWithoutChangingQueue(t *testing.T) {
 	}
 	if len(queue.Commands) != 1 || queue.Commands[0].ID != "existing" {
 		t.Fatalf("queue changed after rejected add: %#v", queue.Commands)
+	}
+}
+
+func TestCmdAddEnqueuesJob(t *testing.T) {
+	baseDir := t.TempDir()
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	code := cmdAdd([]string{
+		"--basedir", baseDir, "--project-name", "demo", "--job-name", "job",
+		"--executor", "local", "--env", "TOKEN=secret", "echo", "hello",
+	})
+	os.Stdout = oldStdout
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 || !strings.Contains(string(output), "submitted project=demo") {
+		t.Fatalf("cmdAdd exit code = %d, stdout = %q", code, output)
+	}
+
+	paths, err := resolvePaths(baseDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.Commands) != 1 || queue.Commands[0].Name != "job" || queue.Commands[0].Executor != "local" ||
+		len(queue.Commands[0].Environment) != 1 || queue.Commands[0].Environment[0] != "TOKEN=secret" {
+		t.Fatalf("queue commands = %#v, want persisted job with executor and env", queue.Commands)
+	}
+}
+
+func TestCmdAddRejectsMissingCommand(t *testing.T) {
+	baseDir := t.TempDir()
+	if code := cmdAdd([]string{"--basedir", baseDir, "--project-name", "demo"}); code != 1 {
+		t.Fatalf("cmdAdd exit code = %d, want 1 for missing command", code)
+	}
+}
+
+func TestCmdAddRejectsInvalidArrayRange(t *testing.T) {
+	baseDir := t.TempDir()
+	code := cmdAdd([]string{"--basedir", baseDir, "--project-name", "demo", "--array", "not-a-range", "echo", "hello"})
+	if code != 1 {
+		t.Fatalf("cmdAdd exit code = %d, want 1 for invalid array range", code)
+	}
+}
+
+func TestCmdAddRejectsInvalidEnv(t *testing.T) {
+	baseDir := t.TempDir()
+	code := cmdAdd([]string{"--basedir", baseDir, "--project-name", "demo", "--env", "NOVALUE", "echo", "hello"})
+	if code != 1 {
+		t.Fatalf("cmdAdd exit code = %d, want 1 for invalid --env", code)
+	}
+}
+
+func TestCmdServerRequestFailsWithoutRunningServer(t *testing.T) {
+	baseDir := t.TempDir()
+
+	oldStderr := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = writer
+	code := cmdServerRequest([]string{"--basedir", baseDir}, "ping")
+	os.Stderr = oldStderr
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 1 || !strings.Contains(string(output), "failed to contact server") {
+		t.Fatalf("cmdServerRequest exit code = %d, stderr = %q", code, output)
+	}
+}
+
+func TestCmdAddThenCmdRunExecutesLocalJobEndToEnd(t *testing.T) {
+	// A short, non-nested temp dir is required: the unix socket path derived
+	// from baseDir must stay under the ~108 byte sun_path limit.
+	baseDir, err := os.MkdirTemp("", "rotari-e2e-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(baseDir)
+	masterDir := t.TempDir()
+	t.Setenv("ROTARI_MASTERDIR", masterDir)
+	serverDone := make(chan int, 1)
+	go func() { serverDone <- runServer(baseDir) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	var pingErr error
+	for time.Now().Before(deadline) {
+		response, err := sendServerRequest(baseDir, serverRequest{Op: "ping"})
+		if err == nil && response.OK {
+			pingErr = nil
+			break
+		}
+		pingErr = err
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pingErr != nil {
+		t.Fatalf("server did not become ready: %v", pingErr)
+	}
+	// A completed sync run drops activeRuns to zero, which makes the server
+	// stop itself; no explicit shutdown request is needed here.
+	defer func() {
+		select {
+		case <-serverDone:
+		case <-time.After(3 * time.Second):
+			t.Log("server did not stop after the run completed")
+		}
+	}()
+
+	if code := cmdAdd([]string{"--basedir", baseDir, "--project-name", "demo", "echo", "hello"}); code != 0 {
+		t.Fatalf("cmdAdd exit code = %d, want 0", code)
+	}
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	code := cmdRun([]string{"--basedir", baseDir, "--project-name", "demo"})
+	os.Stdout = oldStdout
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 || !strings.Contains(string(output), "Run finished") {
+		t.Fatalf("cmdRun exit code = %d, stdout = %q", code, output)
+	}
+
+	paths, err := resolvePaths(baseDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := loadMeta(paths.metaFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Phase != "finished" || meta.LastRunExitCode != 0 {
+		t.Fatalf("meta = %#v, want finished run with exit code 0", meta)
+	}
+	queue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.Commands) != 0 {
+		t.Fatalf("queue commands = %#v, want empty queue after run", queue.Commands)
 	}
 }
 

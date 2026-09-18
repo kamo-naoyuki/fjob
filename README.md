@@ -6,12 +6,12 @@
 
 ---
 
-[![Go CI](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml/badge.svg)](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml) [![Slurm + PBS CI](https://img.shields.io/github/actions/workflow/status/kamo-naoyuki/rotari/scheduler-integration.yml?branch=main&label=Slurm%20%2B%20PBS%20CI)](https://github.com/kamo-naoyuki/rotari/actions/workflows/scheduler-integration.yml) [![web demo](https://img.shields.io/website?url=https%3A%2F%2Fkamo-naoyuki.github.io%2Frotari%2F&label=web%20demo&style=flat)](https://kamo-naoyuki.github.io/rotari/)
+[![Go CI](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml/badge.svg)](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml) [![Slurm + PBS CI](https://img.shields.io/github/actions/workflow/status/kamo-naoyuki/rotari/scheduler-integration.yml?branch=main&label=Slurm%20%2B%20PBS%20CI)](https://github.com/kamo-naoyuki/rotari/actions/workflows/scheduler-integration.yml) [![codecov](https://codecov.io/gh/kamo-naoyuki/rotari/graph/badge.svg)](https://codecov.io/gh/kamo-naoyuki/rotari) [![web demo](https://img.shields.io/website?url=https%3A%2F%2Fkamo-naoyuki.github.io%2Frotari%2F&label=web%20demo&style=flat)](https://kamo-naoyuki.github.io/rotari/)
 
 
 **Rotari turns trial-and-error into a repeatable loop**: run a batch of jobs, see which failed, fix only their commands, and run it again — without losing the history of what already worked.
 
-**Local commands and scheduler jobs (Slurm, PBS, LSF) live in the same queue**, even when they depend on each other. **Every run keeps its own snapshot** of commands, status, and logs, so nothing gets lost between "one more try" and the next.
+**Local commands, remote SSH commands, and scheduler jobs (Slurm, PBS, LSF) live in the same queue**, even when they depend on each other. **Every run keeps its own snapshot** of commands, status, and logs, so nothing gets lost between "one more try" and the next.
 
 **No DAGs to design. No pipeline to describe up front.**
 [Snakemake](https://github.com/snakemake/snakemake) and
@@ -252,11 +252,13 @@ Build and run the included example:
 
 ```sh
 go build -o rotari ./cmd/rotari
-./example.sh demo
+./scripts/example.sh
 ```
 
-The example includes local and Slurm jobs in one queue. Set
-`ROTARI_RUN_ASYNC=true` to use async mode.
+The example includes local and Slurm jobs in one queue.
+The initial `rotari check` is silent about recovery when the previous run
+finished normally; its interactive keep/discard prompt appears only after an
+interrupted run. `unlock` is the explicit non-interactive recovery command.
 
 ## Projects, queues, runs, and state
 
@@ -310,6 +312,13 @@ rotari add --project-name build \
   --executor slurm \
   --executor-option="-p short --cpus-per-task=2" \
   ./heavy-test.sh
+rotari add --project-name build \
+  --executor ssh \
+  --executor-option="builder@worker-01" \
+  --executor-option="-p 2222" \
+  --env DATASET=nightly \
+  --env CUDA_VISIBLE_DEVICES=0 \
+  ./heavy-test.sh
 rotari run --project-name build --local-concurrency 4 --batch-concurrency 8 --retry 2
 ```
 
@@ -321,6 +330,19 @@ the scheduler's own execution limits; after submission, the scheduler decides
 whether each job is `pending`, `running`, or in another state.
 Use `--retry N` to retry failed jobs up to N additional times.
 Use `--retry -1` to retry failed jobs indefinitely.
+
+Use `--env KEY=VALUE` with `add` to save environment variables on a job. They
+are exported for every executor, including local, SSH, Slurm, PBS, and LSF, and
+are preserved when the job is copied or retried. `rotari change --env KEY=VALUE`
+replaces the job's saved environment; repeat it for multiple variables, or use
+`--clear-env` to remove them. Rotari's own `ROTARI_*` context variables take
+precedence over a same-named user value.
+
+For the `ssh` executor, the first `--executor-option` is the SSH destination;
+remaining options are passed to `ssh`. Rotari runs the command over that SSH
+session, then stores its output, exit status, and destination host in the
+local run directory. SSH jobs use the batch-concurrency limit and are cancelled
+by terminating their local SSH session.
 
 The Slurm and PBS executors are smoke-tested in CI against containerized
 scheduler installations. The LSF executor is covered by unit tests using fake
@@ -385,6 +407,10 @@ clears the queued jobs but preserves the interrupted run history. The exact
 choice can be supplied without prompting as `rotari check --recover keep` or
 `rotari check --recover discard`. The exact `rotari unlock` command displayed
 by `show` is another non-interactive recovery path and keeps the queue.
+When a server is still running, interactive `rotari check` also reports its
+PID and asks before forcing it to stop; this warning matters when another
+project shares the same state directory. Piped or redirected `check` output
+does not stop the server and instead prints the shutdown command.
 When output is a terminal, log views (including `--job-id`) longer than 24
 lines open in `$PAGER` (or `less -R` by default). Use `--no-pager` to print
 directly; piped and redirected output is always printed directly.

@@ -8,12 +8,12 @@
 #       cargo install --locked --git https://github.com/asciinema/agg
 #
 # Usage:
-#   docs/generate-demos.sh
+#   scripts/generate-demos.sh
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd "${script_dir}/.." && pwd)
-output_dir="${script_dir}"
+output_dir="${repo_dir}/docs"
 work_dir=$(mktemp -d)
 trap 'rm -rf "${work_dir}"' EXIT INT TERM
 

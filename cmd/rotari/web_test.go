@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestWebRunGuidanceUsesRunIDOnly(t *testing.T) {
@@ -120,6 +122,23 @@ func TestCLIDocsPageUsesCommandMetadata(t *testing.T) {
 	}
 }
 
+func TestEnvironmentPageUsesDefinitions(t *testing.T) {
+	t.Setenv(envRunID, "web-run")
+	page := environmentHTML("/", environmentDefinitions())
+	for _, want := range []string{envRunID, envBaseDir, "State directory"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("environment page does not contain %q", want)
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/environment/", nil)
+	recorder := httptest.NewRecorder()
+	newWebHandler(t.TempDir(), "").ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "rotari environment variables") {
+		t.Fatalf("environment response = status %d, body %q", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestGenerateStaticWebIncludesCLIDocs(t *testing.T) {
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "default")
@@ -139,6 +158,13 @@ func TestGenerateStaticWebIncludesCLIDocs(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "rotari CLI") || !strings.Contains(string(data), "../") {
 		t.Fatalf("static docs page = %q", string(data))
+	}
+	environmentData, err := os.ReadFile(filepath.Join(outputDir, "environment", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(environmentData), "rotari environment variables") || !strings.Contains(string(environmentData), "../") {
+		t.Fatalf("static environment page = %q", string(environmentData))
 	}
 	index, err := os.ReadFile(filepath.Join(outputDir, "index.html"))
 	if err != nil {
@@ -209,6 +235,24 @@ func TestLoadWebJobsIncludesSchedulerState(t *testing.T) {
 	}
 }
 
+func TestLoadWebJobsProjectsFinishedSchedulerStatus(t *testing.T) {
+	runDir := t.TempDir()
+	queue := Queue{Commands: []QueuedCommand{{ID: "array-1", Command: []string{"true"}, Executor: "slurm"}}}
+	if err := writeJSON(filepath.Join(runDir, "commands.json"), queue); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(runDir, "array-1", "status.json"), slurmStatus{Phase: "running", ExitCode: 0, FinishedAt: "2026-09-18T00:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := loadWebJobs(runDir, RunSummary{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Result == nil || jobs[0].Result.ExitCode != 0 || jobs[0].FinishedAt == "" {
+		t.Fatalf("jobs = %#v, want finished result from status.json", jobs)
+	}
+}
+
 func TestLoadWebJobsUsesCarriedOriginTimestamps(t *testing.T) {
 	runsDir := t.TempDir()
 	sourceRunDir := filepath.Join(runsDir, "run-1")
@@ -241,6 +285,7 @@ func TestLoadWebJobsUsesCarriedOriginTimestamps(t *testing.T) {
 }
 
 func TestLoadWebStateIncludesRunContextAndTimeline(t *testing.T) {
+	t.Setenv("TZ", "Asia/Tokyo")
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "default")
 	if err != nil {
@@ -279,7 +324,10 @@ func TestLoadWebStateIncludesRunContextAndTimeline(t *testing.T) {
 	if run.Context.Hostname != "node-a" || run.Context.StartedLoad == nil || run.CWD != "/work/project" {
 		t.Fatalf("context = %#v, cwd = %q, want host/load/cwd", run.Context, run.CWD)
 	}
-	if run.Jobs[0].SubmittedAt != "2026-09-16T00:00:01Z" || run.Jobs[0].FinishedAt != "2026-09-16T00:00:02Z" {
+	if run.StartedAt != "2026-09-16 09:00:00 JST" || run.FinishedAt != "2026-09-16 09:00:03 JST" {
+		t.Fatalf("run timestamps = %#v, want JST display timestamps", run.RunSummary)
+	}
+	if run.Jobs[0].SubmittedAt != "2026-09-16 09:00:01 JST" || run.Jobs[0].FinishedAt != "2026-09-16 09:00:02 JST" {
 		t.Fatalf("job timestamps = %#v, want submitted and finished timestamps", run.Jobs[0])
 	}
 	if len(run.Timeline) != 3 || run.Timeline[1].Running != 1 || run.Timeline[2].Finished != 1 || run.Timeline[2].Success != 1 {
@@ -400,5 +448,66 @@ func TestWebChangeEndpointUpdatesQueueJob(t *testing.T) {
 	job := queue.Commands[0]
 	if len(job.Command) != 2 || job.Command[0] != "new" || len(job.ExecutorOptions) != 2 || job.ExecutorOptions[1] != "gpu" {
 		t.Fatalf("job = %#v, want updated command and executor options", job)
+	}
+}
+
+func TestMethodNotAllowedRejectsNonGetOnAPIState(t *testing.T) {
+	baseDir := t.TempDir()
+	request := httptest.NewRequest(http.MethodPost, "/api/state", nil)
+	recorder := httptest.NewRecorder()
+	newWebHandler(baseDir, "").ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestNewFlagSetWritesUsageToStderr(t *testing.T) {
+	fs := newFlagSet("web")
+	if fs.Name() != "web" {
+		t.Fatalf("flag set name = %q, want %q", fs.Name(), "web")
+	}
+	if err := fs.Parse([]string{"--unknown-flag"}); err == nil {
+		t.Fatal("Parse with an unknown flag did not return an error")
+	}
+}
+
+func TestInterruptSignalDeliversSIGTERM(t *testing.T) {
+	signals := interruptSignal()
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-signals:
+	case <-time.After(time.Second):
+		t.Fatal("interruptSignal channel did not receive SIGTERM")
+	}
+}
+
+func TestCmdWebGeneratesStaticSiteWithoutStartingServer(t *testing.T) {
+	baseDir := t.TempDir()
+	if _, err := enqueueCommand(baseDir, "default", []string{"echo", "job"}, "", nil, nil, "job", nil); err != nil {
+		t.Fatal(err)
+	}
+	staticDir := t.TempDir()
+
+	if code := cmdWeb([]string{"--basedir", baseDir, "--static-dir", staticDir}); code != 0 {
+		t.Fatalf("cmdWeb exit code = %d, want 0", code)
+	}
+	if _, err := os.Stat(filepath.Join(staticDir, "index.html")); err != nil {
+		t.Fatalf("static site was not generated: %v", err)
+	}
+}
+
+func TestCmdWebRejectsInvalidPort(t *testing.T) {
+	baseDir := t.TempDir()
+	if code := cmdWeb([]string{"--basedir", baseDir, "--port", "70000"}); code != 1 {
+		t.Fatalf("cmdWeb exit code = %d, want 1 for invalid port", code)
+	}
+}
+
+func TestCmdWebRejectsPositionalArguments(t *testing.T) {
+	baseDir := t.TempDir()
+	if code := cmdWeb([]string{"--basedir", baseDir, "extra"}); code != 1 {
+		t.Fatalf("cmdWeb exit code = %d, want 1 for unexpected positional argument", code)
 	}
 }
