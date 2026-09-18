@@ -46,6 +46,30 @@ func resultSelectionMatches(selection string, finished bool, exitCode int) bool 
 	return false
 }
 
+// aggregatedJobResult returns the result and finished state for a command
+// ID, aggregating per-task results when array is non-nil: results are keyed
+// per task (e.g. "id-1", "id-2", ...) by queueToJobs, not by the array
+// command's own ID, so it is only considered finished once every task has a
+// result, and any non-zero task exit code marks the whole command as failed.
+func aggregatedJobResult(id string, array *ArraySpec, results map[string]JobResult) (JobResult, bool) {
+	if array == nil {
+		result, finished := results[id]
+		return result, finished
+	}
+	aggregate := JobResult{ID: id}
+	for task := array.First; task <= array.Last; task++ {
+		result, ok := results[fmt.Sprintf("%s-%d", id, task)]
+		if !ok {
+			return JobResult{}, false
+		}
+		if result.ExitCode != 0 && aggregate.ExitCode == 0 {
+			aggregate.ExitCode = result.ExitCode
+			aggregate.Error = result.Error
+		}
+	}
+	return aggregate, true
+}
+
 // rerunPlan splits a queue's commands between jobs that must be executed and
 // jobs whose previous result should be carried forward into the new run
 // instead of being re-executed.
@@ -67,7 +91,13 @@ type rerunPlan struct {
 // carried forward (Origin recorded, no re-execution); jobs that neither
 // match nor have a previous result are left untouched (no result recorded,
 // shown as still unfinished).
-func planRerunSelection(paths pathSet, queue Queue, selection string, jobIDs []string, referenceRunID string) (rerunPlan, error) {
+//
+// When partialArray is true (the default), array jobs are evaluated per
+// task instead of as one unit: only tasks matching the selection (e.g. the
+// failed ones) execute, and the rest carry forward their own result. When
+// false, the whole array re-executes if any of its tasks match, restoring
+// the older, coarser behavior.
+func planRerunSelection(paths pathSet, queue Queue, selection string, jobIDs []string, referenceRunID string, partialArray bool) (rerunPlan, error) {
 	plan := rerunPlan{Execute: make(map[string]bool, len(queue.Commands))}
 	if selection == "" {
 		for _, command := range queue.Commands {
@@ -115,7 +145,11 @@ func planRerunSelection(paths pathSet, queue Queue, selection string, jobIDs []s
 	plan.CarriedResults = make(map[string]JobResult)
 	plan.CarriedOrigins = make(map[string]*JobOrigin)
 	for _, command := range queue.Commands {
-		result, finished := results[command.ID]
+		if command.Array != nil && partialArray && selection != "job-id" {
+			planArrayTaskSelection(command, selection, results, runID, runDir, originCWD, &plan)
+			continue
+		}
+		result, finished := aggregatedJobResult(command.ID, command.Array, results)
 		include := false
 		switch selection {
 		case "job-id":
@@ -139,7 +173,16 @@ func planRerunSelection(paths pathSet, queue Queue, selection string, jobIDs []s
 		if result.ExitCode == 0 {
 			status = "success"
 		}
-		plan.CarriedResults[command.ID] = result
+		if command.Array == nil {
+			plan.CarriedResults[command.ID] = result
+		} else {
+			// finalResults is keyed per expanded array task (see
+			// queueToJobs), not by the array command's own ID.
+			for task := command.Array.First; task <= command.Array.Last; task++ {
+				taskID := fmt.Sprintf("%s-%d", command.ID, task)
+				plan.CarriedResults[taskID] = results[taskID]
+			}
+		}
 		plan.CarriedOrigins[command.ID] = &JobOrigin{
 			RunID:       runID,
 			JobID:       command.ID,
@@ -158,4 +201,39 @@ func planRerunSelection(paths pathSet, queue Queue, selection string, jobIDs []s
 		return rerunPlan{}, fmt.Errorf("job IDs not found in queue: %s", strings.Join(missing, ", "))
 	}
 	return plan, nil
+}
+
+// planArrayTaskSelection evaluates each task of an array command on its own
+// (unlike aggregatedJobResult, which treats the whole array as one unit):
+// only tasks matching selection are added to Execute, and finished
+// non-matching tasks carry their own result forward instead of the whole
+// array re-executing. The per-task Origin (keyed by task ID, e.g. "id-1")
+// lets show/web follow a carried task back to its own job directory in the
+// reference run, since QueuedCommand.Origin only covers the whole command.
+func planArrayTaskSelection(command QueuedCommand, selection string, results map[string]JobResult, runID, runDir, originCWD string, plan *rerunPlan) {
+	for task := command.Array.First; task <= command.Array.Last; task++ {
+		taskID := fmt.Sprintf("%s-%d", command.ID, task)
+		result, finished := results[taskID]
+		if resultSelectionMatches(selection, finished, result.ExitCode) {
+			plan.Execute[taskID] = true
+			continue
+		}
+		if !finished {
+			// No previous result to carry forward; leave it unfinished.
+			continue
+		}
+		plan.CarriedResults[taskID] = result
+		status := "failed"
+		if result.ExitCode == 0 {
+			status = "success"
+		}
+		plan.CarriedOrigins[taskID] = &JobOrigin{
+			RunID:       runID,
+			JobID:       taskID,
+			Status:      status,
+			CWD:         originCWD,
+			SubmittedAt: readJobTimestamp(runDir, taskID, "submitted_at"),
+			FinishedAt:  readJobTimestamp(runDir, taskID, "finished_at"),
+		}
+	}
 }

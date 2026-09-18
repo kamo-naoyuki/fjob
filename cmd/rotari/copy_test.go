@@ -222,6 +222,55 @@ func TestConfirmQueueOverwriteSkipsPromptWhenAppendRequested(t *testing.T) {
 	}
 }
 
+func TestCopyRunToQueueAggregatesArrayTaskResults(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(paths.runsDir, "run-1")
+	snapshot := Queue{Commands: []QueuedCommand{
+		{ID: "success-array", Name: "success-array", Command: []string{"true"}, Array: &ArraySpec{First: 1, Last: 2}},
+		{ID: "failed-array", Name: "failed-array", Command: []string{"false"}, Array: &ArraySpec{First: 1, Last: 2}},
+	}}
+	if err := writeJSON(filepath.Join(runDir, "commands.json"), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(runDir, "summary.json"), RunSummary{Results: []JobResult{
+		{ID: "success-array-1", ExitCode: 0},
+		{ID: "success-array-2", ExitCode: 0},
+		{ID: "failed-array-1", ExitCode: 0},
+		{ID: "failed-array-2", ExitCode: 1},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := copyRunToQueue(baseDir, "default", "run-1", "failed", nil, false); err != nil {
+		t.Fatal(err)
+	}
+	queue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.Commands) != 1 || queue.Commands[0].Name != "failed-array" {
+		t.Fatalf("--failed selection = %#v, want only failed-array (finished array jobs must not be treated as unfinished)", queue.Commands)
+	}
+	if queue.Commands[0].Origin == nil || queue.Commands[0].Origin.Status != "failed" {
+		t.Fatalf("failed-array origin = %#v, want status=failed", queue.Commands[0].Origin)
+	}
+
+	if _, err := copyRunToQueue(baseDir, "default", "run-1", "success", nil, false, true); err != nil {
+		t.Fatal(err)
+	}
+	queue, err = loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.Commands) != 1 || queue.Commands[0].Name != "success-array" || queue.Commands[0].Origin.Status != "success" {
+		t.Fatalf("--success selection = %#v, want only success-array with status=success", queue.Commands)
+	}
+}
+
 func TestConfirmQueueOverwriteSkipsPromptWhenOverwriteRequested(t *testing.T) {
 	baseDir := t.TempDir()
 	confirmed, err := confirmQueueOverwrite(baseDir, "default", false, true)

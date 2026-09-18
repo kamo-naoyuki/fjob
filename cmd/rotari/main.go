@@ -40,6 +40,10 @@ type QueuedCommand struct {
 	DependsOn       []string   `json:"depends_on,omitempty"`
 	Origin          *JobOrigin `json:"origin,omitempty"`
 	Array           *ArraySpec `json:"array,omitempty"`
+	// TaskOrigins records, per expanded task ID (e.g. "id-1"), the origin of
+	// array tasks carried forward individually (see planArrayTaskSelection);
+	// Origin above only covers the whole (unexpanded) command.
+	TaskOrigins map[string]*JobOrigin `json:"task_origins,omitempty"`
 }
 
 type ArraySpec struct {
@@ -511,6 +515,7 @@ func cmdWorkerRun(args []string) int {
 	var jobIDs stringSliceFlag
 	cliValue(fs, &jobIDs, "job-id")
 	sourceRunID := cliString(fs, "source-run-id", "")
+	partialArray := cliBool(fs, "partial-array", true)
 	if err := fs.Parse(args); err != nil {
 		printErrorf("failed to parse worker args: %v", err)
 		return 1
@@ -552,7 +557,7 @@ func cmdWorkerRun(args []string) int {
 	}
 
 	stopLoadSampling := startRunLoadSampling(paths, runID)
-	exitCode := executeMixedRun(paths, runID, runName, localConcurrency, batchMaxActive, retry, *executor, executorOptions, *selection, jobIDs, *sourceRunID, nil, nil)
+	exitCode := executeMixedRun(paths, runID, runName, localConcurrency, batchMaxActive, retry, *executor, executorOptions, *selection, jobIDs, *sourceRunID, *partialArray, nil, nil)
 	stopLoadSampling()
 	if err := finishRunContext(paths, runID); err != nil {
 		printErrorf("failed to save run context: %v", err)
@@ -600,7 +605,7 @@ func finishRun(paths pathSet, runID string, exitCode int) error {
 	return nil
 }
 
-func launchAsyncRun(paths pathSet, queueName, runID, runName string, localConcurrency, batchMaxActive, retry int, executor string, executorOptions []string, selection string, jobIDs []string, sourceRunID string, cwd string, onDone func()) int {
+func launchAsyncRun(paths pathSet, queueName, runID, runName string, localConcurrency, batchMaxActive, retry int, executor string, executorOptions []string, selection string, jobIDs []string, sourceRunID string, partialArray bool, cwd string, onDone func()) int {
 	if err := acquireLock(paths.lockFile, LockInfo{PID: os.Getpid(), RunID: runID, StartedAt: nowRFC3339()}); err != nil {
 		printErrorf("project '%s' is running; run is not allowed: %v", queueName, err)
 		return 1
@@ -653,6 +658,7 @@ func launchAsyncRun(paths pathSet, queueName, runID, runName string, localConcur
 	if sourceRunID != "" {
 		childArgs = append(childArgs, "--source-run-id", sourceRunID)
 	}
+	childArgs = append(childArgs, "--partial-array", strconv.FormatBool(partialArray))
 	childArgs = append(childArgs, queueName, runID, runName, strconv.Itoa(localConcurrency), strconv.Itoa(batchMaxActive), strconv.Itoa(retry), cwd)
 
 	cmd := exec.Command(exe, childArgs...)

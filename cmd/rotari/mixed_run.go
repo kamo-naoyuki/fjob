@@ -9,7 +9,7 @@ import (
 	"sync"
 )
 
-func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, batchMaxActive, retry int, requestedExecutor string, executorOptions []string, selection string, jobIDs []string, referenceRunID string, progress func(JobResult, int, int, int, int), onStart func(JobSpec)) int {
+func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, batchMaxActive, retry int, requestedExecutor string, executorOptions []string, selection string, jobIDs []string, referenceRunID string, partialArray bool, progress func(JobResult, int, int, int, int), onStart func(JobSpec)) int {
 	queue, err := loadQueue(paths.queueFile)
 	if err != nil {
 		printErrorf("failed to load queue: %v", err)
@@ -38,15 +38,28 @@ func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, bat
 	}
 	prepareJobEnvironments(paths, runID, jobs, runName, localConcurrency, batchMaxActive, retry, executorOptions)
 
-	plan, err := planRerunSelection(paths, queue, selection, jobIDs, referenceRunID)
+	plan, err := planRerunSelection(paths, queue, selection, jobIDs, referenceRunID, partialArray)
 	if err != nil {
 		printErrorf("failed to prepare job selection: %v", err)
 		return 1
 	}
 	expandArrayPlan(queue.Commands, jobs, plan.Execute)
 	for index := range queue.Commands {
-		if origin, ok := plan.CarriedOrigins[queue.Commands[index].ID]; ok {
-			queue.Commands[index].Origin = origin
+		command := &queue.Commands[index]
+		if origin, ok := plan.CarriedOrigins[command.ID]; ok {
+			command.Origin = origin
+		}
+		if command.Array == nil {
+			continue
+		}
+		for task := command.Array.First; task <= command.Array.Last; task++ {
+			taskID := fmt.Sprintf("%s-%d", command.ID, task)
+			if origin, ok := plan.CarriedOrigins[taskID]; ok {
+				if command.TaskOrigins == nil {
+					command.TaskOrigins = make(map[string]*JobOrigin)
+				}
+				command.TaskOrigins[taskID] = origin
+			}
 		}
 	}
 

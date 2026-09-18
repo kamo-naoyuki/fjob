@@ -35,6 +35,7 @@ type serverRequest struct {
 	JobIDs           []string   `json:"job_ids,omitempty"`
 	Selection        string     `json:"selection,omitempty"`
 	SourceRunID      string     `json:"source_run_id,omitempty"`
+	PartialArray     bool       `json:"partial_array,omitempty"`
 	JobName          string     `json:"job_name,omitempty"`
 	DependsOn        []string   `json:"depends_on,omitempty"`
 	Array            *ArraySpec `json:"array,omitempty"`
@@ -284,6 +285,7 @@ func cmdRun(args []string) int {
 	success := cliBool(fs, "success", false)
 	var jobIDs stringSliceFlag
 	cliValue(fs, &jobIDs, "job-id")
+	partialArray := cliBool(fs, "partial-array", true)
 	async := cliBool(fs, "async", false)
 	executor := cliString(fs, "executor", "")
 	var executorOptions stringSliceFlag
@@ -370,7 +372,7 @@ func cmdRun(args []string) int {
 	request := serverRequest{
 		Op: "run", QueueName: queueName, LocalConcurrency: *localConcurrency, BatchMaxActive: *batchConcurrency, Retry: *retry, Async: *async,
 		RunName: *runName, Executor: *executor, ExecutorOptions: executorOptions, CWD: cwd,
-		Selection: selection, JobIDs: jobIDs, SourceRunID: sourceRunID,
+		Selection: selection, JobIDs: jobIDs, SourceRunID: sourceRunID, PartialArray: *partialArray,
 	}
 	var response serverResponse
 	if *async {
@@ -553,14 +555,14 @@ func (server *rotariServer) handle(baseDir string, conn net.Conn) {
 		if request.Async {
 			server.beginRun()
 			onDone = server.endRun
-			message, err = startServerRun(baseDir, request.QueueName, request.RunName, request.LocalConcurrency, request.BatchMaxActive, request.Retry, request.Executor, request.ExecutorOptions, request.Selection, request.JobIDs, request.SourceRunID, onDone, request.CWD)
+			message, err = startServerRun(baseDir, request.QueueName, request.RunName, request.LocalConcurrency, request.BatchMaxActive, request.Retry, request.Executor, request.ExecutorOptions, request.Selection, request.JobIDs, request.SourceRunID, request.PartialArray, onDone, request.CWD)
 			if err != nil {
 				onDone()
 			}
 		} else {
 			server.beginRun()
 			defer server.endRun()
-			message, exitCode, err = runServerSyncWithDisconnect(conn, baseDir, request.QueueName, request.RunName, request.LocalConcurrency, request.BatchMaxActive, request.Retry, request.Executor, request.ExecutorOptions, request.Selection, request.JobIDs, request.SourceRunID, func(progress serverResponse) {
+			message, exitCode, err = runServerSyncWithDisconnect(conn, baseDir, request.QueueName, request.RunName, request.LocalConcurrency, request.BatchMaxActive, request.Retry, request.Executor, request.ExecutorOptions, request.Selection, request.JobIDs, request.SourceRunID, request.PartialArray, func(progress serverResponse) {
 				_ = encoder.Encode(progress)
 			}, request.CWD)
 		}
@@ -577,7 +579,7 @@ func (server *rotariServer) handle(baseDir string, conn net.Conn) {
 	_ = encoder.Encode(response)
 }
 
-func runServerSyncWithDisconnect(conn net.Conn, baseDir, queueName, runName string, localConcurrency, batchMaxActive, retry int, executor string, executorOptions []string, selection string, jobIDs []string, sourceRunID string, progress func(serverResponse), cwdOverride ...string) (string, int, error) {
+func runServerSyncWithDisconnect(conn net.Conn, baseDir, queueName, runName string, localConcurrency, batchMaxActive, retry int, executor string, executorOptions []string, selection string, jobIDs []string, sourceRunID string, partialArray bool, progress func(serverResponse), cwdOverride ...string) (string, int, error) {
 	cwd := ""
 	if len(cwdOverride) > 0 {
 		cwd = cwdOverride[0]
@@ -589,7 +591,7 @@ func runServerSyncWithDisconnect(conn net.Conn, baseDir, queueName, runName stri
 	}
 	done := make(chan result, 1)
 	go func() {
-		message, exitCode, err := runServerSync(baseDir, queueName, runName, localConcurrency, batchMaxActive, retry, executor, executorOptions, selection, jobIDs, sourceRunID, progress, cwd)
+		message, exitCode, err := runServerSync(baseDir, queueName, runName, localConcurrency, batchMaxActive, retry, executor, executorOptions, selection, jobIDs, sourceRunID, partialArray, progress, cwd)
 		done <- result{message: message, exitCode: exitCode, err: err}
 	}()
 	disconnected := make(chan struct{})
@@ -1113,7 +1115,7 @@ func enqueueCommand(baseDir, queueName string, command []string, executor string
 	return fmt.Sprintf("%s command=%s", message, joinCommand(command)), nil
 }
 
-func startServerRun(baseDir, queueName, runName string, localConcurrency, batchMaxActive, retry int, executor string, executorOptions []string, selection string, jobIDs []string, sourceRunID string, onDone func(), cwd string) (string, error) {
+func startServerRun(baseDir, queueName, runName string, localConcurrency, batchMaxActive, retry int, executor string, executorOptions []string, selection string, jobIDs []string, sourceRunID string, partialArray bool, onDone func(), cwd string) (string, error) {
 	_, err := resolveQueueExecutor(baseDir, queueName, executor)
 	if err != nil {
 		return "", err
@@ -1147,7 +1149,7 @@ func startServerRun(baseDir, queueName, runName string, localConcurrency, batchM
 		return "", fmt.Errorf("queue %q has no queued commands", queueName)
 	}
 	runID := makeRunID()
-	if err := launchAsyncRun(paths, queueName, runID, runName, localConcurrency, batchMaxActive, retry, executor, executorOptions, selection, jobIDs, sourceRunID, cwd, onDone); err != 0 {
+	if err := launchAsyncRun(paths, queueName, runID, runName, localConcurrency, batchMaxActive, retry, executor, executorOptions, selection, jobIDs, sourceRunID, partialArray, cwd, onDone); err != 0 {
 		return "", errors.New("queue is already running")
 	}
 	runDir := filepath.Join(paths.runsDir, runID)
@@ -1155,7 +1157,7 @@ func startServerRun(baseDir, queueName, runName string, localConcurrency, batchM
 		queueName, formatRunLabel(runID, runName), runDir, runID, paths.baseDir, queueName), nil
 }
 
-func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMaxActive, retry int, executor string, executorOptions []string, selection string, jobIDs []string, sourceRunID string, progress func(serverResponse), cwd string) (string, int, error) {
+func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMaxActive, retry int, executor string, executorOptions []string, selection string, jobIDs []string, sourceRunID string, partialArray bool, progress func(serverResponse), cwd string) (string, int, error) {
 	resolvedExecutor, err := resolveQueueExecutor(baseDir, queueName, executor)
 	if err != nil {
 		return "", 1, err
@@ -1220,7 +1222,7 @@ func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMa
 		release()
 		return "", 1, err
 	}
-	plan, err := planRerunSelection(paths, queue, selection, jobIDs, sourceRunID)
+	plan, err := planRerunSelection(paths, queue, selection, jobIDs, sourceRunID, partialArray)
 	if err != nil {
 		_ = os.Remove(paths.lockFile)
 		release()
@@ -1234,7 +1236,7 @@ func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMa
 	}
 
 	stopLoadSampling := startRunLoadSampling(paths, runID)
-	exitCode := executeMixedRun(paths, runID, runName, localConcurrency, batchMaxActive, retry, resolvedExecutor, executorOptions, selection, jobIDs, sourceRunID, func(result JobResult, completed, total, succeeded, failed int) {
+	exitCode := executeMixedRun(paths, runID, runName, localConcurrency, batchMaxActive, retry, resolvedExecutor, executorOptions, selection, jobIDs, sourceRunID, partialArray, func(result JobResult, completed, total, succeeded, failed int) {
 		if progress != nil {
 			message := ""
 			if result.ExitCode != 0 && result.Error == "final-failure" {

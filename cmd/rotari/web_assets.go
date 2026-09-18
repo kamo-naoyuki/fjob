@@ -8,3 +8,8 @@ const (
 func faviconLinks() string {
 	return `<link rel="icon" type="image/svg+xml" media="(prefers-color-scheme: dark)" href="data:image/svg+xml;base64,` + webFaviconDarkBase64 + `"><link rel="icon" type="image/svg+xml" media="(prefers-color-scheme: light)" href="data:image/svg+xml;base64,` + webFaviconLightBase64 + `">`
 }
+
+// brandIcon renders the favicon artwork inline; the web UI always uses the dark theme, so only that variant is needed.
+func brandIcon() string {
+	return `<img class="brand-icon" alt="" src="data:image/svg+xml;base64,` + webFaviconDarkBase64 + `">`
+}

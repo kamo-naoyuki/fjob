@@ -17,7 +17,8 @@
 [Snakemake](https://github.com/snakemake/snakemake) and
 [Nextflow](https://github.com/nextflow-io/nextflow) are powerful for
 complex, data-dependent workflows, but most ad-hoc experiment loops don't
-need that overhead. Just queue what you want to run. **State lives in plain JSON
+benefits may not justify the upfront setup and learning curve of defining a
+workflow. Just queue what you want to run. **State lives in plain JSON
 files on disk**, with no server or database to set up — it works the same
 whether you're on your laptop or logged into a remote compute node.
 
@@ -255,7 +256,10 @@ go build -o rotari ./cmd/rotari
 ./scripts/example.sh
 ```
 
-The example includes local and Slurm jobs in one queue.
+The example includes local and Slurm jobs in one queue. An array task and a
+plain job fail on their first attempt; `rotari retry` re-executes only what
+failed (just the failing array task, not the whole array) and carries the
+rest forward, so the example ends with a successful run.
 The initial `rotari check` is silent about recovery when the previous run
 finished normally; its interactive keep/discard prompt appears only after an
 interrupted run. `unlock` is the explicit non-interactive recovery command.
@@ -454,6 +458,13 @@ with the result filters above. `--run-id ID` changes the reference run used
 for both the queue snapshot and the result filters; see the earlier section
 for details.
 
+For an array job (`--array`), result filters default to per-task selection
+(`--partial-array=true`): only the tasks matching the filter (e.g. the failed
+ones) re-execute, and the rest carry forward their own previous result
+instead of the whole array running again. Pass `--partial-array=false` to
+re-execute every task whenever any one of them matches, as in earlier
+versions.
+
 Prepare a modified batch from the latest run without changing its history:
 
 ```sh
@@ -552,38 +563,6 @@ variables are injected into command processes and can also be passed
 explicitly to another rotari command.
 
 Use `rotari env` to print the same list with values from the current process.
-
-| Variable | CLI default | Job | Array | Description |
-| --- | --- | --- | --- | --- |
-| `ROTARI_BASEDIR` | yes | yes | yes | State directory; CLI default for `--basedir`. |
-| `ROTARI_PROJECT_NAME` | yes | yes | yes | Project name; CLI default for `--project-name`. |
-| `ROTARI_MASTERDIR` | yes | - | - | Server registry directory; CLI default for `--masterdir`. |
-| `XDG_STATE_HOME` | yes | - | - | Base location used when state-specific variables are not set. |
-| `ROTARI_RUN_ID` | yes | yes | yes | Current run ID; CLI default for `--run-id`. |
-| `ROTARI_JOB_ID` | yes | yes | yes | Current job ID; CLI default for `--job-id`. |
-| `ROTARI_JOB_NAME` | yes | yes | yes | Current job name; CLI default for `--job-name`. |
-| `ROTARI_EXECUTOR` | yes | yes | yes | Current executor; CLI default for `--executor`. |
-| `ROTARI_EXECUTOR_OPTIONS` | yes | yes | yes | Default options passed to the selected scheduler executor. |
-| `ROTARI_RUN_NAME` | yes | yes | yes | Run name; CLI default for `--run-name`. |
-| `ROTARI_RUN_LOCAL_CONCURRENCY` | yes | yes | yes | Local worker limit; CLI default for `--local-concurrency`. |
-| `ROTARI_RUN_BATCH_CONCURRENCY` | yes | yes | yes | Scheduler submission limit; CLI default for `--batch-concurrency`. |
-| `ROTARI_RUN_RETRY` | yes | yes | yes | Retry count; CLI default for `--retry`. |
-| `ROTARI_RUN_ASYNC` | yes | yes | yes | Async run mode; CLI default for `--async`. |
-| `ROTARI_ARRAY_RANGE` | yes | yes | yes | Array range; CLI default for `--array`, such as `1-10`. |
-| `ROTARI_BIN` | - | yes | yes | Absolute path to the rotari binary. |
-| `ROTARI_RUN_DIR` | - | yes | yes | Directory for the current run. |
-| `ROTARI_JOB_DIR` | - | yes | yes | Directory for the current job. |
-| `ROTARI_CWD` | - | yes | yes | Working directory from which the run was started. |
-| `ROTARI_ARRAY_TASK_ID` | - | - | yes | Current array task number. |
-| `ROTARI_ARRAY_FIRST` | - | - | yes | First task number in the array range. |
-| `ROTARI_ARRAY_LAST` | - | - | yes | Last task number in the array range. |
-| `ROTARI_ARRAY_SIZE` | - | - | yes | Number of tasks in the array range. |
-| `ROTARI_CHECK_SERVER` | yes | - | - | Require a running server for `check --server`. |
-| `ROTARI_CHECK_RECOVER` | yes | - | - | Recovery action for `check --recover`, `keep` or `discard`. |
-| `ROTARI_WAIT_TIMEOUT` | yes | - | - | Default timeout for `wait --timeout`. |
-| `ROTARI_WEB_HOST` | yes | - | - | Listen host for `web --host`. |
-| `ROTARI_WEB_PORT` | yes | - | - | Listen port for `web --port`. |
-| `ROTARI_WEB_STATIC_DIR` | yes | - | - | Output directory for `web --static-dir`. |
 
 The resolution order for the state directory is:
 1. `--basedir` option

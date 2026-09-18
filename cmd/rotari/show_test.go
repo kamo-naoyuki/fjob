@@ -548,6 +548,59 @@ func TestShowQueueJobPrintsMatchingJob(t *testing.T) {
 	}
 }
 
+func TestShowQueueDisplaysArrayTaskColumn(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := Queue{Commands: []QueuedCommand{
+		{ID: "train", Name: "train", Command: []string{"echo", "train"}, Array: &ArraySpec{First: 1, Last: 2}},
+	}}
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	code := showQueue(paths, queue)
+	os.Stdout = oldStdout
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 {
+		t.Fatalf("showQueue exit code = %d, want 0", code)
+	}
+	for _, want := range []string{"TASK", "train-1", "train-2"} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("showQueue output does not contain %q:\n%s", want, output)
+		}
+	}
+
+	reader, writer, err = os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	code = showQueueJob(paths, queue, "train-1")
+	os.Stdout = oldStdout
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err = io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 || !strings.Contains(string(output), "Array task: 1 (range 1-2)") {
+		t.Fatalf("showQueueJob code=%d output does not contain array task info:\n%s", code, output)
+	}
+}
+
 func TestShowQueueJobReportsMissingJob(t *testing.T) {
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "default")

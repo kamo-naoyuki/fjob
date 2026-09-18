@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,6 +32,8 @@ func TestWebHTMLIncludesEmbeddedThemeFavicons(t *testing.T) {
 		`media="(prefers-color-scheme: dark)"`,
 		`media="(prefers-color-scheme: light)"`,
 		`data:image/svg+xml;base64,`,
+		`<h1><img class="brand-icon"`,
+		`rotari Web</h1>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("web HTML does not contain %q", want)
@@ -108,7 +111,7 @@ func TestLoadWebStateIncludesAllQueues(t *testing.T) {
 
 func TestCLIDocsPageUsesCommandMetadata(t *testing.T) {
 	page := cliDocsHTML("/")
-	for _, want := range []string{"rotari check", "rotari completion", "--project-name", "Generated from the command metadata"} {
+	for _, want := range []string{`<h1><img class="brand-icon"`, "rotari CLI", "rotari check", "rotari completion", "--project-name", "Generated from the command metadata"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("docs page does not contain %q", want)
 		}
@@ -125,7 +128,7 @@ func TestCLIDocsPageUsesCommandMetadata(t *testing.T) {
 func TestEnvironmentPageUsesDefinitions(t *testing.T) {
 	t.Setenv(envRunID, "web-run")
 	page := environmentHTML("/", environmentDefinitions())
-	for _, want := range []string{envRunID, envBaseDir, "State directory"} {
+	for _, want := range []string{`<h1><img class="brand-icon"`, "rotari environment variables", envRunID, envBaseDir, "State directory"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("environment page does not contain %q", want)
 		}
@@ -176,12 +179,12 @@ func TestGenerateStaticWebIncludesCLIDocs(t *testing.T) {
 	if !strings.Contains(string(index), "data:image/svg+xml;base64,") {
 		t.Fatal("static web page does not contain embedded favicon data")
 	}
-	for _, obsolete := range []string{"queue_name", "/queue/", "state.queues"} {
+	for _, obsolete := range []string{"queue_name", "/queue/", "state.queues", "All queues", "No queues found."} {
 		if strings.Contains(string(index), obsolete) {
 			t.Fatalf("static web page contains obsolete project identifier %q", obsolete)
 		}
 	}
-	for _, want := range []string{"project_name", "/project/", "state.projects"} {
+	for _, want := range []string{"project_name", "/project/", "state.projects", "All projects", "No projects found."} {
 		if !strings.Contains(string(index), want) {
 			t.Fatalf("static web page does not contain %q", want)
 		}
@@ -500,8 +503,43 @@ func TestCmdWebGeneratesStaticSiteWithoutStartingServer(t *testing.T) {
 
 func TestCmdWebRejectsInvalidPort(t *testing.T) {
 	baseDir := t.TempDir()
-	if code := cmdWeb([]string{"--basedir", baseDir, "--port", "70000"}); code != 1 {
-		t.Fatalf("cmdWeb exit code = %d, want 1 for invalid port", code)
+	for _, port := range []string{"-1", "70000"} {
+		if code := cmdWeb([]string{"--basedir", baseDir, "--port", port}); code != 1 {
+			t.Fatalf("cmdWeb exit code = %d, want 1 for invalid port %s", code, port)
+		}
+	}
+}
+
+func TestListenWebFallsBackToNextPort(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	occupiedPort := occupied.Addr().(*net.TCPAddr).Port
+
+	listener, err := listenWeb("127.0.0.1", occupiedPort, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if listener.Addr().(*net.TCPAddr).Port <= occupiedPort {
+		t.Fatalf("listener port = %d, want a port greater than %d", listener.Addr().(*net.TCPAddr).Port, occupiedPort)
+	}
+}
+
+func TestListenWebDoesNotFallbackForExplicitPort(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	occupiedPort := occupied.Addr().(*net.TCPAddr).Port
+
+	listener, err := listenWeb("127.0.0.1", occupiedPort, false)
+	if err == nil {
+		listener.Close()
+		t.Fatal("listenWeb succeeded on an occupied explicit port")
 	}
 }
 

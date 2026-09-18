@@ -250,7 +250,7 @@ exit 1
 		t.Fatal(err)
 	}
 
-	if exitCode := executeMixedRun(paths, "run-1", "", 1, 1, 0, "", nil, "", nil, "", nil, nil); exitCode != 0 {
+	if exitCode := executeMixedRun(paths, "run-1", "", 1, 1, 0, "", nil, "", nil, "", true, nil, nil); exitCode != 0 {
 		t.Fatalf("executeMixedRun exit code = %d, want 0", exitCode)
 	}
 }

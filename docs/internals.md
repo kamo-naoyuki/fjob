@@ -118,7 +118,38 @@ selected range as one native array; incomplete selections fall back to
 independent submissions so carried or omitted tasks are never started
 accidentally.
 
+Result-based selection (`--failed`/`--unfinished`/`--success` in `copy`, and in
+rerun when `--partial-array=false`) and copied-job origin status operate on
+the unexpanded `QueuedCommand`, but results are recorded per expanded task ID.
+Matching an array command therefore aggregates its task results
+(`aggregatedJobResult` in `run_selection.go`): it is "finished" only once
+every task has a result, and any non-zero task exit code marks it failed as a
+whole.
+
+`run`/`retry` default to `--partial-array=true`: for a filtered rerun,
+`planRerunSelection` evaluates each array task's own result against the
+selection (`planArrayTaskSelection`) instead of the aggregate, so only the
+matching tasks (e.g. the failed ones) re-execute while the rest carry their
+own result forward into the new run's summary. Each carried task's `Origin`
+is recorded in `QueuedCommand.TaskOrigins` (keyed by task ID, e.g. "id-1"),
+separately from the whole-command `Origin` field, since one array command can
+have some tasks freshly executed and others carried in the same run.
+`loadRunOrigin`/`show`/`web` check both `Origin` and `TaskOrigins` when
+resolving where a job's output lives. `--partial-array=false` restores the
+older whole-array behavior (any match re-executes every task, using only the
+whole-command `Origin`).
+
 ## Execution boundaries
+
+`executeMixedRun` (`mixed_run.go`) is the single execution engine for every
+run regardless of executor mix: the synchronous path (`runServerSync` in
+`server.go`) and the async worker path (`cmdWorkerRun` in `main.go`) both
+drive it, and it is the only place that expands array plans, dispatches to
+executors, and writes the run summary. Do not add a per-executor standalone
+full-run orchestrator (submit-all/wait-all/finalize) outside this path; extend
+`JobExecutor` methods or `executeMixedRun` itself instead. A prior Slurm-only
+run path (`executeSlurmRun` and friends) duplicated this and had silently gone
+dead after `executeMixedRun` replaced it; it was removed in favor of this rule.
 
 `JobExecutor` is the scheduler boundary. Implementations share lifecycle and
 result semantics where supported; scheduler metadata belongs in the job's run
@@ -152,6 +183,10 @@ A synchronous client disconnect, including Ctrl-C, requests cancellation and
 waits for normal run finalization. Async workers are monitored by the server;
 their exit decrements the active-run count so the server can stop. Manual
 interrupted-run recovery is reserved for failures that bypass finalization.
+A completed run, sync or async, decrements the active-run count immediately
+via `beginRun`/`endRun`; reaching zero stops the server right away rather than
+waiting for the idle timeout, so tests and callers must not assume the server
+stays up after a run finishes.
 
 ## Concurrency and safety
 
@@ -186,9 +221,11 @@ reads when adding optional fields; avoid rewriting unrelated history.
 
 - Core state, paths, resolution, and locks: `main.go`, `run_registry.go`.
 - CLI contracts and orchestration: `cli_spec.go`, command files, `server.go`.
-- Short option aliases are defined centrally in `cli_spec.go`; parsing and shell
+- CLI option metadata, including short aliases and CLI-default environment
+    variables, is defined centrally in `cli_spec.go`; help, parsing, and shell
     completion must consume the same definitions.
 - Rerun semantics: `run_selection.go`.
+- Execution engine (single entry point for every executor mix): `mixed_run.go`.
 - Execution boundary: `job_executor.go`, `executor_*.go`.
 - Read projections: `show.go`, `web.go`.
 

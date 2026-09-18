@@ -124,7 +124,7 @@ printf '54321;fake-host\n'
 	}}}); err != nil {
 		t.Fatal(err)
 	}
-	if code := executeMixedRun(paths, "array-run", "", 1, 2, 0, "", nil, "", nil, "", nil, nil); code != 0 {
+	if code := executeMixedRun(paths, "array-run", "", 1, 2, 0, "", nil, "", nil, "", true, nil, nil); code != 0 {
 		t.Fatalf("executeMixedRun exit = %d, want 0", code)
 	}
 	arguments, err := os.ReadFile(argumentsPath)

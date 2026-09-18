@@ -141,7 +141,7 @@ func copyRunToQueue(baseDir, queueName, runID, selection string, jobIDs []string
 	selected := make([]QueuedCommand, 0, len(snapshot.Commands))
 	selectedNames := make(map[string]bool)
 	for _, command := range snapshot.Commands {
-		result, finished := results[command.ID]
+		result, finished := aggregatedJobResult(command.ID, command.Array, results)
 		include := false
 		switch selection {
 		case "all":
@@ -201,13 +201,14 @@ func copyRunToQueue(baseDir, queueName, runID, selection string, jobIDs []string
 		existingIDs[selected[index].ID] = true
 		selected[index].DependsOn = dependencies
 		originStatus := "unfinished"
-		if result, finished := results[sourceJobID]; finished {
+		if result, finished := aggregatedJobResult(sourceJobID, selected[index].Array, results); finished {
 			originStatus = "failed"
 			if result.ExitCode == 0 {
 				originStatus = "success"
 			}
 		}
-		selected[index].Origin = &JobOrigin{RunID: runID, JobID: sourceJobID, Status: originStatus, CWD: originCWD, SubmittedAt: readJobTimestamp(sourceRunDir, sourceJobID, "submitted_at"), FinishedAt: readJobTimestamp(sourceRunDir, sourceJobID, "finished_at")}
+		submittedAt, finishedAt := originTimestamps(sourceRunDir, sourceJobID, selected[index].Array)
+		selected[index].Origin = &JobOrigin{RunID: runID, JobID: sourceJobID, Status: originStatus, CWD: originCWD, SubmittedAt: submittedAt, FinishedAt: finishedAt}
 	}
 	if !appendJobs {
 		queue.Commands = nil
@@ -229,4 +230,25 @@ func copyRunToQueue(baseDir, queueName, runID, selection string, jobIDs []string
 		return "", fmt.Errorf("failed to update metadata: %w", err)
 	}
 	return fmt.Sprintf("copied jobs=%d from run=%s to queue=%s", len(selected), runID, queueName), nil
+}
+
+// originTimestamps returns the submitted/finished timestamps to record on a
+// copied job's Origin. Array jobs are stored per expanded task directory
+// (see queueToJobs), so it reports the earliest submission and latest
+// completion across all tasks instead of a non-existent "id" directory.
+func originTimestamps(runDir, id string, array *ArraySpec) (string, string) {
+	if array == nil {
+		return readJobTimestamp(runDir, id, "submitted_at"), readJobTimestamp(runDir, id, "finished_at")
+	}
+	var submittedAt, finishedAt string
+	for task := array.First; task <= array.Last; task++ {
+		taskID := fmt.Sprintf("%s-%d", id, task)
+		if value := readJobTimestamp(runDir, taskID, "submitted_at"); value != "" && (submittedAt == "" || value < submittedAt) {
+			submittedAt = value
+		}
+		if value := readJobTimestamp(runDir, taskID, "finished_at"); value != "" && value > finishedAt {
+			finishedAt = value
+		}
+	}
+	return submittedAt, finishedAt
 }

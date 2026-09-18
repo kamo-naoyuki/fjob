@@ -169,6 +169,27 @@ func TestCLICommandSpecificEnvironmentDefaults(t *testing.T) {
 	}
 }
 
+func TestCLIHelpShowsEnvironmentDefaults(t *testing.T) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	var output strings.Builder
+	fs.SetOutput(&output)
+	cliString(fs, "basedir", "")
+	cliBool(fs, "overwrite", false)
+	cliInt(fs, "local-concurrency", 8)
+
+	fs.PrintDefaults()
+	help := output.String()
+	if !strings.Contains(help, "basedir") || !strings.Contains(help, "env: ROTARI_BASEDIR") {
+		t.Fatalf("help does not show basedir environment variable: %q", help)
+	}
+	if strings.Contains(help, "--overwrite") && strings.Contains(help, "ROTARI_OVERWRITE") {
+		t.Fatalf("help advertises unsupported overwrite environment variable: %q", help)
+	}
+	if !strings.Contains(help, "env: ROTARI_RUN_LOCAL_CONCURRENCY") {
+		t.Fatalf("help does not show local concurrency environment variable: %q", help)
+	}
+}
+
 func TestEnvironmentDefinitionsAreUniqueAndIncludeCoreVariables(t *testing.T) {
 	definitions := environmentDefinitions()
 	seen := make(map[string]bool, len(definitions))
@@ -1053,7 +1074,7 @@ func TestPlanRerunSelectionWithoutPreviousRun(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(paths.metaFile), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, err = planRerunSelection(paths, Queue{Commands: []QueuedCommand{{ID: "alpha"}}}, "failed", nil, "")
+	_, err = planRerunSelection(paths, Queue{Commands: []QueuedCommand{{ID: "alpha"}}}, "failed", nil, "", true)
 	if !errors.Is(err, errNoPreviousRun) {
 		t.Fatalf("error = %v, want errNoPreviousRun", err)
 	}
@@ -1103,7 +1124,7 @@ func TestPlanRerunSelectionCarriesForwardNonMatchingResults(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := planRerunSelection(paths, queue, "failed", nil, "")
+	plan, err := planRerunSelection(paths, queue, "failed", nil, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1122,6 +1143,128 @@ func TestPlanRerunSelectionCarriesForwardNonMatchingResults(t *testing.T) {
 	origin := plan.CarriedOrigins["alpha"]
 	if origin == nil || origin.RunID != "run-1" || origin.JobID != "alpha" || origin.Status != "success" || origin.SubmittedAt != "2026-09-16T00:00:01Z" || origin.FinishedAt != "2026-09-16T00:00:02Z" {
 		t.Fatalf("origin = %#v, want run-1/alpha success with timestamps", origin)
+	}
+}
+
+func TestPlanRerunSelectionAggregatesArrayTaskResults(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(paths.runsDir, "run-1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	queue := Queue{Commands: []QueuedCommand{
+		{ID: "array", Command: []string{"echo", "array"}, Name: "array", Array: &ArraySpec{First: 1, Last: 2}},
+	}}
+	if err := writeJSON(filepath.Join(paths.runsDir, "run-1", "commands.json"), queue); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(paths.runsDir, "run-1", "summary.json"), RunSummary{
+		RunID: "run-1",
+		Results: []JobResult{
+			{ID: "array-1", ExitCode: 0},
+			{ID: "array-2", ExitCode: 0},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	meta := defaultMeta()
+	meta.LastRunID = "run-1"
+	if err := writeJSON(paths.metaFile, meta); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fully successful array job must not be re-executed by --unfinished,
+	// with or without partialArray (both tasks already match "finished").
+	plan, err := planRerunSelection(paths, queue, "unfinished", nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Execute["array"] {
+		t.Fatalf("execute set = %#v, want array carried forward, not re-executed", plan.Execute)
+	}
+	if _, ok := plan.CarriedResults["array-1"]; !ok {
+		t.Fatal("expected array-1 to be carried forward")
+	}
+	if _, ok := plan.CarriedResults["array-2"]; !ok {
+		t.Fatal("expected array-2 to be carried forward")
+	}
+	if origin := plan.CarriedOrigins["array"]; origin == nil || origin.Status != "success" {
+		t.Fatalf("origin = %#v, want status=success", origin)
+	}
+
+	// With partialArray disabled, a single failed task still re-executes
+	// the whole array as one unit (the pre-partial-array behavior).
+	if err := writeJSON(filepath.Join(paths.runsDir, "run-1", "summary.json"), RunSummary{
+		RunID: "run-1",
+		Results: []JobResult{
+			{ID: "array-1", ExitCode: 0},
+			{ID: "array-2", ExitCode: 1},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err = planRerunSelection(paths, queue, "failed", nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Execute["array"] {
+		t.Fatal("expected array with a failed task to be re-executed as a whole when partialArray is false")
+	}
+}
+
+func TestPlanRerunSelectionPartialArrayReexecutesOnlyFailedTasks(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(paths.runsDir, "run-1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	queue := Queue{Commands: []QueuedCommand{
+		{ID: "array", Command: []string{"echo", "array"}, Name: "array", Array: &ArraySpec{First: 1, Last: 2}},
+	}}
+	if err := writeJSON(filepath.Join(paths.runsDir, "run-1", "commands.json"), queue); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(paths.runsDir, "run-1", "summary.json"), RunSummary{
+		RunID: "run-1",
+		Results: []JobResult{
+			{ID: "array-1", ExitCode: 0},
+			{ID: "array-2", ExitCode: 1},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	meta := defaultMeta()
+	meta.LastRunID = "run-1"
+	if err := writeJSON(paths.metaFile, meta); err != nil {
+		t.Fatal(err)
+	}
+
+	// partialArray=true (the default): only the failed task re-executes,
+	// the successful one carries its previous result forward instead.
+	plan, err := planRerunSelection(paths, queue, "failed", nil, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Execute["array"] {
+		t.Fatal("did not expect the whole array command ID to be marked for execution")
+	}
+	if plan.Execute["array-1"] {
+		t.Fatal("array-1 already succeeded and must not be re-executed")
+	}
+	if !plan.Execute["array-2"] {
+		t.Fatal("array-2 failed and must be re-executed")
+	}
+	if result, ok := plan.CarriedResults["array-1"]; !ok || result.ExitCode != 0 {
+		t.Fatalf("array-1 carried result = %#v, want carried success", result)
+	}
+	if _, ok := plan.CarriedResults["array-2"]; ok {
+		t.Fatal("array-2 is being re-executed and must not also be carried forward")
 	}
 }
 
@@ -1193,7 +1336,7 @@ func TestPlanRerunSelectionByJobID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := planRerunSelection(paths, queue, "job-id", []string{"beta", "alpha"}, "")
+	plan, err := planRerunSelection(paths, queue, "job-id", []string{"beta", "alpha"}, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1296,7 +1439,7 @@ func TestExecuteMixedRunRetriesFailedJob(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := executeMixedRun(paths, "retry-run", "", 1, 1, 1, "", nil, "", nil, "", nil, nil); code != 0 {
+	if code := executeMixedRun(paths, "retry-run", "", 1, 1, 1, "", nil, "", nil, "", true, nil, nil); code != 0 {
 		t.Fatalf("executeMixedRun exit = %d, want 0", code)
 	}
 	if _, err := os.Stat(marker); err != nil {
@@ -1359,7 +1502,7 @@ func TestExecuteMixedRunKeepsPerJobExecutorOverrides(t *testing.T) {
 	if err := writeJSON(paths.queueFile, queue); err != nil {
 		t.Fatal(err)
 	}
-	if code := executeMixedRun(paths, "mixed-run", "", 1, 1, 0, "", nil, "", nil, "", nil, nil); code != 0 {
+	if code := executeMixedRun(paths, "mixed-run", "", 1, 1, 0, "", nil, "", nil, "", true, nil, nil); code != 0 {
 		t.Fatalf("executeMixedRun exit = %d, want 0", code)
 	}
 	if len(scheduler.submitted) != 1 || scheduler.submitted[0] != "slurm-job" {
@@ -1388,7 +1531,7 @@ func TestExecuteMixedRunExecutesAllArrayTasks(t *testing.T) {
 	}}}); err != nil {
 		t.Fatal(err)
 	}
-	if code := executeMixedRun(paths, "array-run", "", 2, 1, 0, "", nil, "", nil, "", nil, nil); code != 0 {
+	if code := executeMixedRun(paths, "array-run", "", 2, 1, 0, "", nil, "", nil, "", true, nil, nil); code != 0 {
 		t.Fatalf("executeMixedRun exit = %d, want 0", code)
 	}
 	summary, err := loadRunSummary(filepath.Join(paths.runsDir, "array-run", "summary.json"))
@@ -1397,6 +1540,84 @@ func TestExecuteMixedRunExecutesAllArrayTasks(t *testing.T) {
 	}
 	if len(summary.Results) != 2 || summary.Results[0].ID == "array" || summary.Results[1].ID == "array" {
 		t.Fatalf("summary results = %#v, want two array tasks", summary.Results)
+	}
+}
+
+func TestExecuteMixedRunPartialArrayReexecutesOnlyFailedTask(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	queue := Queue{Commands: []QueuedCommand{{
+		ID: "array", Command: []string{"sh", "-c", "exit 0"}, Array: &ArraySpec{First: 1, Last: 2},
+	}}}
+	if err := writeJSON(paths.queueFile, queue); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(paths.runsDir, "run-1", "commands.json"), queue); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(paths.runsDir, "run-1", "summary.json"), RunSummary{
+		RunID: "run-1",
+		Results: []JobResult{
+			{ID: "array-1", ExitCode: 1},
+			{ID: "array-2", ExitCode: 0},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := executeMixedRun(paths, "run-2", "", 1, 1, 0, "", nil, "failed", nil, "run-1", true, nil, nil); code != 0 {
+		t.Fatalf("executeMixedRun exit = %d, want 0", code)
+	}
+	if _, err := os.Stat(filepath.Join(paths.runsDir, "run-2", "array-1")); err != nil {
+		t.Fatalf("array-1 was not re-executed in run-2: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(paths.runsDir, "run-2", "array-2")); !os.IsNotExist(err) {
+		t.Fatalf("array-2 should not have been re-executed, stat error = %v", err)
+	}
+	summary, err := loadRunSummary(filepath.Join(paths.runsDir, "run-2", "summary.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(map[string]JobResult, len(summary.Results))
+	for _, result := range summary.Results {
+		results[result.ID] = result
+	}
+	if result, ok := results["array-1"]; !ok || result.ExitCode != 0 {
+		t.Fatalf("array-1 result = %#v, want re-executed with exit 0", result)
+	}
+	if result, ok := results["array-2"]; !ok || result.ExitCode != 0 {
+		t.Fatalf("array-2 result = %#v, want carried forward with exit 0", result)
+	}
+
+	// The carried task's origin must point at its own task ID in the
+	// reference run, not the array's base command ID, so show/web can
+	// follow it back to find the original output.
+	newQueue, err := loadQueue(filepath.Join(paths.runsDir, "run-2", "commands.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := newQueue.Commands[0].TaskOrigins["array-2"]
+	if origin == nil || origin.RunID != "run-1" || origin.JobID != "array-2" || origin.Status != "success" {
+		t.Fatalf("array-2 TaskOrigins = %#v, want run-1/array-2 success", origin)
+	}
+	if err := os.MkdirAll(filepath.Join(paths.runsDir, "run-1", "array-2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(paths.runsDir, "run-1", "array-2", "output"), []byte("carried output\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var buffer bytes.Buffer
+	if code := showJob(&buffer, paths, "run-2", "array-2"); code != 0 {
+		t.Fatalf("showJob exit = %d, want 0", code)
+	}
+	if !strings.Contains(buffer.String(), "carried forward from run run-1") {
+		t.Fatalf("showJob output = %q, want carried-forward note", buffer.String())
 	}
 }
 
@@ -1415,7 +1636,7 @@ func TestExecuteMixedRunPersistsRunName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := executeMixedRun(paths, "named-run", "nightly-build", 1, 1, 0, "", nil, "", nil, "", nil, nil); code != 0 {
+	if code := executeMixedRun(paths, "named-run", "nightly-build", 1, 1, 0, "", nil, "", nil, "", true, nil, nil); code != 0 {
 		t.Fatalf("executeMixedRun exit = %d, want 0", code)
 	}
 	summary, err := loadRunSummary(filepath.Join(paths.runsDir, "named-run", "summary.json"))
@@ -1672,7 +1893,7 @@ func TestExecuteMixedRunBlocksWhenDependencyFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := executeMixedRun(paths, "blocked-run", "", 1, 1, 0, "", nil, "", nil, "", nil, nil); code != 1 {
+	if code := executeMixedRun(paths, "blocked-run", "", 1, 1, 0, "", nil, "", nil, "", true, nil, nil); code != 1 {
 		t.Fatalf("executeMixedRun exit = %d, want 1", code)
 	}
 
@@ -1708,7 +1929,7 @@ func TestExecuteMixedRunCarriesForwardNonSelectedResults(t *testing.T) {
 	if err := writeJSON(paths.queueFile, queue); err != nil {
 		t.Fatal(err)
 	}
-	if code := executeMixedRun(paths, "run-1", "", 1, 1, 0, "", nil, "", nil, "", nil, nil); code != 1 {
+	if code := executeMixedRun(paths, "run-1", "", 1, 1, 0, "", nil, "", nil, "", true, nil, nil); code != 1 {
 		t.Fatalf("first run exit = %d, want 1", code)
 	}
 	meta := defaultMeta()
@@ -1720,7 +1941,7 @@ func TestExecuteMixedRunCarriesForwardNonSelectedResults(t *testing.T) {
 	if err := writeJSON(paths.queueFile, queue); err != nil {
 		t.Fatal(err)
 	}
-	if code := executeMixedRun(paths, "run-2", "", 1, 1, 0, "", nil, "failed", nil, "", nil, nil); code != 1 {
+	if code := executeMixedRun(paths, "run-2", "", 1, 1, 0, "", nil, "failed", nil, "", true, nil, nil); code != 1 {
 		t.Fatalf("second run exit = %d, want 1 (beta still fails)", code)
 	}
 
@@ -2202,7 +2423,7 @@ func TestRunServerSyncWithDisconnectCancelsRunningJob(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _, _ = runServerSyncWithDisconnect(serverConn, baseDir, "default", "", 1, 1, 0, "", nil, "", nil, "", func(serverResponse) {})
+		_, _, _ = runServerSyncWithDisconnect(serverConn, baseDir, "default", "", 1, 1, 0, "", nil, "", nil, "", true, func(serverResponse) {})
 	}()
 
 	var pid int

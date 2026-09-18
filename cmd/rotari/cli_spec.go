@@ -175,7 +175,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "run",
 		Description: "execute queued commands, optionally selecting jobs from a run",
-		Usage:       "rotari run [--basedir DIR] [--project-name NAME] [--run-id ID] [--overwrite] [--run-name NAME] [--local-concurrency N] [--batch-concurrency N] [--retry N] [--failed] [--unfinished] [--success] [--job-id ID] [--async] [--executor EXECUTOR] [--executor-option OPTION]",
+		Usage:       "rotari run [--basedir DIR] [--project-name NAME] [--run-id ID] [--overwrite] [--run-name NAME] [--local-concurrency N] [--batch-concurrency N] [--retry N] [--failed] [--unfinished] [--success] [--job-id ID] [--partial-array] [--async] [--executor EXECUTOR] [--executor-option OPTION]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "run-id", Description: "repopulate the queue from this run before executing (copy --run-id + run); defaults to the latest run when a result filter is used", ValueName: "ID"},
 			cliFlagSpec{Name: "overwrite", Description: "replace a non-empty queue without prompting; requires --run-id"},
@@ -187,6 +187,7 @@ var cliCommandSpecs = []cliCommandSpec{
 			cliFlagSpec{Name: "unfinished", Description: "only execute unfinished jobs; others carry forward their previous result"},
 			cliFlagSpec{Name: "success", Description: "only execute successful jobs; others carry forward their previous result"},
 			cliFlagSpec{Name: "job-id", Description: "only execute this job; may be repeated; others carry forward their previous result", ValueName: "ID"},
+			cliFlagSpec{Name: "partial-array", Description: "with a result filter, select array jobs per task instead of all-or-nothing (default true); pass =false to re-execute the whole array when any task matches"},
 			cliFlagSpec{Name: "async", Description: "return after starting the run"},
 			cliFlagSpec{Name: "executor", Description: "execution executor override", ValueName: "EXECUTOR", Values: executorNames()},
 			cliFlagSpec{Name: "executor-option", Description: "option passed to the selected scheduler (sbatch/qsub/...)", ValueName: "OPTION"},
@@ -195,7 +196,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "retry",
 		Description: "alias for run --failed --unfinished",
-		Usage:       "rotari retry [--basedir DIR] [--project-name NAME] [--run-id ID] [--overwrite] [--run-name NAME] [--local-concurrency N] [--batch-concurrency N] [--retry N] [--job-id ID] [--async] [--executor EXECUTOR] [--executor-option OPTION]",
+		Usage:       "rotari retry [--basedir DIR] [--project-name NAME] [--run-id ID] [--overwrite] [--run-name NAME] [--local-concurrency N] [--batch-concurrency N] [--retry N] [--job-id ID] [--partial-array] [--async] [--executor EXECUTOR] [--executor-option OPTION]",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "run-id", Description: "repopulate the queue from this run before executing; defaults to the latest run", ValueName: "ID"},
 			cliFlagSpec{Name: "overwrite", Description: "replace a non-empty queue without prompting; requires --run-id"},
@@ -305,11 +306,19 @@ func cliString(fs *flag.FlagSet, name, defaultValue string) *string {
 		}
 	}
 	target := new(string)
-	fs.StringVar(target, spec.Name, defaultValue, spec.Description)
+	description := cliFlagDescription(spec)
+	fs.StringVar(target, spec.Name, defaultValue, description)
 	if short := cliShortFlagNames[name]; short != "" {
-		fs.StringVar(target, short, defaultValue, spec.Description+" (shorthand)")
+		fs.StringVar(target, short, defaultValue, description+" (shorthand)")
 	}
 	return target
+}
+
+func cliFlagDescription(spec cliFlagSpec) string {
+	if envName := cliEnvironmentVariable(spec.Name); envName != "" {
+		return spec.Description + " (env: " + envName + ")"
+	}
+	return spec.Description
 }
 
 func cliEnvironmentVariable(name string) string {
@@ -359,9 +368,10 @@ func cliEnvironmentVariable(name string) string {
 
 func cliStringVar(fs *flag.FlagSet, target *string, name, defaultValue string) {
 	spec := cliFlag(name)
-	fs.StringVar(target, spec.Name, defaultValue, spec.Description)
+	description := cliFlagDescription(spec)
+	fs.StringVar(target, spec.Name, defaultValue, description)
 	if short := cliShortFlagNames[name]; short != "" {
-		fs.StringVar(target, short, defaultValue, spec.Description+" (shorthand)")
+		fs.StringVar(target, short, defaultValue, description+" (shorthand)")
 	}
 }
 
@@ -373,9 +383,10 @@ func cliBool(fs *flag.FlagSet, name string, defaultValue bool) *bool {
 		}
 	}
 	target := new(bool)
-	fs.BoolVar(target, spec.Name, defaultValue, spec.Description)
+	description := cliFlagDescription(spec)
+	fs.BoolVar(target, spec.Name, defaultValue, description)
 	if short := cliShortFlagNames[name]; short != "" {
-		fs.BoolVar(target, short, defaultValue, spec.Description+" (shorthand)")
+		fs.BoolVar(target, short, defaultValue, description+" (shorthand)")
 	}
 	return target
 }
@@ -388,9 +399,10 @@ func cliInt(fs *flag.FlagSet, name string, defaultValue int) *int {
 		}
 	}
 	target := new(int)
-	fs.IntVar(target, spec.Name, defaultValue, spec.Description)
+	description := cliFlagDescription(spec)
+	fs.IntVar(target, spec.Name, defaultValue, description)
 	if short := cliShortFlagNames[name]; short != "" {
-		fs.IntVar(target, short, defaultValue, spec.Description+" (shorthand)")
+		fs.IntVar(target, short, defaultValue, description+" (shorthand)")
 	}
 	return target
 }
@@ -405,9 +417,10 @@ func cliDuration(fs *flag.FlagSet, name string, defaultValue time.Duration) *tim
 		}
 	}
 	target := new(time.Duration)
-	fs.DurationVar(target, spec.Name, defaultValue, spec.Description)
+	description := cliFlagDescription(spec)
+	fs.DurationVar(target, spec.Name, defaultValue, description)
 	if short := cliShortFlagNames[name]; short != "" {
-		fs.DurationVar(target, short, defaultValue, spec.Description+" (shorthand)")
+		fs.DurationVar(target, short, defaultValue, description+" (shorthand)")
 	}
 	return target
 }
@@ -420,8 +433,9 @@ func cliValue(fs *flag.FlagSet, target flag.Value, name string) {
 			_ = target.Set(value)
 		}
 	}
-	fs.Var(target, spec.Name, spec.Description)
+	description := cliFlagDescription(spec)
+	fs.Var(target, spec.Name, description)
 	if short := cliShortFlagNames[name]; short != "" {
-		fs.Var(target, short, spec.Description+" (shorthand)")
+		fs.Var(target, short, description+" (shorthand)")
 	}
 }

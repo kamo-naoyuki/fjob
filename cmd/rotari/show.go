@@ -320,6 +320,9 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		}
 		for _, command := range runQueue.Commands {
 			originByID[command.ID] = command.Origin
+			for taskID, origin := range command.TaskOrigins {
+				originByID[taskID] = origin
+			}
 		}
 	} else {
 		entries, err := os.ReadDir(runDir)
@@ -468,7 +471,7 @@ func showQueue(paths pathSet, queue Queue) int {
 	jobs := queueToJobs(queue.Commands)
 	writeShowTargetHeader(os.Stdout, paths)
 	fmt.Printf("%s\n\n", cyan("Showing jobs queued for the next run"))
-	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-12s %-15s %-20s %-30s %s", "JOB ID", "NAME", "DEPENDS ON", "EXECUTOR", "COMMAND")))
+	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-12s %-6s %-15s %-20s %-30s %s", "JOB ID", "TASK", "NAME", "DEPENDS ON", "EXECUTOR", "COMMAND")))
 	for _, job := range jobs {
 		name := job.Name
 		if name == "" {
@@ -478,8 +481,12 @@ func showQueue(paths pathSet, queue Queue) int {
 		if dependsOn == "" {
 			dependsOn = "-"
 		}
+		taskText := "-"
+		if job.ArrayTaskID != nil {
+			taskText = strconv.Itoa(*job.ArrayTaskID)
+		}
 		executorText := queueExecutorText(queue, job)
-		fmt.Printf("%-12s %-15s %-20s %-30s %s\n", job.ID, name, dependsOn, executorText, strings.Join(job.Command, " "))
+		fmt.Printf("%-12s %-6s %-15s %-20s %-30s %s\n", job.ID, taskText, name, dependsOn, executorText, strings.Join(job.Command, " "))
 	}
 	fmt.Printf("\n%s\n  rotari run --basedir %s --project-name %s\n", cyan("To execute these jobs:"), shellQuote(paths.baseDir), shellQuote(paths.queueName))
 	return 0
@@ -494,6 +501,9 @@ func showQueueJob(paths pathSet, queue Queue, jobID string) int {
 		fmt.Printf("%s %s\n", cyan("Job:"), job.ID)
 		if job.Name != "" {
 			fmt.Printf("Name: %s\n", job.Name)
+		}
+		if job.ArrayTaskID != nil {
+			fmt.Printf("Array task: %d (range %d-%d)\n", *job.ArrayTaskID, job.ArrayFirst, job.ArrayLast)
 		}
 		fmt.Printf("Executor: %s\n", queueExecutorText(queue, job))
 		if len(job.DependsOn) > 0 {
@@ -831,6 +841,9 @@ func loadRunOrigin(runDir, jobID string) *JobOrigin {
 		if command.ID == jobID {
 			return command.Origin
 		}
+		if origin, ok := command.TaskOrigins[jobID]; ok {
+			return origin
+		}
 	}
 	return nil
 }
@@ -1022,44 +1035,56 @@ func showRunLogs(writer io.Writer, paths pathSet, runID string, failedOnly bool)
 	queue, queueErr := loadQueue(filepath.Join(runDir, "commands.json"))
 	if queueErr == nil {
 		for _, command := range queue.Commands {
-			if seen[command.ID] || command.Origin == nil {
+			if command.Array == nil {
+				printCarriedForwardOutput(writer, paths, command.ID, command.Name, command.Command, command.Origin, seen, failedOnly)
 				continue
 			}
-			// Carried forward from a previous run: it was not re-executed
-			// here, so read its output from the origin run/job instead.
-			if failedOnly && command.Origin.Status != "failed" {
-				continue
+			for task := command.Array.First; task <= command.Array.Last; task++ {
+				taskID := fmt.Sprintf("%s-%d", command.ID, task)
+				printCarriedForwardOutput(writer, paths, taskID, command.Name, command.Command, command.TaskOrigins[taskID], seen, failedOnly)
 			}
-			header := fmt.Sprintf("=== Job: %s", command.ID)
-			if command.Name != "" {
-				header += fmt.Sprintf(" (Name: %s)", command.Name)
-			}
-			header += fmt.Sprintf(" [carried forward from run %s: %s] ===", command.Origin.RunID, command.Origin.Status)
-			headerColor := cyan
-			switch command.Origin.Status {
-			case "failed":
-				headerColor = red
-			case "success":
-				headerColor = green
-			}
-			fmt.Fprintln(writer, headerColor(header))
-			fmt.Fprintf(writer, "Command: %s\n", strings.Join(command.Command, " "))
-			originDir := filepath.Join(paths.runsDir, command.Origin.RunID, command.Origin.JobID)
-			fmt.Fprintf(writer, "Output path: %s\n", filepath.Join(originDir, "output"))
-			output, err := os.ReadFile(filepath.Join(originDir, "output"))
-			if err == nil && len(output) > 0 {
-				fmt.Fprintln(writer, "--- Log Output ---")
-				fmt.Fprint(writer, string(output))
-				if !strings.HasSuffix(string(output), "\n") {
-					fmt.Fprintln(writer)
-				}
-			} else {
-				fmt.Fprintln(writer, "(No output log)")
-			}
-			fmt.Fprintln(writer)
 		}
 	}
 	return 0
+}
+
+// printCarriedForwardOutput prints a carried-forward job's output read from
+// its origin run/job, if it was not itself re-executed in this run (i.e. it
+// has no directory of its own here).
+func printCarriedForwardOutput(writer io.Writer, paths pathSet, id, name string, command []string, origin *JobOrigin, seen map[string]bool, failedOnly bool) {
+	if seen[id] || origin == nil {
+		return
+	}
+	if failedOnly && origin.Status != "failed" {
+		return
+	}
+	header := fmt.Sprintf("=== Job: %s", id)
+	if name != "" {
+		header += fmt.Sprintf(" (Name: %s)", name)
+	}
+	header += fmt.Sprintf(" [carried forward from run %s: %s] ===", origin.RunID, origin.Status)
+	headerColor := cyan
+	switch origin.Status {
+	case "failed":
+		headerColor = red
+	case "success":
+		headerColor = green
+	}
+	fmt.Fprintln(writer, headerColor(header))
+	fmt.Fprintf(writer, "Command: %s\n", strings.Join(command, " "))
+	originDir := filepath.Join(paths.runsDir, origin.RunID, origin.JobID)
+	fmt.Fprintf(writer, "Output path: %s\n", filepath.Join(originDir, "output"))
+	output, err := os.ReadFile(filepath.Join(originDir, "output"))
+	if err == nil && len(output) > 0 {
+		fmt.Fprintln(writer, "--- Log Output ---")
+		fmt.Fprint(writer, string(output))
+		if !strings.HasSuffix(string(output), "\n") {
+			fmt.Fprintln(writer)
+		}
+	} else {
+		fmt.Fprintln(writer, "(No output log)")
+	}
+	fmt.Fprintln(writer)
 }
 
 func followJobLog(writer io.Writer, paths pathSet, runID, jobID string) int {
