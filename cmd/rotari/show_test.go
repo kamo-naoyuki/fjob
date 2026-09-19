@@ -496,6 +496,32 @@ func TestShowJobSurfacesAccountingUnavailableFromSummary(t *testing.T) {
 	}
 }
 
+func TestShowJobRejectsTraversalInRunAndJobIDs(t *testing.T) {
+	paths, err := resolvePaths(t.TempDir(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	escapedDir := filepath.Join(filepath.Dir(paths.runsDir), "outside", "job-1")
+	if err := os.MkdirAll(escapedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(escapedDir, "output"), []byte("escaped\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		runID string
+		jobID string
+	}{
+		{runID: "../outside", jobID: "job-1"},
+		{runID: "run-1", jobID: "../outside"},
+	} {
+		var output bytes.Buffer
+		if code := showJob(&output, paths, tc.runID, tc.jobID); code == 0 {
+			t.Fatalf("showJob accepted unsafe values runID=%q jobID=%q", tc.runID, tc.jobID)
+		}
+	}
+}
+
 func TestShowJobFollowsCarriedForwardOrigin(t *testing.T) {
 	paths, err := resolvePaths(t.TempDir(), "demo")
 	if err != nil {

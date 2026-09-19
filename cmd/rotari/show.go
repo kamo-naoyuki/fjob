@@ -554,6 +554,10 @@ func showQueue(paths pathSet, queue Queue) int {
 }
 
 func showQueueJob(paths pathSet, queue Queue, jobID string) int {
+	if !isValidPathElement(jobID) {
+		printErrorf("job %q not found in current queue", jobID)
+		return 1
+	}
 	for _, job := range queueToJobs(queue.Commands) {
 		if job.ID != jobID {
 			continue
@@ -913,6 +917,14 @@ func loadRunOrigin(runDir, jobID string) *JobOrigin {
 }
 
 func showJob(writer io.Writer, paths pathSet, runID, jobID string) int {
+	if !isValidPathElement(runID) {
+		printErrorf("run %q not found", runID)
+		return 1
+	}
+	if !isValidPathElement(jobID) {
+		printErrorf("job %q not found in run %q", jobID, runID)
+		return 1
+	}
 	jobDir := filepath.Join(paths.runsDir, runID, jobID)
 	runDir := filepath.Dir(jobDir)
 	if info, err := os.Stat(jobDir); err != nil || !info.IsDir() {
@@ -1135,6 +1147,9 @@ func printCarriedForwardOutput(writer io.Writer, paths pathSet, id, name string,
 	if seen[id] || origin == nil {
 		return
 	}
+	if !isValidPathElement(origin.RunID) || !isValidPathElement(origin.JobID) {
+		return
+	}
 	if failedOnly && origin.Status != "failed" {
 		return
 	}
@@ -1171,6 +1186,14 @@ func printCarriedForwardOutput(writer io.Writer, paths pathSet, id, name string,
 }
 
 func followJobLog(writer io.Writer, paths pathSet, runID, jobID string) int {
+	if !isValidPathElement(runID) {
+		printErrorf("run %q not found", runID)
+		return 1
+	}
+	if !isValidPathElement(jobID) {
+		printErrorf("job %q not found in run %q", jobID, runID)
+		return 1
+	}
 	jobDir := filepath.Join(paths.runsDir, runID, jobID)
 	outputPath := filepath.Join(jobDir, "output")
 	output, err := os.ReadFile(outputPath)

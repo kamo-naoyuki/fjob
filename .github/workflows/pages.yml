@@ -36,18 +36,6 @@ jobs:
         run: |
           GO_BINARY="$(command -v go)" scripts/generate-static-web.sh
 
-      - name: Install Graphviz
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes graphviz
-
-      - name: Install Go call graph tool
-        run: go install github.com/ofabry/go-callvis@latest
-
-      - name: Generate architecture documentation
-        run: |
-          scripts/generate-package-dependencies.sh docs/web-demo/architecture
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
