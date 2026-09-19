@@ -80,6 +80,38 @@ func TestResolvePathsRejectsProjectTraversal(t *testing.T) {
 	}
 }
 
+func TestResolveProjectNameRejectsUnsafeProjectNames(t *testing.T) {
+	for _, projectName := range []string{"../outside", "/tmp/outside", ".", "..", "nested/project", "subdir/..", "job/with/slash"} {
+		if _, err := resolveProjectName(t.TempDir(), projectName); err == nil {
+			t.Errorf("resolveProjectName accepted unsafe project name %q", projectName)
+		}
+	}
+
+	const envName = "ROTARI_PROJECT_NAME"
+	old, existed := os.LookupEnv(envName)
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(envName, old)
+		} else {
+			_ = os.Unsetenv(envName)
+		}
+	})
+	if err := os.Setenv(envName, "../outside"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveProjectName(t.TempDir(), ""); err == nil {
+		t.Fatal("resolveProjectName accepted unsafe project name from environment")
+	}
+}
+
+func TestResolvePathsRejectsAbsoluteAndNestedPathVariants(t *testing.T) {
+	for _, projectName := range []string{"/tmp/outside", "///tmp/outside", "nested/../outside", "subdir/.", "subdir/..", "job/with/slash"} {
+		if _, err := resolvePaths(t.TempDir(), projectName); err == nil {
+			t.Errorf("resolvePaths accepted unsafe project name %q", projectName)
+		}
+	}
+}
+
 func TestResolveBaseDirPriority(t *testing.T) {
 	const envName = "ROTARI_BASEDIR"
 	old, existed := os.LookupEnv(envName)

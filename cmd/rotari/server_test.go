@@ -244,6 +244,14 @@ func TestCancelJobsRejectsJobTraversal(t *testing.T) {
 	}
 }
 
+func TestCancelJobsRejectsAbsoluteAndNestedJobIDs(t *testing.T) {
+	for _, jobID := range []string{"/tmp/outside", "nested/job", "job/..", "job/.", "job/with/slash"} {
+		if _, err := cancelJobs(t.TempDir(), "default", "run-1", []string{jobID}); err == nil {
+			t.Fatalf("cancelJobs accepted unsafe job ID %q", jobID)
+		}
+	}
+}
+
 func TestCmdAddThenCmdRunExecutesLocalJobEndToEnd(t *testing.T) {
 	// A short, non-nested temp dir is required: the unix socket path derived
 	// from baseDir must stay under the ~108 byte sun_path limit.

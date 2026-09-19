@@ -956,8 +956,12 @@ type pathSet struct {
 	runsDir         string
 }
 
+func isValidProjectName(projectName string) bool {
+	return projectName != "" && projectName != "." && projectName != ".." && filepath.Base(projectName) == projectName
+}
+
 func resolvePaths(cliBaseDir, projectName string) (pathSet, error) {
-	if projectName == "" || projectName == "." || projectName == ".." || filepath.Base(projectName) != projectName {
+	if !isValidProjectName(projectName) {
 		return pathSet{}, fmt.Errorf("invalid project name %q", projectName)
 	}
 	baseDir, explicit, err := resolveBaseDir(cliBaseDir)
@@ -1033,9 +1037,15 @@ func stateMode(privateMode, sharedMode os.FileMode) os.FileMode {
 
 func resolveProjectName(baseDir string, cliProjectName string) (string, error) {
 	if cliProjectName != "" {
+		if !isValidProjectName(cliProjectName) {
+			return "", fmt.Errorf("invalid project name %q", cliProjectName)
+		}
 		return cliProjectName, nil
 	}
 	if value := os.Getenv(envProjectName); value != "" {
+		if !isValidProjectName(value) {
+			return "", fmt.Errorf("invalid project name %q", value)
+		}
 		return value, nil
 	}
 	projectsDir := filepath.Join(baseDir, "projects")

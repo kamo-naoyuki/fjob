@@ -64,3 +64,28 @@ func TestRunLocationPathRejectsUnsafeRunIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestValidRunRegistryLocationRejectsTraversalInputs(t *testing.T) {
+	for _, location := range []runLocation{
+		{BaseDir: "/tmp/rotari", ProjectName: "../demo", RunID: "run-1"},
+		{BaseDir: "/tmp/rotari", ProjectName: "nested/demo", RunID: "run-1"},
+		{BaseDir: "/tmp/rotari", ProjectName: "demo", RunID: "../run-1"},
+		{BaseDir: "/tmp/rotari", ProjectName: "demo", RunID: "nested/run-1"},
+		{BaseDir: "relative/base", ProjectName: "demo", RunID: "run-1"},
+		{BaseDir: "/tmp/rotari", ProjectName: ".", RunID: "run-1"},
+		{BaseDir: "/tmp/rotari", ProjectName: "demo", RunID: "."},
+	} {
+		if validRunRegistryLocation(location) {
+			t.Fatalf("validRunRegistryLocation accepted unsafe location %#v", location)
+		}
+	}
+}
+
+func TestDeleteRunRejectsUnsafeRunIDs(t *testing.T) {
+	paths := pathSet{runsDir: t.TempDir()}
+	for _, runID := range []string{"", "../run-1", "nested/run-1", "run/..", "run/."} {
+		if err := deleteRun(paths, runID); err == nil {
+			t.Fatalf("deleteRun accepted unsafe run ID %q", runID)
+		}
+	}
+}

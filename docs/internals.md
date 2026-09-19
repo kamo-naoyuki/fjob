@@ -50,6 +50,16 @@ Projects resolve from `--project-name`, then `ROTARI_PROJECT_NAME`, then the
 only project in the resolved base directory. With no projects the name is
 `default`; multiple projects require an explicit choice.
 
+Project names and job IDs are treated as single path elements, never as a
+relative or absolute path. Values that are empty, `.`/`..`, absolute, or
+contain path separators (`/` or `\`) are rejected before any filesystem
+operation. This contract is intentionally strict: it blocks traversal inputs
+like `../outside`, `nested/project`, and `/tmp/outside`, and it applies to both
+project resolution (`resolvePaths`) and cancellation requests (`cancelJobs`).
+The purpose is to keep all persisted state under the resolved base directory and
+prevent job or queue identifiers from escaping that boundary even when they are
+supplied by a remote caller.
+
 Persisted timestamps use UTC RFC3339 values. Human-readable CLI and web
 projections convert them to the display location: a valid IANA timezone name
 from `TZ` takes precedence; otherwise Go's local location is used, which on
