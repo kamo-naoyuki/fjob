@@ -163,7 +163,10 @@ the active lock. Saved runs remain until explicitly deleted.
 
 Retries and filtered runs create new history. Selected jobs execute; completed
 jobs outside the selection carry forward their result and an origin pointing
-to the original output. Dependencies use unique job names within a queue;
+to the original output. Within one run, `--retry N` retries failed jobs up to
+N additional times, but an explicit cancellation is terminal for that run and
+is never automatically retried. An explicit later `retry` command may select
+the cancelled result as failed/unfinished. Dependencies use unique job names within a queue;
 unknown names, duplicates, and cycles are rejected before execution. `add`
 also rejects a duplicate job name immediately, without writing the queue, so
 that mistake is never deferred to execution time; a `--depends-on` name may

@@ -151,7 +151,7 @@ func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, bat
 		nextPending := make([]JobSpec, 0, len(jobs))
 		for _, job := range pending {
 			result, ok := finalResults[job.ID]
-			if !ok || (result.ExitCode != 0 && attempt < retry) {
+			if !ok || (result.ExitCode != 0 && attempt < retry && !jobWasExplicitlyCancelled(runDir, job.ID, result)) {
 				nextPending = append(nextPending, job)
 			}
 		}
@@ -196,6 +196,21 @@ func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, bat
 		return 1
 	}
 	return summary.ExitCode
+}
+
+func jobWasExplicitlyCancelled(runDir, jobID string, result JobResult) bool {
+	jobDir := filepath.Join(runDir, jobID)
+	if jobCancellationRequested(jobDir) {
+		return true
+	}
+	if status, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok {
+		phase := strings.ToLower(strings.TrimSpace(status.Phase))
+		if phase == "cancelled" || phase == "canceled" {
+			return true
+		}
+	}
+	errorText := strings.ToLower(strings.TrimSpace(result.Error))
+	return errorText == "cancelled" || errorText == "canceled" || strings.HasPrefix(errorText, "cancelled ") || strings.HasPrefix(errorText, "canceled ")
 }
 
 func expandArrayPlan(commands []QueuedCommand, jobs []JobSpec, execute map[string]bool) {

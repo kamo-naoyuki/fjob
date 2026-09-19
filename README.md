@@ -302,7 +302,9 @@ Local and scheduler-backed commands may be mixed in the same queue. Use
 tracks concurrently. It does not change scheduler state, queue priority, or
 the scheduler's own execution limits; after submission, the scheduler decides
 whether each job is `pending`, `running`, or in another state.
-Use `--retry N` to retry failed jobs up to N additional times.
+Use `--retry N` to retry failed jobs up to N additional times. Jobs explicitly
+cancelled by the user are terminal for that run and are not automatically
+retried; a later `rotari retry` can select them explicitly as failed/unfinished.
 Use `--retry -1` to retry failed jobs indefinitely.
 
 Use `--env KEY=VALUE` with `add` to save environment variables on a job. They

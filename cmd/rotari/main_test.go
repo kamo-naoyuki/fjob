@@ -2563,6 +2563,23 @@ func TestRunOneJobSkipsCancelledPendingJob(t *testing.T) {
 	}
 }
 
+func TestJobWasExplicitlyCancelledUsesCancellationStateNotExitCode(t *testing.T) {
+	runDir := t.TempDir()
+	jobDir := filepath.Join(runDir, "job-1")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(jobDir, "status.json"), slurmStatus{Phase: "cancelled", ExitCode: 143}); err != nil {
+		t.Fatal(err)
+	}
+	if !jobWasExplicitlyCancelled(runDir, "job-1", JobResult{ID: "job-1", ExitCode: 143}) {
+		t.Fatal("cancelled status was not recognized")
+	}
+	if jobWasExplicitlyCancelled(runDir, "job-2", JobResult{ID: "job-2", ExitCode: 143}) {
+		t.Fatal("exit code 143 alone was treated as cancellation")
+	}
+}
+
 func TestServerBeginAndEndRunTracksActiveState(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

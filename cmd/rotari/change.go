@@ -170,7 +170,11 @@ func loadChangeSnapshot(paths pathSet, requestedRunID string) (Queue, error) {
 	if err != nil {
 		return Queue{}, err
 	}
-	data, err := os.ReadFile(filepath.Join(paths.runsDir, runID, "commands.json"))
+	runDir, err := validatedRunDir(paths, runID)
+	if err != nil {
+		return Queue{}, err
+	}
+	data, err := os.ReadFile(filepath.Join(runDir, "commands.json"))
 	if err != nil {
 		return Queue{}, fmt.Errorf("failed to load command snapshot: %w", err)
 	}

@@ -43,7 +43,9 @@ they do not require native sparse-array support from PBS, LSF, or Slurm.
 **I ran `rotari retry` — which jobs actually rerun?**
 `retry` is shorthand for `run --failed --unfinished`: jobs that failed or
 never finished are re-executed; jobs that already succeeded are carried
-forward into the new run with their previous result, not re-run. Use
+forward into the new run with their previous result, not re-run. A job
+explicitly cancelled during a run is not automatically retried by that run's
+`--retry` loop, but it can be selected by a later `rotari retry`. Use
 `--success` to force-rerun jobs that already succeeded.
 
 **Does retrying an array job rerun every task?**

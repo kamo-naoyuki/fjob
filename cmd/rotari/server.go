@@ -960,7 +960,10 @@ func controlQueueJobs(baseDir, queueName string, jobIDs []string, operation stri
 	if !validWebID(lock.RunID) {
 		return "", fmt.Errorf("invalid run ID %q", lock.RunID)
 	}
-	runDir := filepath.Join(paths.runsDir, lock.RunID)
+	runDir, err := validatedRunDir(paths, lock.RunID)
+	if err != nil {
+		return "", err
+	}
 	allJobs := len(jobIDs) == 0
 	targets := append([]string(nil), jobIDs...)
 	if allJobs {
@@ -1052,7 +1055,10 @@ func cancelQueueJobs(baseDir, queueName string, jobIDs []string, wait bool) (str
 	if !validWebID(lock.RunID) {
 		return "", fmt.Errorf("invalid run ID %q", lock.RunID)
 	}
-	runDir := filepath.Join(paths.runsDir, lock.RunID)
+	runDir, err := validatedRunDir(paths, lock.RunID)
+	if err != nil {
+		return "", err
+	}
 	if len(jobIDs) > 0 {
 		return cancelJobs(runDir, queueName, lock.RunID, jobIDs)
 	}
@@ -1293,7 +1299,10 @@ func startServerRun(baseDir, queueName, runName string, localConcurrency, batchM
 	if err := launchAsyncRun(paths, queueName, runID, runName, localConcurrency, batchMaxActive, retry, executor, executorOptions, selection, jobIDs, sourceRunID, partialArray, cwd, onDone); err != 0 {
 		return "", errors.New("queue is already running")
 	}
-	runDir := filepath.Join(paths.runsDir, runID)
+	runDir, err := validatedRunDir(paths, runID)
+	if err != nil {
+		return "", err
+	}
 	return fmt.Sprintf("Run started:\n  Project: %s\n  Run: %s\n  Directory: %s\n\nCheck status:\n  rotari show --run-id %s\n\nCancel run:\n  rotari cancel --basedir %s --project-name %s",
 		queueName, formatRunLabel(runID, runName), runDir, runID, paths.baseDir, queueName), nil
 }
@@ -1345,7 +1354,9 @@ func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMa
 	}
 	if err := registerRun(paths, runID); err != nil {
 		_ = os.Remove(paths.lockFile)
-		_ = os.RemoveAll(filepath.Join(paths.runsDir, runID))
+		if runDir, pathErr := validatedRunDir(paths, runID); pathErr == nil {
+			_ = os.RemoveAll(runDir)
+		}
 		release()
 		return "", 1, fmt.Errorf("failed to register run: %w", err)
 	}
@@ -1417,7 +1428,11 @@ func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMa
 	if err := os.Remove(paths.lockFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", 1, err
 	}
-	data, err := os.ReadFile(filepath.Join(paths.runsDir, runID, "summary.json"))
+	runDir, err := validatedRunDir(paths, runID)
+	if err != nil {
+		return "", 1, err
+	}
+	data, err := os.ReadFile(filepath.Join(runDir, "summary.json"))
 	if err == nil {
 		var summary RunSummary
 		if json.Unmarshal(data, &summary) == nil {

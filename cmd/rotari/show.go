@@ -405,11 +405,12 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 	changeHints := make([]JobSpec, 0)
 	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-12s %-6s %-15s %-20s %-10s %-30s %-24s %-24s %-24s %s", "JOB ID", "TASK", "NAME", "DEPENDS ON", "STATUS", "EXECUTOR", "SUBMITTED", "FINISHED", "HOSTS", "COMMAND")))
 	for _, jobID := range jobIDs {
-		if !isValidPathElement(jobID) {
+		jobDir, err := validatedJobDir(runDir, jobID)
+		if err != nil {
 			continue
 		}
 		jobSpec := jobSpecs[jobID]
-		name := readJobName(filepath.Join(runDir, jobID))
+		name := readJobName(jobDir)
 		if name == "" {
 			name = jobSpec.Name
 		}
@@ -424,16 +425,16 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		if dependsOn == "" {
 			dependsOn = "-"
 		}
-		status, statusOK := readJobStatus(filepath.Join(runDir, jobID, "status"))
+		status, statusOK := readJobStatus(filepath.Join(jobDir, "status"))
 		blocked := false
 		if !statusOK {
-			if slurm, ok := loadSlurmStatus(filepath.Join(runDir, jobID, "status.json")); ok && jobStatusTerminal(slurm) {
+			if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok && jobStatusTerminal(slurm) {
 				status = slurm.ExitCode
 				statusOK = true
 			}
 		}
 		if !statusOK {
-			if schedulerState, ok := loadTerminalSchedulerState(filepath.Join(runDir, jobID)); ok {
+			if schedulerState, ok := loadTerminalSchedulerState(jobDir); ok {
 				status = schedulerState
 				statusOK = true
 			}
@@ -455,10 +456,10 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		hosts := "-"
 		if result, ok := resultByID[jobSpec.ID]; ok && len(result.Hosts) > 0 {
 			hosts = strings.Join(result.Hosts, ",")
-		} else if slurm, ok := loadSlurmStatus(filepath.Join(runDir, jobID, "status.json")); ok && len(slurm.Hosts) > 0 {
+		} else if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok && len(slurm.Hosts) > 0 {
 			hosts = strings.Join(slurm.Hosts, ",")
 		}
-		command := readJSONCommand(filepath.Join(runDir, jobID, "command.json"))
+		command := readJSONCommand(filepath.Join(jobDir, "command.json"))
 		if command == "" {
 			command = strings.Join(jobSpec.Command, " ")
 		}
@@ -821,11 +822,15 @@ func slurmStatusTerminal(phase string) bool {
 }
 
 func readSubmittedAt(runDir, jobID string) string {
-	data, err := os.ReadFile(filepath.Join(runDir, jobID, "submitted_at"))
+	jobDir, err := validatedJobDir(runDir, jobID)
+	if err != nil {
+		return "-"
+	}
+	data, err := os.ReadFile(filepath.Join(jobDir, "submitted_at"))
 	if err == nil {
 		return strings.TrimSpace(string(data))
 	}
-	data, err = os.ReadFile(filepath.Join(runDir, jobID, "job.json"))
+	data, err = os.ReadFile(filepath.Join(jobDir, "job.json"))
 	if err != nil {
 		return "-"
 	}
@@ -837,11 +842,15 @@ func readSubmittedAt(runDir, jobID string) string {
 }
 
 func readFinishedAt(runDir, jobID string) string {
-	data, err := os.ReadFile(filepath.Join(runDir, jobID, "finished_at"))
+	jobDir, err := validatedJobDir(runDir, jobID)
+	if err != nil {
+		return "-"
+	}
+	data, err := os.ReadFile(filepath.Join(jobDir, "finished_at"))
 	if err == nil {
 		return strings.TrimSpace(string(data))
 	}
-	data, err = os.ReadFile(filepath.Join(runDir, jobID, "status.json"))
+	data, err = os.ReadFile(filepath.Join(jobDir, "status.json"))
 	if err != nil {
 		return "-"
 	}
@@ -860,13 +869,13 @@ func readShowJobTimestamps(runDir, jobID string, origin *JobOrigin) (string, str
 	}
 	if submittedAt == "-" {
 		submittedAt = origin.SubmittedAt
-		if submittedAt == "" {
+		if submittedAt == "" && isValidPathElement(origin.RunID) {
 			submittedAt = readSubmittedAt(filepath.Join(filepath.Dir(runDir), origin.RunID), origin.JobID)
 		}
 	}
 	if finishedAt == "-" {
 		finishedAt = origin.FinishedAt
-		if finishedAt == "" {
+		if finishedAt == "" && isValidPathElement(origin.RunID) {
 			finishedAt = readFinishedAt(filepath.Join(filepath.Dir(runDir), origin.RunID), origin.JobID)
 		}
 	}
@@ -1177,7 +1186,14 @@ func printCarriedForwardOutput(writer io.Writer, paths pathSet, id, name string,
 		fmt.Fprintf(writer, "Working directory: %s\n", workingDirectory)
 	}
 	fmt.Fprintf(writer, "Command: %s\n", strings.Join(command, " "))
-	originDir := filepath.Join(paths.runsDir, origin.RunID, origin.JobID)
+	originRunDir, err := validatedRunDir(paths, origin.RunID)
+	if err != nil {
+		return
+	}
+	originDir, err := validatedJobDir(originRunDir, origin.JobID)
+	if err != nil {
+		return
+	}
 	fmt.Fprintf(writer, "Output path: %s\n", filepath.Join(originDir, "output"))
 	output, err := os.ReadFile(filepath.Join(originDir, "output"))
 	if err == nil && len(output) > 0 {
@@ -1201,15 +1217,29 @@ func followJobLog(writer io.Writer, paths pathSet, runID, jobID string) int {
 		printErrorf("job %q not found in run %q", jobID, runID)
 		return 1
 	}
-	jobDir := filepath.Join(paths.runsDir, runID, jobID)
+	runDir, err := validatedRunDir(paths, runID)
+	if err != nil {
+		printErrorf("run %q not found", runID)
+		return 1
+	}
+	jobDir, err := validatedJobDir(runDir, jobID)
+	if err != nil {
+		printErrorf("job %q not found in run %q", jobID, runID)
+		return 1
+	}
 	outputPath := filepath.Join(jobDir, "output")
 	output, err := os.ReadFile(outputPath)
 	if err != nil {
-		if origin := loadRunOrigin(filepath.Join(paths.runsDir, runID), jobID); origin != nil {
+		if origin := loadRunOrigin(runDir, jobID); origin != nil {
 			// Carried forward: it already finished under the origin run, so
 			// there is nothing new to follow, just print its output once.
 			fmt.Fprintf(writer, "%s carried forward from run %s (no re-execution)\n\n", cyan("Note:"), origin.RunID)
-			originOutput, readErr := os.ReadFile(filepath.Join(paths.runsDir, origin.RunID, origin.JobID, "output"))
+			originRunDir, pathErr := validatedRunDir(paths, origin.RunID)
+			originDir, jobErr := validatedJobDir(originRunDir, origin.JobID)
+			if pathErr != nil || jobErr != nil {
+				return 0
+			}
+			originOutput, readErr := os.ReadFile(filepath.Join(originDir, "output"))
 			if readErr == nil {
 				_, _ = writer.Write(originOutput)
 			}

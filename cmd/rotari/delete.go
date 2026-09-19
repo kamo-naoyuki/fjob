@@ -106,7 +106,10 @@ func deleteRun(paths pathSet, runID string) error {
 	if !isValidPathElement(runID) {
 		return fmt.Errorf("run %q not found", runID)
 	}
-	runDir := filepath.Join(paths.runsDir, runID)
+	runDir, err := validatedRunDir(paths, runID)
+	if err != nil {
+		return err
+	}
 	info, err := os.Stat(runDir)
 	if err != nil || !info.IsDir() {
 		return fmt.Errorf("run %q not found", runID)

@@ -356,7 +356,11 @@ func finalizeCompletedCancellation(paths pathSet) (bool, error) {
 		}
 		return false, err
 	}
-	summary, err := loadRunSummary(filepath.Join(paths.runsDir, lock.RunID, "summary.json"))
+	runDir, pathErr := validatedRunDir(paths, lock.RunID)
+	if pathErr != nil {
+		return false, pathErr
+	}
+	summary, err := loadRunSummary(filepath.Join(runDir, "summary.json"))
 	if err != nil || summary.FinishedAt == "" {
 		return false, nil
 	}
@@ -500,7 +504,9 @@ func launchAsyncRun(paths pathSet, queueName, runID, runName string, localConcur
 	}
 	if err := registerRun(paths, runID); err != nil {
 		_ = os.Remove(paths.lockFile)
-		_ = os.RemoveAll(filepath.Join(paths.runsDir, runID))
+		if runDir, pathErr := validatedRunDir(paths, runID); pathErr == nil {
+			_ = os.RemoveAll(runDir)
+		}
 		printErrorf("failed to register run: %v", err)
 		return 1
 	}
@@ -574,17 +580,25 @@ func waitForAsyncRun(cmd *exec.Cmd, onDone func()) {
 }
 
 func writeRunContext(paths pathSet, runID, cwd string) error {
+	runDir, err := validatedRunDir(paths, runID)
+	if err != nil {
+		return err
+	}
 	context := captureRunContext(cwd)
 	if context.StartedLoad != nil {
 		if err := appendLoadSample(loadSamplesPath(paths, runID), LoadSample{At: nowRFC3339Nano(), LoadAverage: *context.StartedLoad}); err != nil {
 			return err
 		}
 	}
-	return writeJSON(filepath.Join(paths.runsDir, runID, "context.json"), context)
+	return writeJSON(filepath.Join(runDir, "context.json"), context)
 }
 
 func finishRunContext(paths pathSet, runID string) error {
-	path := filepath.Join(paths.runsDir, runID, "context.json")
+	runDir, err := validatedRunDir(paths, runID)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(runDir, "context.json")
 	context := RunContext{}
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &context)
@@ -628,7 +642,11 @@ func startRunLoadSampling(paths pathSet, runID string) func() {
 }
 
 func loadSamplesPath(paths pathSet, runID string) string {
-	return filepath.Join(paths.runsDir, runID, "load_samples.jsonl")
+	runDir, err := validatedRunDir(paths, runID)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(runDir, "load_samples.jsonl")
 }
 
 func appendLoadSample(path string, sample LoadSample) error {
@@ -710,7 +728,11 @@ func executeRun(paths pathSet, runID string, numParallel int) int {
 		return 1
 	}
 
-	runDir := filepath.Join(paths.runsDir, runID)
+	runDir, err := validatedRunDir(paths, runID)
+	if err != nil {
+		printErrorf("invalid run ID %q", runID)
+		return 1
+	}
 	if err := os.MkdirAll(runDir, stateDirMode()); err != nil {
 		printErrorf("failed to create run directory: %v", err)
 		return 1

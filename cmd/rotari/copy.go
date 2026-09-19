@@ -111,7 +111,10 @@ func copyRunToQueue(baseDir, queueName, runID, selection string, jobIDs []string
 		return "", err
 	}
 
-	sourceRunDir := filepath.Join(paths.runsDir, runID)
+	sourceRunDir, err := validatedRunDir(paths, runID)
+	if err != nil {
+		return "", err
+	}
 	snapshot, err := loadQueue(filepath.Join(sourceRunDir, "commands.json"))
 	if err != nil {
 		return "", fmt.Errorf("failed to load command snapshot: %w", err)
