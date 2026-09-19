@@ -26,33 +26,6 @@ Just queue what you want to run. **State lives in plain JSON
 files on disk**, with no server or database to set up — it works the same
 whether you're on your laptop or logged into a remote compute node.
 
-## See the iteration loop
-
-Queue an experiment batch, run it, then fix only the job that failed:
-
-```console
-$ rotari add --job-name train1 ./train.sh --config exp1.yaml
-$ rotari add --job-name train2 ./train.sh --config exp2.yaml
-$ rotari add --job-name train3 ./train.sh --config exp3.yaml
-
-$ rotari run
-
-train1  OK
-train2  FAILED
-train3  OK
-
-$ rotari change --job-name train2 -- ./train.sh --config exp2-fixed.yaml
-$ rotari retry
-
-train1  carried OK
-train2  OK
-train3  carried OK
-```
-
-The retry creates a new run without rerunning jobs that already succeeded.
-Their results and logs remain available alongside the fixed job, so the
-iteration history stays intact.
-
 ## What rotari is not
 
 rotari is a **job execution and experiment iteration coordinator**. It is not:
@@ -65,6 +38,9 @@ rotari is a **job execution and experiment iteration coordinator**. It is not:
 
 It can dispatch jobs through local execution, SSH, Slurm, PBS, and LSF, but
 those backends remain responsible for cluster resources and scheduling policy.
+
+Rotari turns trial-and-error into a repeatable loop:
+
 
 | Plain shell (background jobs) | rotari |
 | --- | --- |
