@@ -787,15 +787,7 @@ func executeRun(paths pathSet, runID string, numParallel int) int {
 		}
 	}
 	summary.Status = runStatus(summary.ExitCode)
-	successCount := 0
-	failedCount := 0
-	for _, result := range summary.Results {
-		if result.ExitCode == 0 {
-			successCount++
-		} else {
-			failedCount++
-		}
-	}
+	successCount, failedCount := countRunResults(summary.Results)
 
 	if err := writeJSON(filepath.Join(runDir, "summary.json"), summary); err != nil {
 		printErrorf("failed to write summary: %v", err)
@@ -810,6 +802,17 @@ func executeRun(paths pathSet, runID string, numParallel int) int {
 		printFailedJobHints(runID, summary.Results)
 	}
 	return summary.ExitCode
+}
+
+func countRunResults(results []JobResult) (successCount, failedCount int) {
+	for _, result := range results {
+		if result.ExitCode == 0 {
+			successCount++
+		} else {
+			failedCount++
+		}
+	}
+	return successCount, failedCount
 }
 
 func printFailedJobHints(runID string, results []JobResult) {
@@ -849,7 +852,7 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
 
-	if err := writeJSON(filepath.Join(jobDir, "command.json"), job); err != nil {
+	if err := writeJSON(filepath.Join(jobDir, commandJSONName), job); err != nil {
 		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
 	if job.Name != "" {
@@ -883,7 +886,7 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
 
-	cmd := exec.Command("sh", wrapperPath)
+	cmd := exec.Command("/bin/sh", wrapperPath)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	// New process group so Suspend/Resume/Cancel (which signal -pid) reach
@@ -1001,6 +1004,8 @@ type pathSet struct {
 	lockFile        string
 	runsDir         string
 }
+
+const commandJSONName = "command.json"
 
 func isValidPathElement(value string) bool {
 	if value == "" || value == "." || value == ".." || filepath.IsAbs(value) {

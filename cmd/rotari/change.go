@@ -67,6 +67,20 @@ func changeBatch(baseDir, queueName, requestedRunID, requestedJobID, requestedJo
 		executorOptions, clearExecutorOptions, environment, clearEnvironment, "", false, setJobName, dependsOn, clearDependsOn, command)
 }
 
+type changeMutation struct {
+	executor              string
+	executorOptions       []string
+	clearExecutorOptions  bool
+	environment           []string
+	clearEnvironment      bool
+	workingDirectory      string
+	clearWorkingDirectory bool
+	setJobName            string
+	dependsOn             []string
+	clearDependsOn        bool
+	command               []string
+}
+
 func changeBatchWithWorkingDirectory(baseDir, queueName, requestedRunID, requestedJobID, requestedJobName, executor string,
 	executorOptions []string, clearExecutorOptions bool, environment []string, clearEnvironment bool, workingDirectory string, clearWorkingDirectory bool, setJobName string, dependsOn []string,
 	clearDependsOn bool, command []string) (string, error) {
@@ -98,54 +112,16 @@ func changeBatchWithWorkingDirectory(baseDir, queueName, requestedRunID, request
 	}
 
 	jobs := queueToJobs(queue.Commands)
-	jobIndex := -1
-	for index, job := range jobs {
-		if (requestedJobID != "" && job.ID == requestedJobID) ||
-			(requestedJobName != "" && job.Name == requestedJobName) {
-			if jobIndex != -1 {
-				return "", fmt.Errorf("job selector matches multiple jobs")
-			}
-			jobIndex = index
-		}
+	jobIndex, err := selectChangeJob(jobs, requestedJobID, requestedJobName)
+	if err != nil {
+		return "", err
 	}
-	if jobIndex == -1 {
-		return "", fmt.Errorf("job not found")
-	}
-	changed := &queue.Commands[jobIndex]
-	if executor != "" {
-		changed.Executor = executor
-	}
-	if len(executorOptions) > 0 || clearExecutorOptions {
-		changed.ExecutorOptions = append([]string(nil), executorOptions...)
-	}
-	if len(environment) > 0 || clearEnvironment {
-		changed.Environment = append([]string(nil), environment...)
-	}
-	if workingDirectory != "" || clearWorkingDirectory {
-		changed.WorkingDirectory = workingDirectory
-	}
-	if setJobName != "" && setJobName != changed.Name {
-		for index, job := range queueToJobs(queue.Commands) {
-			if index != jobIndex && job.Name == setJobName {
-				return "", fmt.Errorf("job name %q is already in use", setJobName)
-			}
-		}
-		for index := range queue.Commands {
-			if index != jobIndex {
-				for _, dependency := range queue.Commands[index].DependsOn {
-					if dependency == changed.Name {
-						return "", fmt.Errorf("job %q is referenced by dependency; rename is not allowed", changed.Name)
-					}
-				}
-			}
-		}
-		changed.Name = setJobName
-	}
-	if len(command) > 0 {
-		changed.Command = append([]string(nil), command...)
-	}
-	if len(dependsOn) > 0 || clearDependsOn {
-		changed.DependsOn = append([]string(nil), dependsOn...)
+	mutation := changeMutation{executor: executor, executorOptions: executorOptions, clearExecutorOptions: clearExecutorOptions,
+		environment: environment, clearEnvironment: clearEnvironment, workingDirectory: workingDirectory,
+		clearWorkingDirectory: clearWorkingDirectory, setJobName: setJobName, dependsOn: dependsOn,
+		clearDependsOn: clearDependsOn, command: command}
+	if err := applyChangeMutation(queue, jobIndex, mutation); err != nil {
+		return "", err
 	}
 	if err := validateDependencies(queueToJobs(queue.Commands)); err != nil {
 		return "", fmt.Errorf("invalid dependencies: %w", err)
@@ -163,6 +139,74 @@ func changeBatchWithWorkingDirectory(baseDir, queueName, requestedRunID, request
 		return "", fmt.Errorf("failed to update metadata: %w", err)
 	}
 	return fmt.Sprintf("changed queue=%s job=%s", queueName, jobs[jobIndex].ID), nil
+}
+
+func selectChangeJob(jobs []JobSpec, requestedJobID, requestedJobName string) (int, error) {
+	jobIndex := -1
+	for index, job := range jobs {
+		if (requestedJobID == "" || job.ID != requestedJobID) &&
+			(requestedJobName == "" || job.Name != requestedJobName) {
+			continue
+		}
+		if jobIndex != -1 {
+			return -1, fmt.Errorf("job selector matches multiple jobs")
+		}
+		jobIndex = index
+	}
+	if jobIndex == -1 {
+		return -1, fmt.Errorf("job not found")
+	}
+	return jobIndex, nil
+}
+
+func applyChangeMutation(queue Queue, jobIndex int, mutation changeMutation) error {
+	changed := &queue.Commands[jobIndex]
+	if mutation.executor != "" {
+		changed.Executor = mutation.executor
+	}
+	if len(mutation.executorOptions) > 0 || mutation.clearExecutorOptions {
+		changed.ExecutorOptions = append([]string(nil), mutation.executorOptions...)
+	}
+	if len(mutation.environment) > 0 || mutation.clearEnvironment {
+		changed.Environment = append([]string(nil), mutation.environment...)
+	}
+	if mutation.workingDirectory != "" || mutation.clearWorkingDirectory {
+		changed.WorkingDirectory = mutation.workingDirectory
+	}
+	if mutation.setJobName != "" && mutation.setJobName != changed.Name {
+		if err := validateChangeRename(queue, jobIndex, mutation.setJobName); err != nil {
+			return err
+		}
+		changed.Name = mutation.setJobName
+	}
+	if len(mutation.command) > 0 {
+		changed.Command = append([]string(nil), mutation.command...)
+	}
+	if len(mutation.dependsOn) > 0 || mutation.clearDependsOn {
+		changed.DependsOn = append([]string(nil), mutation.dependsOn...)
+	}
+	return nil
+}
+
+func validateChangeRename(queue Queue, jobIndex int, newName string) error {
+	jobs := queueToJobs(queue.Commands)
+	for index, job := range jobs {
+		if index != jobIndex && job.Name == newName {
+			return fmt.Errorf("job name %q is already in use", newName)
+		}
+	}
+	oldName := jobs[jobIndex].Name
+	for index, command := range queue.Commands {
+		if index == jobIndex {
+			continue
+		}
+		for _, dependency := range command.DependsOn {
+			if dependency == oldName {
+				return fmt.Errorf("job %q is referenced by dependency; rename is not allowed", oldName)
+			}
+		}
+	}
+	return nil
 }
 
 func loadChangeSnapshot(paths pathSet, requestedRunID string) (Queue, error) {

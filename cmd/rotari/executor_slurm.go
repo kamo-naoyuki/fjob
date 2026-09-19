@@ -259,31 +259,38 @@ func schedulerArrayWrapperScript(jobs []JobSpec, taskVariable string) string {
 	}
 	caseLines := make([]string, 0, len(jobs))
 	for _, job := range jobs {
-		if !isValidPathElement(job.ID) {
-			continue
+		if caseLine, ok := schedulerArrayCaseLine(job); ok {
+			caseLines = append(caseLines, caseLine)
 		}
-		exports := make([]string, 0, len(job.Environment))
-		jobDir := ""
-		for _, entry := range job.Environment {
-			parts := strings.SplitN(entry, "=", 2)
-			if len(parts) == 2 {
-				if parts[0] == envJobDir {
-					jobDir = parts[1]
-					continue
-				}
-				exports = append(exports, "export "+parts[0]+"="+shellQuote(parts[1]))
-			}
-		}
-		if jobDir == "" {
-			jobDir = "$ROTARI_RUN_DIR/" + job.ID
-		}
-		changeDirectory := ""
-		if job.WorkingDirectory != "" {
-			changeDirectory = "        cd " + shellQuote(job.WorkingDirectory) + " || exit 1\n"
-		}
-		caseLines = append(caseLines, fmt.Sprintf("    %d)\n        %s\n        job_dir=%s\n        export %s=%s\n        mkdir -p \"$job_dir\" || exit 1\n%s        ;;", *job.ArrayTaskID, strings.Join(exports, "\n        "), shellQuote(jobDir), envJobDir, shellQuote(jobDir), changeDirectory))
 	}
 	return "#!/bin/sh\nset +e\ncase \"$" + taskVariable + "\" in\n" + strings.Join(caseLines, "\n") + "\n    *) exit 1 ;;\nesac\nexec >\"$job_dir/output\" 2>&1\nstatus_path=\"$job_dir/status.json\"\nhostname=$(hostname 2>/dev/null || true)\nwrite_status() {\n    phase=$1\n    code=$2\n    tmp=\"${status_path}.tmp.$$\"\n    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)\n    if [ \"$phase\" = \"running\" ]; then\n        printf '{\"phase\":\"running\",\"hosts\":[\"%s\"],\"started_at\":\"%s\"}\n' \"$hostname\" \"$now\" > \"$tmp\"\n    else\n        printf '{\"phase\":\"%s\",\"hosts\":[\"%s\"],\"exit_code\":%s,\"finished_at\":\"%s\"}\n' \"$phase\" \"$hostname\" \"$code\" \"$now\" > \"$tmp\"\n    fi\n    mv -f \"$tmp\" \"$status_path\"\n}\nwrite_status running 0\ntrap 'write_status cancelled 143; exit 143' TERM\ntrap 'write_status cancelled 130; exit 130' INT\n" + strings.Join(quoted, " ") + "\ncode=$?\nwrite_status finished \"$code\"\nexit \"$code\"\n"
+}
+
+func schedulerArrayCaseLine(job JobSpec) (string, bool) {
+	if !isValidPathElement(job.ID) || job.ArrayTaskID == nil {
+		return "", false
+	}
+	exports := make([]string, 0, len(job.Environment))
+	jobDir := ""
+	for _, entry := range job.Environment {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if parts[0] == envJobDir {
+			jobDir = parts[1]
+			continue
+		}
+		exports = append(exports, "export "+parts[0]+"="+shellQuote(parts[1]))
+	}
+	if jobDir == "" {
+		jobDir = "$ROTARI_RUN_DIR/" + job.ID
+	}
+	changeDirectory := ""
+	if job.WorkingDirectory != "" {
+		changeDirectory = "        cd " + shellQuote(job.WorkingDirectory) + " || exit 1\n"
+	}
+	return fmt.Sprintf("    %d)\n        %s\n        job_dir=%s\n        export %s=%s\n        mkdir -p \"$job_dir\" || exit 1\n%s        ;;", *job.ArrayTaskID, strings.Join(exports, "\n        "), shellQuote(jobDir), envJobDir, shellQuote(jobDir), changeDirectory), true
 }
 
 func slurmArrayWrapperScript(jobs []JobSpec) string {

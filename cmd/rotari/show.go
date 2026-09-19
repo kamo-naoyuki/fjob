@@ -15,7 +15,12 @@ import (
 	"time"
 )
 
-const pagerLineLimit = 24
+const (
+	pagerLineLimit     = 24
+	statusJSONName     = "status.json"
+	runNotFoundMessage = "run %q not found"
+	jobNotFoundMessage = "job %q not found in run %q"
+)
 
 func cmdShow(args []string) int {
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
@@ -286,10 +291,10 @@ func isTerminal(file *os.File) bool {
 func selectRunID(paths pathSet, requested string) (string, error) {
 	if requested != "" {
 		if !isValidPathElement(requested) {
-			return "", fmt.Errorf("run %q not found", requested)
+			return "", fmt.Errorf(runNotFoundMessage, requested)
 		}
 		if _, err := os.Stat(filepath.Join(paths.runsDir, requested)); err != nil {
-			return "", fmt.Errorf("run %q not found", requested)
+			return "", fmt.Errorf(runNotFoundMessage, requested)
 		}
 		return requested, nil
 	}
@@ -341,7 +346,7 @@ func printInterruptedRunNotice(paths pathSet, runID string) {
 func showRun(paths pathSet, runID string, failedOnly bool) int {
 	runDir, err := validatedRunDir(paths, runID)
 	if err != nil {
-		printErrorf("run %q not found", runID)
+		printErrorf(runNotFoundMessage, runID)
 		return 1
 	}
 	var summary RunSummary
@@ -428,7 +433,7 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		status, statusOK := readJobStatus(filepath.Join(jobDir, "status"))
 		blocked := false
 		if !statusOK {
-			if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok && jobStatusTerminal(slurm) {
+			if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, statusJSONName)); ok && jobStatusTerminal(slurm) {
 				status = slurm.ExitCode
 				statusOK = true
 			}
@@ -456,10 +461,10 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 		hosts := "-"
 		if result, ok := resultByID[jobSpec.ID]; ok && len(result.Hosts) > 0 {
 			hosts = strings.Join(result.Hosts, ",")
-		} else if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok && len(slurm.Hosts) > 0 {
+		} else if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, statusJSONName)); ok && len(slurm.Hosts) > 0 {
 			hosts = strings.Join(slurm.Hosts, ",")
 		}
-		command := readJSONCommand(filepath.Join(jobDir, "command.json"))
+		command := readJSONCommand(filepath.Join(jobDir, commandJSONName))
 		if command == "" {
 			command = strings.Join(jobSpec.Command, " ")
 		}
@@ -850,7 +855,7 @@ func readFinishedAt(runDir, jobID string) string {
 	if err == nil {
 		return strings.TrimSpace(string(data))
 	}
-	data, err = os.ReadFile(filepath.Join(jobDir, "status.json"))
+	data, err = os.ReadFile(filepath.Join(jobDir, statusJSONName))
 	if err != nil {
 		return "-"
 	}
@@ -901,7 +906,7 @@ func loadRunJobSpecs(runDir string) map[string]JobSpec {
 		if !entry.IsDir() {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(runDir, entry.Name(), "command.json"))
+		data, err := os.ReadFile(filepath.Join(runDir, entry.Name(), commandJSONName))
 		if err != nil {
 			continue
 		}
@@ -934,11 +939,11 @@ func loadRunOrigin(runDir, jobID string) *JobOrigin {
 
 func showJob(writer io.Writer, paths pathSet, runID, jobID string) int {
 	if !isValidPathElement(runID) {
-		printErrorf("run %q not found", runID)
+		printErrorf(runNotFoundMessage, runID)
 		return 1
 	}
 	if !isValidPathElement(jobID) {
-		printErrorf("job %q not found in run %q", jobID, runID)
+		printErrorf(jobNotFoundMessage, jobID, runID)
 		return 1
 	}
 	jobDir := filepath.Join(paths.runsDir, runID, jobID)
@@ -948,7 +953,7 @@ func showJob(writer io.Writer, paths pathSet, runID, jobID string) int {
 			fmt.Fprintf(writer, "%s carried forward from run %s (no re-execution)\n\n", cyan("Note:"), origin.RunID)
 			return showJob(writer, paths, origin.RunID, origin.JobID)
 		}
-		printErrorf("job %q not found in run %q", jobID, runID)
+		printErrorf(jobNotFoundMessage, jobID, runID)
 		return 1
 	}
 	writeShowTargetHeader(writer, paths)
@@ -992,7 +997,7 @@ func showJob(writer io.Writer, paths pathSet, runID, jobID string) int {
 		} else {
 			fmt.Fprintf(writer, "%s %s\n", cyan("Status:"), red(strconv.Itoa(status)))
 		}
-	} else if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok {
+	} else if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, statusJSONName)); ok {
 		status := fmt.Sprintf("Status: %s (exit code %d)", slurm.Phase, slurm.ExitCode)
 		if slurm.Phase == "finished" && slurm.ExitCode == 0 {
 			fmt.Fprintf(writer, "%s %s\n", cyan("Status:"), green(strings.TrimPrefix(status, "Status: ")))
@@ -1024,7 +1029,7 @@ func showJob(writer io.Writer, paths pathSet, runID, jobID string) int {
 			}
 		}
 	}
-	command := readJSONCommand(filepath.Join(jobDir, "command.json"))
+	command := readJSONCommand(filepath.Join(jobDir, commandJSONName))
 	fmt.Fprintf(writer, "%s %s\n", cyan("Command:"), command)
 	fmt.Fprintf(writer, "%s %s\n\n", cyan("Output:"), filepath.Join(jobDir, "output"))
 	output, err := os.ReadFile(filepath.Join(jobDir, "output"))
@@ -1083,7 +1088,7 @@ func showRunLogs(writer io.Writer, paths pathSet, runID string, failedOnly bool)
 
 		status, statusOK := readJobStatus(filepath.Join(jobDir, "status"))
 		if !statusOK {
-			if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok && jobStatusTerminal(slurm) {
+			if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, statusJSONName)); ok && jobStatusTerminal(slurm) {
 				status = slurm.ExitCode
 				statusOK = true
 			}
@@ -1097,7 +1102,7 @@ func showRunLogs(writer io.Writer, paths pathSet, runID string, failedOnly bool)
 		if name == "" {
 			name = jobSpecs[jobID].Name
 		}
-		command := readJSONCommand(filepath.Join(jobDir, "command.json"))
+		command := readJSONCommand(filepath.Join(jobDir, commandJSONName))
 
 		header := fmt.Sprintf("=== Job: %s", jobID)
 		if name != "" {
@@ -1210,21 +1215,21 @@ func printCarriedForwardOutput(writer io.Writer, paths pathSet, id, name string,
 
 func followJobLog(writer io.Writer, paths pathSet, runID, jobID string) int {
 	if !isValidPathElement(runID) {
-		printErrorf("run %q not found", runID)
+		printErrorf(runNotFoundMessage, runID)
 		return 1
 	}
 	if !isValidPathElement(jobID) {
-		printErrorf("job %q not found in run %q", jobID, runID)
+		printErrorf(jobNotFoundMessage, jobID, runID)
 		return 1
 	}
 	runDir, err := validatedRunDir(paths, runID)
 	if err != nil {
-		printErrorf("run %q not found", runID)
+		printErrorf(runNotFoundMessage, runID)
 		return 1
 	}
 	jobDir, err := validatedJobDir(runDir, jobID)
 	if err != nil {
-		printErrorf("job %q not found in run %q", jobID, runID)
+		printErrorf(jobNotFoundMessage, jobID, runID)
 		return 1
 	}
 	outputPath := filepath.Join(jobDir, "output")
@@ -1270,7 +1275,7 @@ func followJobLog(writer io.Writer, paths pathSet, runID, jobID string) int {
 		statusPath := filepath.Join(jobDir, "status")
 		status, statusOK := readJobStatus(statusPath)
 		if !statusOK {
-			if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok && jobStatusTerminal(slurm) {
+			if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, statusJSONName)); ok && jobStatusTerminal(slurm) {
 				status = slurm.ExitCode
 				statusOK = true
 			}

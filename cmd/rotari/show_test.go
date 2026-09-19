@@ -515,8 +515,7 @@ func TestShowJobRejectsTraversalInRunAndJobIDs(t *testing.T) {
 		{runID: "../outside", jobID: "job-1"},
 		{runID: "run-1", jobID: "../outside"},
 	} {
-		var output bytes.Buffer
-		if code := showJob(&output, paths, tc.runID, tc.jobID); code == 0 {
+		if code := showJob(&bytes.Buffer{}, paths, tc.runID, tc.jobID); code == 0 {
 			t.Fatalf("showJob accepted unsafe values runID=%q jobID=%q", tc.runID, tc.jobID)
 		}
 	}

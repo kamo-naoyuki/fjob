@@ -24,7 +24,7 @@ Just queue what you want to run. **State lives in plain JSON files on disk**,
 with no server or database to set up — it works the same whether you're on your
 laptop or logged into a remote compute node.
 
-## How is Rotari different?
+## How is rotari different?
 
 Rotari focuses on **managing the iteration of experiments**, rather than executing or distributing individual tasks.
 
