@@ -122,7 +122,7 @@ func TestWebHTMLIncludesEmbeddedThemeFavicons(t *testing.T) {
 
 func TestWebHTMLIncludesProjectRuntime(t *testing.T) {
 	html := webHTML()
-	for _, want := range []string{"let projectRuntimeDetailsOpen=false", "runtimeDetails.open", "projectRuntimeDetailsOpen?'open'", "function addProjectRuntime()", "addProjectRuntime();addRunHostLine()", "Project runtime", "Internal state", "State lock: advisory and intentionally not probed"} {
+	for _, want := range []string{"let projectRuntimeDetailsOpen=false", "runtimeDetails.open", "projectRuntimeDetailsOpen?' open'", "function addProjectRuntime()", "addProjectRuntime();addRunHostLine()", "Project runtime", "Internal state", "State lock: advisory and intentionally not probed"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("web HTML does not contain %q", want)
 		}

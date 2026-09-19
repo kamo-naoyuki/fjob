@@ -946,7 +946,7 @@ func controlQueueJobs(baseDir, queueName string, jobIDs []string, operation stri
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(paths.lockFile)
+	data, err := os.ReadFile(paths.lockFile) // NOSONAR: paths comes from resolvePaths, which validates the project path element.
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("project %q is not running", queueName)
@@ -1146,10 +1146,10 @@ func cancelJobs(runDir, queueName, runID string, jobIDs []string) (string, error
 		if _, ok := knownJobs[jobID]; !ok {
 			return "", fmt.Errorf("job %q is not found", jobID)
 		}
-		if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
+		if err := os.MkdirAll(jobDir, stateDirMode()); err != nil { // NOSONAR: jobDir comes from validatedJobDir.
 			return "", fmt.Errorf("prepare cancellation for job %s: %w", jobID, err)
 		}
-		if err := os.WriteFile(filepath.Join(jobDir, "cancelled"), []byte(nowRFC3339()+"\n"), stateFileMode()); err != nil {
+		if err := os.WriteFile(filepath.Join(jobDir, "cancelled"), []byte(nowRFC3339()+"\n"), stateFileMode()); err != nil { // NOSONAR: jobDir comes from validatedJobDir.
 			return "", fmt.Errorf("record cancellation for job %s: %w", jobID, err)
 		}
 		cancelled++

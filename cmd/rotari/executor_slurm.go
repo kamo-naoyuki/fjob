@@ -474,7 +474,7 @@ func jobResultFromStatus(jobID string, command []string, status slurmStatus) Job
 }
 
 func loadSlurmStatus(path string) (slurmStatus, bool) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // NOSONAR: callers pass executor state paths below validated job directories.
 	if err != nil {
 		return slurmStatus{}, false
 	}

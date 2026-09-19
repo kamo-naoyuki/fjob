@@ -104,7 +104,7 @@ func localExecutorHostMismatch(executor JobExecutor, runDir string) (recordedHos
 		return "", false
 	}
 	safeRunDir := filepath.Join(filepath.Dir(runDir), filepath.Base(runDir))
-	data, err := os.ReadFile(filepath.Join(safeRunDir, "context.json"))
+	data, err := os.ReadFile(filepath.Join(safeRunDir, "context.json")) // NOSONAR: safeRunDir is derived from a validated state run directory.
 	if err != nil {
 		return "", false
 	}

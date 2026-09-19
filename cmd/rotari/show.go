@@ -1035,7 +1035,7 @@ func showJob(writer io.Writer, paths pathSet, runID, jobID string) int {
 }
 
 func readJobStatus(path string) (int, bool) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // NOSONAR: callers pass paths built from validated run/job IDs.
 	if err != nil {
 		return 0, false
 	}

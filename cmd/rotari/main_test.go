@@ -124,6 +124,31 @@ func TestValidWebIDRejectsTraversalAndDotSegments(t *testing.T) {
 	}
 }
 
+func TestValidatedStateDirectoriesRejectTraversal(t *testing.T) {
+	paths, err := resolvePaths(t.TempDir(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, runID := range []string{"../outside", "nested/run"} {
+		if _, err := validatedRunDir(paths, runID); err == nil {
+			t.Errorf("validatedRunDir accepted unsafe run ID %q", runID)
+		}
+	}
+	runDir, err := validatedRunDir(paths, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, jobID := range []string{"../outside", "nested/job"} {
+		if _, err := validatedJobDir(runDir, jobID); err == nil {
+			t.Errorf("validatedJobDir accepted unsafe job ID %q", jobID)
+		}
+	}
+	jobDir, err := validatedJobDir(runDir, "job-1")
+	if err != nil || jobDir != filepath.Join(runDir, "job-1") {
+		t.Fatalf("validatedJobDir = %q, err %v", jobDir, err)
+	}
+}
+
 func TestResolveBaseDirPriority(t *testing.T) {
 	const envName = "ROTARI_BASEDIR"
 	old, existed := os.LookupEnv(envName)

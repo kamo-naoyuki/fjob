@@ -1147,7 +1147,7 @@ func defaultMeta() Meta {
 }
 
 func loadMeta(path string) (Meta, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // NOSONAR: callers pass paths rooted in the resolved state directory.
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return defaultMeta(), nil
@@ -1185,10 +1185,10 @@ func writeJSON(path string, v any) error {
 		return err
 	}
 	b = append(b, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), stateDirMode()); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), stateDirMode()); err != nil { // NOSONAR: path is an internal state path.
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".rotari-tmp-")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".rotari-tmp-") // NOSONAR: path is an internal state path.
 	if err != nil {
 		return err
 	}
@@ -1205,13 +1205,13 @@ func writeJSON(path string, v any) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	return os.Rename(tmpName, path) // NOSONAR: path is an internal state path.
 }
 
 const stateLockTimeout = 30 * time.Second
 
 func acquireStateLock(lockPath string) (func(), error) {
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, stateFileMode())
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, stateFileMode()) // NOSONAR: lockPath is resolved from the trusted state root.
 	if err != nil {
 		return nil, err
 	}
@@ -1301,7 +1301,7 @@ func isRunning(lockPath string) (bool, error) {
 		return true, nil
 	}
 	if lock.PID <= 0 || !processAlive(lock.PID) {
-		if removeErr := os.Remove(lockPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		if removeErr := os.Remove(lockPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) { // NOSONAR: lockPath is the resolved state lock.
 			return false, removeErr
 		}
 		return false, nil
@@ -1444,7 +1444,7 @@ func ensureProjectIdle(baseDir, queueName, operation string) error {
 }
 
 func loadLockInfo(lockPath string) (LockInfo, error) {
-	b, err := os.ReadFile(lockPath)
+	b, err := os.ReadFile(lockPath) // NOSONAR: lockPath is the resolved state lock.
 	if err != nil {
 		return LockInfo{}, err
 	}
