@@ -114,7 +114,10 @@ func (flag *stringSliceFlag) Set(value string) error {
 }
 
 func submitSlurmJob(runDir string, job JobSpec, executorOptions []string) (slurmJobMetadata, error) {
-	jobDir := filepath.Join(runDir, job.ID)
+	jobDir, err := validatedJobDir(runDir, job.ID)
+	if err != nil {
+		return slurmJobMetadata{}, err
+	}
 	if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
 		return slurmJobMetadata{}, err
 	}
@@ -164,10 +167,14 @@ func submitSlurmArray(runDir string, jobs []JobSpec, executorOptions []string) (
 		if job.ArrayTaskID == nil || job.ArrayFirst != first || job.ArrayLast != last || !sameStrings(job.Command, command) {
 			return nil, errors.New("Slurm array tasks must share one command and range")
 		}
-		if err := os.MkdirAll(filepath.Join(runDir, job.ID), stateDirMode()); err != nil {
+		jobDir, err := validatedJobDir(runDir, job.ID)
+		if err != nil {
 			return nil, err
 		}
-		if err := writeJSON(filepath.Join(runDir, job.ID, "command.json"), job); err != nil {
+		if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
+			return nil, err
+		}
+		if err := writeJSON(filepath.Join(jobDir, "command.json"), job); err != nil {
 			return nil, err
 		}
 	}
@@ -206,7 +213,11 @@ func submitSlurmArray(runDir string, jobs []JobSpec, executorOptions []string) (
 		task := *job.ArrayTaskID
 		nativeID := fmt.Sprintf("%s_%d", masterID, task)
 		metadata := slurmJobMetadata{Executor: "slurm", JobID: job.ID, Command: job.Command, SlurmJobID: nativeID, SubmittedAt: nowRFC3339()}
-		if err := writeJSON(filepath.Join(runDir, job.ID, "job.json"), metadata); err != nil {
+		jobDir, err := validatedJobDir(runDir, job.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := writeJSON(filepath.Join(jobDir, "job.json"), metadata); err != nil {
 			return nil, err
 		}
 		handles = append(handles, JobHandle{Job: job, Native: nativeID})
@@ -248,6 +259,9 @@ func schedulerArrayWrapperScript(jobs []JobSpec, taskVariable string) string {
 	}
 	caseLines := make([]string, 0, len(jobs))
 	for _, job := range jobs {
+		if !isValidPathElement(job.ID) {
+			continue
+		}
 		exports := make([]string, 0, len(job.Environment))
 		jobDir := ""
 		for _, entry := range job.Environment {
@@ -261,7 +275,7 @@ func schedulerArrayWrapperScript(jobs []JobSpec, taskVariable string) string {
 			}
 		}
 		if jobDir == "" {
-			jobDir = filepath.Join("$ROTARI_RUN_DIR", job.ID)
+			jobDir = "$ROTARI_RUN_DIR/" + job.ID
 		}
 		changeDirectory := ""
 		if job.WorkingDirectory != "" {
@@ -416,7 +430,10 @@ func splitShellWords(input string) ([]string, error) {
 }
 
 func waitSlurmJob(runDir string, job slurmJobMetadata) JobResult {
-	jobDir := filepath.Join(runDir, job.JobID)
+	jobDir, err := validatedJobDir(runDir, job.JobID)
+	if err != nil {
+		return JobResult{ID: job.JobID, Command: job.Command, ExitCode: 1, Error: err.Error()}
+	}
 	statusPath := filepath.Join(jobDir, "status.json")
 	var accountingDeadline time.Time
 	for {

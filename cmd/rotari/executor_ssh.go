@@ -40,7 +40,10 @@ func (sshExecutor) Submit(runDir string, job JobSpec, options []string) (JobHand
 	if err != nil {
 		return JobHandle{}, err
 	}
-	jobDir := filepath.Join(runDir, job.ID)
+	jobDir, err := validatedJobDir(runDir, job.ID)
+	if err != nil {
+		return JobHandle{}, err
+	}
 	if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
 		return JobHandle{}, err
 	}
@@ -73,7 +76,10 @@ func (sshExecutor) Submit(runDir string, job JobSpec, options []string) (JobHand
 }
 
 func (sshExecutor) Wait(runDir string, handle JobHandle) JobResult {
-	jobDir := filepath.Join(runDir, handle.Job.ID)
+	jobDir, err := validatedJobDir(runDir, handle.Job.ID)
+	if err != nil {
+		return JobResult{ID: handle.Job.ID, Command: handle.Job.Command, ExitCode: 1, Error: err.Error()}
+	}
 	metadata, err := readSSHMetadata(jobDir)
 	if err != nil {
 		return JobResult{ID: handle.Job.ID, Command: handle.Job.Command, ExitCode: 1, Error: err.Error()}

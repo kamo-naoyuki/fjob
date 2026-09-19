@@ -696,6 +696,10 @@ func readLoadAverage() *LoadAverage {
 }
 
 func executeRun(paths pathSet, runID string, numParallel int) int {
+	if !isValidPathElement(runID) {
+		printErrorf("invalid run ID %q", runID)
+		return 1
+	}
 	queue, err := loadQueue(paths.queueFile)
 	if err != nil {
 		printErrorf("failed to load queue: %v", err)
@@ -720,6 +724,12 @@ func executeRun(paths pathSet, runID string, numParallel int) int {
 	if len(jobs) == 0 {
 		printErrorf("queue '%s' has no valid commands", paths.queueName)
 		return 1
+	}
+	for _, job := range jobs {
+		if !isValidPathElement(job.ID) {
+			printErrorf("invalid job ID %q", job.ID)
+			return 1
+		}
 	}
 
 	startedAt := nowRFC3339()
@@ -809,7 +819,10 @@ func failedJobHints(runID string, results []JobResult) string {
 
 func runOneJob(runDir string, job JobSpec) JobResult {
 	hostname, _ := os.Hostname()
-	jobDir := filepath.Join(runDir, job.ID)
+	jobDir, err := validatedJobDir(runDir, job.ID)
+	if err != nil {
+		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
+	}
 	if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
 		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
@@ -975,6 +988,20 @@ func isValidPathElement(value string) bool {
 		return false
 	}
 	return filepath.Base(value) == value
+}
+
+func validatedJobDir(runDir, jobID string) (string, error) {
+	if !isValidPathElement(jobID) {
+		return "", fmt.Errorf("invalid job ID %q", jobID)
+	}
+	return filepath.Join(runDir, jobID), nil
+}
+
+func validatedRunDir(paths pathSet, runID string) (string, error) {
+	if !isValidPathElement(runID) {
+		return "", fmt.Errorf("invalid run ID %q", runID)
+	}
+	return filepath.Join(paths.runsDir, runID), nil
 }
 
 func isValidProjectName(projectName string) bool {

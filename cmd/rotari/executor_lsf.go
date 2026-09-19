@@ -96,7 +96,10 @@ func readLSFMetadata(jobDir string) (lsfJobMetadata, error) {
 }
 
 func submitLSFJob(runDir string, job JobSpec, options []string) (lsfJobMetadata, error) {
-	jobDir := filepath.Join(runDir, job.ID)
+	jobDir, err := validatedJobDir(runDir, job.ID)
+	if err != nil {
+		return lsfJobMetadata{}, err
+	}
 	if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
 		return lsfJobMetadata{}, err
 	}
@@ -143,7 +146,10 @@ func submitLSFArray(runDir string, jobs []JobSpec, executorOptions []string) ([]
 		if job.ArrayTaskID == nil || job.ArrayFirst != first || job.ArrayLast != last || !sameStrings(job.Command, command) {
 			return nil, errors.New("LSF array tasks must share one command and range")
 		}
-		jobDir := filepath.Join(runDir, job.ID)
+		jobDir, err := validatedJobDir(runDir, job.ID)
+		if err != nil {
+			return nil, err
+		}
 		if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
 			return nil, err
 		}
@@ -174,7 +180,11 @@ func submitLSFArray(runDir string, jobs []JobSpec, executorOptions []string) ([]
 		taskID := *job.ArrayTaskID
 		nativeID := fmt.Sprintf("%s[%d]", masterID, taskID)
 		metadata := lsfJobMetadata{Executor: "lsf", JobID: job.ID, Command: job.Command, LSFJobID: nativeID, SubmittedAt: nowRFC3339()}
-		if err := writeJSON(filepath.Join(runDir, job.ID, "job.json"), metadata); err != nil {
+		jobDir, err := validatedJobDir(runDir, job.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := writeJSON(filepath.Join(jobDir, "job.json"), metadata); err != nil {
 			return nil, err
 		}
 		handles = append(handles, JobHandle{Job: job, Native: nativeID})
@@ -197,7 +207,10 @@ func parseLSFJobID(output string) (string, error) {
 }
 
 func waitLSFJob(runDir string, job lsfJobMetadata) JobResult {
-	jobDir := filepath.Join(runDir, job.JobID)
+	jobDir, err := validatedJobDir(runDir, job.JobID)
+	if err != nil {
+		return JobResult{ID: job.JobID, Command: job.Command, ExitCode: 1, Error: err.Error()}
+	}
 	statusPath := filepath.Join(jobDir, "status.json")
 	var accountingDeadline time.Time
 	for {

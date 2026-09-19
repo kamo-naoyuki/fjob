@@ -95,7 +95,10 @@ func readPBSMetadata(jobDir string) (pbsJobMetadata, error) {
 }
 
 func submitPBSJob(runDir string, job JobSpec, options []string) (pbsJobMetadata, error) {
-	jobDir := filepath.Join(runDir, job.ID)
+	jobDir, err := validatedJobDir(runDir, job.ID)
+	if err != nil {
+		return pbsJobMetadata{}, err
+	}
 	if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
 		return pbsJobMetadata{}, err
 	}
@@ -143,7 +146,10 @@ func submitPBSArray(runDir string, jobs []JobSpec, executorOptions []string) ([]
 		if job.ArrayTaskID == nil || job.ArrayFirst != first || job.ArrayLast != last || !sameStrings(job.Command, command) {
 			return nil, errors.New("PBS array tasks must share one command and range")
 		}
-		jobDir := filepath.Join(runDir, job.ID)
+		jobDir, err := validatedJobDir(runDir, job.ID)
+		if err != nil {
+			return nil, err
+		}
 		if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
 			return nil, err
 		}
@@ -181,7 +187,11 @@ func submitPBSArray(runDir string, jobs []JobSpec, executorOptions []string) ([]
 		taskID := *job.ArrayTaskID
 		nativeID := fmt.Sprintf("%s[%d]", masterID, taskID)
 		metadata := pbsJobMetadata{Executor: "pbs", JobID: job.ID, Command: job.Command, PBSJobID: nativeID, SubmittedAt: nowRFC3339()}
-		if err := writeJSON(filepath.Join(runDir, job.ID, "job.json"), metadata); err != nil {
+		jobDir, err := validatedJobDir(runDir, job.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := writeJSON(filepath.Join(jobDir, "job.json"), metadata); err != nil {
 			return nil, err
 		}
 		handles = append(handles, JobHandle{Job: job, Native: nativeID})
@@ -190,7 +200,10 @@ func submitPBSArray(runDir string, jobs []JobSpec, executorOptions []string) ([]
 }
 
 func waitPBSJob(runDir string, job pbsJobMetadata) JobResult {
-	jobDir := filepath.Join(runDir, job.JobID)
+	jobDir, err := validatedJobDir(runDir, job.JobID)
+	if err != nil {
+		return JobResult{ID: job.JobID, Command: job.Command, ExitCode: 1, Error: err.Error()}
+	}
 	statusPath := filepath.Join(jobDir, "status.json")
 	var accountingDeadline time.Time
 	for {

@@ -976,7 +976,10 @@ func controlQueueJobs(baseDir, queueName string, jobIDs []string, operation stri
 	}
 	controlled := 0
 	for _, jobID := range targets {
-		jobDir := filepath.Join(runDir, jobID)
+		jobDir, err := validatedJobDir(runDir, jobID)
+		if err != nil {
+			return "", err
+		}
 		if jobFinished(jobDir) {
 			if allJobs {
 				continue
@@ -1070,7 +1073,11 @@ func cancelQueueJobs(baseDir, queueName string, jobIDs []string, wait bool) (str
 		}
 		targets := make([]string, 0, len(commandSnapshot.Commands))
 		for _, job := range queueToJobs(commandSnapshot.Commands) {
-			if jobFinished(filepath.Join(runDir, job.ID)) {
+			jobDir, err := validatedJobDir(runDir, job.ID)
+			if err != nil {
+				return "", err
+			}
+			if jobFinished(jobDir) {
 				continue
 			}
 			targets = append(targets, job.ID)
@@ -1110,7 +1117,10 @@ func cancelJobs(runDir, queueName, runID string, jobIDs []string) (string, error
 		if !isValidPathElement(jobID) {
 			return "", fmt.Errorf("invalid job ID %q", jobID)
 		}
-		jobDir := filepath.Join(runDir, jobID)
+		jobDir, err := validatedJobDir(runDir, jobID)
+		if err != nil {
+			return "", err
+		}
 		if executor, err := jobOwnerExecutor(jobDir); err == nil {
 			if host, mismatch := localExecutorHostMismatch(executor, runDir); mismatch {
 				return "", fmt.Errorf("job %q runs on host %q; run cancel from that host", jobID, host)

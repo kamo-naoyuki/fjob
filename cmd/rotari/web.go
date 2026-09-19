@@ -267,7 +267,12 @@ func newWebHandler(baseDir, queueFilter string, allowControl bool) http.Handler 
 			writeWebError(writer, fmt.Errorf("project_name, run_id and job_id are required"))
 			return
 		}
-		data, err := os.ReadFile(filepath.Join(baseDir, "projects", queueName, "runs", runID, jobID, "output"))
+		jobDir, err := validatedJobDir(filepath.Join(baseDir, "projects", queueName, "runs", runID), jobID)
+		if err != nil {
+			writeWebError(writer, err)
+			return
+		}
+		data, err := os.ReadFile(filepath.Join(jobDir, "output"))
 		if err != nil {
 			writeWebError(writer, err)
 			return
@@ -600,7 +605,11 @@ func generateStaticWeb(outputDir, baseDir, queueFilter string) error {
 	for _, queue := range state.Queues {
 		for _, run := range queue.Runs {
 			for _, job := range run.Jobs {
-				path := filepath.Join(baseDir, "projects", queue.QueueName, "runs", run.RunID, job.ID, "output")
+				jobDir, pathErr := validatedJobDir(filepath.Join(baseDir, "projects", queue.QueueName, "runs", run.RunID), job.ID)
+				if pathErr != nil {
+					continue
+				}
+				path := filepath.Join(jobDir, "output")
 				data, readErr := os.ReadFile(path)
 				if readErr == nil {
 					logs[staticLogKey(queue.QueueName, run.RunID, job.ID)] = string(data)
@@ -1015,6 +1024,9 @@ function addQueueEditors(queue,commands){`, 1)
 	template = strings.Replace(template,
 		`queue_name:queue,job_id:jobID`,
 		`project_name:queue,job_id:jobID`, 1)
+	template = strings.Replace(template, `let state;`, `let state;let projectRuntimeDetailsOpen=false;`, 1)
+	template = strings.Replace(template, `<details><summary>Internal state</summary>`, `<details open="'+(projectRuntimeDetailsOpen?'open':'')+'"><summary>Internal state</summary>`, 1)
+	template = strings.Replace(template, `const originalRender=render;render=function(){originalRender();`, `const originalRender=render;render=function(){const runtimeDetails=document.querySelector('.project-runtime details');if(runtimeDetails)projectRuntimeDetailsOpen=runtimeDetails.open;originalRender();`, 1)
 	template = strings.Replace(template, "--queue-name", "--project-name", -1)
 	return template
 }

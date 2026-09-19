@@ -339,7 +339,11 @@ func printInterruptedRunNotice(paths pathSet, runID string) {
 }
 
 func showRun(paths pathSet, runID string, failedOnly bool) int {
-	runDir := filepath.Join(paths.runsDir, runID)
+	runDir, err := validatedRunDir(paths, runID)
+	if err != nil {
+		printErrorf("run %q not found", runID)
+		return 1
+	}
 	var summary RunSummary
 	summaryData, err := os.ReadFile(filepath.Join(runDir, "summary.json"))
 	summaryOK := err == nil
@@ -401,6 +405,9 @@ func showRun(paths pathSet, runID string, failedOnly bool) int {
 	changeHints := make([]JobSpec, 0)
 	fmt.Printf("%s\n", cyan(fmt.Sprintf("%-12s %-6s %-15s %-20s %-10s %-30s %-24s %-24s %-24s %s", "JOB ID", "TASK", "NAME", "DEPENDS ON", "STATUS", "EXECUTOR", "SUBMITTED", "FINISHED", "HOSTS", "COMMAND")))
 	for _, jobID := range jobIDs {
+		if !isValidPathElement(jobID) {
+			continue
+		}
 		jobSpec := jobSpecs[jobID]
 		name := readJobName(filepath.Join(runDir, jobID))
 		if name == "" {

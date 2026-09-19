@@ -10,6 +10,10 @@ import (
 )
 
 func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, batchMaxActive, retry int, requestedExecutor string, executorOptions []string, selection string, jobIDs []string, referenceRunID string, partialArray bool, progress func(JobResult, int, int, int, int), onStart func(JobSpec)) int {
+	if !isValidPathElement(runID) {
+		printErrorf("invalid run ID %q", runID)
+		return 1
+	}
 	queue, err := loadQueue(paths.queueFile)
 	if err != nil {
 		printErrorf("failed to load queue: %v", err)
@@ -19,6 +23,12 @@ func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, bat
 	if len(jobs) == 0 {
 		printErrorf("queue '%s' has no valid commands", paths.queueName)
 		return 1
+	}
+	for _, job := range jobs {
+		if !isValidPathElement(job.ID) {
+			printErrorf("invalid job ID %q", job.ID)
+			return 1
+		}
 	}
 	if err := validateDependencies(jobs); err != nil {
 		printErrorf("invalid dependencies: %v", err)
@@ -214,7 +224,10 @@ func prepareJobEnvironments(paths pathSet, runID string, jobs []JobSpec, runName
 	bin, _ := os.Executable()
 	for index := range jobs {
 		job := &jobs[index]
-		jobDir := filepath.Join(runDir, job.ID)
+		jobDir, err := validatedJobDir(runDir, job.ID)
+		if err != nil {
+			continue
+		}
 		environment := []string{
 			envBaseDir + "=" + paths.baseDir,
 			envProjectName + "=" + paths.queueName,
@@ -400,7 +413,11 @@ func runBatchLane(workers *sync.WaitGroup, runDir string, queue Queue, executor 
 		}
 		handles := make([]JobHandle, 0, end-start)
 		for _, job := range jobs[start:end] {
-			jobDir := filepath.Join(runDir, job.ID)
+			jobDir, err := validatedJobDir(runDir, job.ID)
+			if err != nil {
+				results <- JobResult{ID: job.ID, ExitCode: 1, Error: err.Error()}
+				continue
+			}
 			if jobCancellationRequested(jobDir) {
 				results <- recordCancelledJob(jobDir, job)
 				continue
