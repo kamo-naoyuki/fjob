@@ -19,6 +19,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      pages_enabled: ${{ steps.pages_site.outputs.pages_enabled }}
     permissions:
       contents: read
       pages: write
@@ -54,10 +56,35 @@ jobs:
           scripts/generate-demos.sh
           cp docs/demo-shell.gif docs/demo-rotari.gif docs/web-demo/
 
+      - name: Check whether GitHub Pages is enabled
+        id: pages_site
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          status=$(curl -sS -o /tmp/pages-site.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pages")
+          case "${status}" in
+            200)
+              echo "pages_enabled=true" >> "${GITHUB_OUTPUT}"
+              ;;
+            404)
+              echo "pages_enabled=false" >> "${GITHUB_OUTPUT}"
+              echo "::notice title=GitHub Pages not enabled::Skipping Pages deployment because this repository does not have a GitHub Pages site configured."
+              ;;
+            *)
+              cat /tmp/pages-site.json >&2
+              exit 1
+              ;;
+          esac
+
       - name: Configure GitHub Pages
+        if: steps.pages_site.outputs.pages_enabled == 'true'
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
+        if: steps.pages_site.outputs.pages_enabled == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: docs/web-demo
@@ -65,6 +92,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: build
+    if: needs.build.outputs.pages_enabled == 'true'
     permissions:
       pages: write
       id-token: write
