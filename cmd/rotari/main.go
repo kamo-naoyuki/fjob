@@ -229,6 +229,8 @@ func run(args []string) int {
 		return cmdJobSignal(args[1:], "resume")
 	case "delete":
 		return cmdDelete(args[1:])
+	case "gc":
+		return cmdGC(args[1:])
 	case "unlock":
 		return cmdUnlock(args[1:])
 	case "change":
@@ -444,6 +446,14 @@ func finishRun(paths pathSet, runID string, exitCode int) error {
 		return fmt.Errorf("failed to lock queue: %w", err)
 	}
 	defer release()
+
+	lock, err := loadLockInfo(paths.lockFile)
+	if err != nil {
+		return fmt.Errorf("failed to verify run lock: %w", err)
+	}
+	if lock.RunID != runID {
+		return fmt.Errorf("run lock belongs to %q, not %q", lock.RunID, runID)
+	}
 
 	queue, err := loadQueue(paths.queueFile)
 	if err != nil {
@@ -1130,17 +1140,35 @@ func acquireLock(lockPath string, info LockInfo) error {
 		return errors.New("active lock exists")
 	}
 
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	b, err := json.MarshalIndent(info, "", "  ")
 	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	tmp, err := os.CreateTemp(filepath.Dir(lockPath), ".rotari-lock-")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(tmpName, lockPath); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return errors.New("active lock exists")
 		}
 		return err
 	}
-	defer f.Close()
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	return enc.Encode(info)
+	return nil
 }
 
 func isRunning(lockPath string) (bool, error) {

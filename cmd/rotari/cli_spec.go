@@ -83,6 +83,15 @@ var cliCommandSpecs = []cliCommandSpec{
 		Flags:       append(commonCLIFlags(), cliFlagSpec{Name: "run-id", Description: "delete only the specified run", ValueName: "ID"}),
 	},
 	{
+		Name:        "gc",
+		Description: "find and remove orphan run registry entries",
+		Usage:       "rotari gc [--masterdir DIR] [--apply]",
+		Flags: []cliFlagSpec{
+			{Name: "masterdir", Description: "master registry directory", ValueName: "DIR"},
+			{Name: "apply", Description: "remove the cached orphan entries"},
+		},
+	},
+	{
 		Name:        "unlock",
 		Description: "remove a confirmed stale run lock",
 		Usage:       "rotari unlock [--basedir DIR] [--project-name NAME] --run-id ID",

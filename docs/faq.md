@@ -25,6 +25,12 @@ interrupted run second, a non-empty idle queue third, and only then the
 latest saved run. Pass `--run-id` (or `--runs` to list all saved runs) to
 target a specific run regardless of current queue state.
 
+**How do I clean up run registry entries left by manual deletion?**
+Run `rotari gc` to scan for registry entries whose run directories no longer
+exist. It caches the candidates for ten minutes and does not delete anything
+by itself. Review the result, then run `rotari gc --apply`; it removes only
+unchanged candidates and skips any run directory that has reappeared.
+
 ## Retry, copy, and array jobs
 
 **Can an array run only selected task IDs?**
@@ -56,6 +62,23 @@ once it succeeds, the previously blocked dependents run on the next
 `rotari run`/`retry` that includes them.
 
 ## Interrupted runs and locking
+
+**What happens if runners on multiple hosts use the same project?**
+This is supported when every host sees the same `basedir` through a shared
+filesystem whose `O_EXCL`, atomic rename, and advisory `flock` operations work
+correctly (for example, an NFSv4 mount configured for file locking). Rotari
+uses the state lock to serialize queue updates and the run lock to prevent two
+runners from starting the same project at once. This is still file-based
+coordination, not a distributed lock service: it cannot fence a host after a
+network partition, verify a remote PID, or repair inconsistent/stale mounts.
+If the hosts use different project names, their queue, metadata, and run locks
+are separate, so direct state-file interference is much less likely; the
+shared `basedir` server/registry and filesystem still remain common
+infrastructure.
+If a host fails during a run, confirm independently that its jobs have
+stopped before using `rotari unlock --run-id RUN_ID` from another host. Do not
+run the same project through mounts that do not share a consistent view of the
+state files.
 
 **A runner process died mid-run — what do I do?**
 Run `rotari unlock --run-id RUN_ID` (the exact command is shown by `show`) to

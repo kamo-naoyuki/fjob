@@ -103,8 +103,10 @@ the same mapping is idempotent; mapping one ID to another location must fail.
 The registry is only an index: run files remain authoritative. Deleting a run
 through the CLI or web history controls removes its registry entry after the
 run files and metadata are updated. Registry entries for runs deleted outside
-rotari may remain as orphaned records; automatic garbage collection for those
-records is not defined yet.
+rotari may remain as orphaned records. `rotari gc` scans for such records and
+caches the plan for ten minutes; `rotari gc --apply` removes only unchanged
+cached entries whose run directory is still absent. Automatic garbage
+collection is not performed.
 
 ## Run lifecycle
 
@@ -206,6 +208,24 @@ implement queue or execution semantics on its own. `wait --json` emits one
 supplied). `show --json` emits one object with the resolved location, run
 summary when available, and saved commands. These modes are additive; default
 CLI output remains human-facing.
+
+Shared-base operation across hosts relies on the shared filesystem preserving
+the semantics of exclusive file creation, atomic rename, and advisory `flock`.
+The state lock serializes queue mutations and `running.lock` prevents a second
+runner from starting the same project. This is coordination for a consistent
+shared filesystem, not distributed locking: it cannot fence a host after a
+network partition or determine whether a remote PID is alive. A remote run
+lock therefore remains active until an operator confirms the run stopped and
+uses `unlock`.
+Project state locks and run locks are scoped to each project directory, so
+different projects largely isolate queue and run state even under one shared
+base directory. Base-level server and registry state, along with the shared
+filesystem semantics, remain common dependencies.
+Run finalization rechecks that `running.lock` still belongs to the finishing
+run while holding the state lock, so a stale runner cannot clear or finalize a
+newer run after recovery. A new run lock is written completely to a temporary
+file and published without replacing an existing lock, so readers do not see
+partially written lock JSON.
 
 `web` binds `--host`/`--port` (default `127.0.0.1:8787`) via `listenWeb`. When
 `--port` is left at its default, a busy port falls back to scanning upward

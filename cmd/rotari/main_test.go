@@ -1836,6 +1836,9 @@ func TestFinishRunClearsQueueAndKeepsRunHistory(t *testing.T) {
 	if err := writeJSON(paths.metaFile, defaultMeta()); err != nil {
 		t.Fatal(err)
 	}
+	if err := writeJSON(paths.lockFile, LockInfo{RunID: "run-1", PID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := finishRun(paths, "run-1", 1); err != nil {
 		t.Fatal(err)
@@ -1860,6 +1863,43 @@ func TestFinishRunClearsQueueAndKeepsRunHistory(t *testing.T) {
 	}
 	if meta.Phase != "finished" || meta.LastRunID != "run-1" || meta.LastRunExitCode != 1 {
 		t.Fatalf("metadata = %#v, want finished run-1 exit 1", meta)
+	}
+}
+
+func TestFinishRunDoesNotFinalizeAnotherRun(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := Queue{Commands: []QueuedCommand{{ID: "queued", Command: []string{"echo", "queued"}}}}
+	if err := writeJSON(paths.queueFile, queue); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.metaFile, Meta{Phase: "running", LastRunID: "run-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.lockFile, LockInfo{RunID: "run-2", PID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := finishRun(paths, "run-1", 1); err == nil {
+		t.Fatal("finishRun finalized a different run")
+	}
+
+	gotQueue, err := loadQueue(paths.queueFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotQueue.Commands) != 1 {
+		t.Fatalf("queue commands = %d, want 1", len(gotQueue.Commands))
+	}
+	meta, err := loadMeta(paths.metaFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.LastRunID != "run-2" || meta.Phase != "running" {
+		t.Fatalf("metadata = %#v, want active run-2", meta)
 	}
 }
 

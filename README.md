@@ -624,6 +624,51 @@ rotari server list
 rotari server shutdown
 ```
 
+## Run registry maintenance
+
+Run IDs do not contain the base directory or project name. Rotari therefore
+keeps a master **run registry**, a lookup table that maps each run ID back to
+the base directory and project that own it. This lets commands such as
+`show --run-id`, `wait --run-id`, and `copy --run-id` work without repeating
+`--basedir` and `--project-name`.
+
+The run data itself remains under the project state directory:
+
+```text
+<basedir>/projects/<project>/runs/<run-id>/
+```
+
+The registry is stored separately, with one JSON file per run:
+
+```text
+<masterdir>/runs/<run-id>.json
+```
+
+`<masterdir>` is selected from `--masterdir`, `ROTARI_MASTERDIR`,
+`$XDG_STATE_HOME/rotari/master`, or `~/.local/state/rotari/master`, in that
+order. A registry file contains the run ID, base directory, and project name;
+it is only a lookup index, not the source of the run's logs or results.
+
+`gc` is separate from inspection and recovery: it maintains this master
+registry after run data was removed outside rotari. First scan for orphaned
+registry entries:
+
+```sh
+rotari gc
+```
+
+The candidates and their locations are printed and cached for ten minutes.
+The temporary GC plan is stored at `<masterdir>/gc.json`.
+After reviewing them, apply that exact plan:
+
+```sh
+rotari gc --apply
+```
+
+The apply step removes registry entries only. It skips candidates whose
+registry location changed or whose run directory reappeared, and never deletes
+run data.
+
 ## Shared filesystem locking
 
 Multiple hosts may use the same queue when they share the same state directory
@@ -640,6 +685,17 @@ the PID is no longer alive, but retains the run metadata as interrupted and
 blocks queue mutations until `unlock` acknowledges recovery. A lock created on
 another host is always treated as active: rotari cannot reliably determine
 whether a remote PID is still alive.
+
+This coordination is intentionally file-based, not a distributed lock service.
+It depends on the shared filesystem providing consistent `O_EXCL`, atomic
+rename, and advisory `flock` behavior. It does not fence a host after a
+network partition or repair stale/inconsistent mounts, so do not use the same
+project through mounts that can disagree about the state files. After a host
+failure, confirm that its jobs stopped before using `unlock` from another host.
+Different project names have separate queue, metadata, and run-lock files, so
+using different projects on multiple hosts is substantially safer than sharing
+one project. The base-level server, run registry, and filesystem are still
+shared, however.
 
 If a remote host has failed and the run is confirmed stopped, remove its stale
 run lock explicitly. First find the run ID, then unlock that exact run:
