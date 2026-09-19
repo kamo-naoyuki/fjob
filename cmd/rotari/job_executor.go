@@ -103,7 +103,8 @@ func localExecutorHostMismatch(executor JobExecutor, runDir string) (recordedHos
 	if executor.Name() != "local" {
 		return "", false
 	}
-	data, err := os.ReadFile(filepath.Join(runDir, "context.json"))
+	safeRunDir := filepath.Join(filepath.Dir(runDir), filepath.Base(runDir))
+	data, err := os.ReadFile(filepath.Join(safeRunDir, "context.json"))
 	if err != nil {
 		return "", false
 	}

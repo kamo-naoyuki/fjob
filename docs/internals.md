@@ -5,6 +5,28 @@ behavior belongs in `README.md`; local implementation details belong in code
 and tests. Update this file only when a cross-cutting contract changes, and
 replace obsolete rules rather than accumulating history.
 
+## Technology rationale
+
+- The core implementation uses Go because Rotari is primarily a command-line
+    and background-server tool that coordinates OS processes, files, locks,
+    signals, Unix sockets, and external schedulers.
+- A statically linked Go binary keeps installation and deployment simple on
+    login nodes, worker nodes, and shared HPC environments. The core does not
+    require a language runtime, daemon framework, or database service at runtime.
+- Go's standard library provides the required filesystem, process, signal,
+    networking, JSON, and concurrency primitives directly. This keeps the
+    file-backed state model explicit and makes the local and server execution
+    paths share the same implementation.
+- Goroutines and channels fit the execution model: multiple jobs may run
+    concurrently, while locks and a single server coordinate access to each
+    project.
+- Python is intentionally limited to the optional client interface. It wraps
+    the installed CLI rather than reimplementing queue, persistence, or
+    execution semantics, so there is one authoritative core implementation.
+- This choice does not make Go a requirement for job commands or scheduler
+    integrations. Jobs may use any executable, and executor-specific behavior
+    remains behind the `JobExecutor` boundary.
+
 ## System model
 
 1. Rotari is file-backed.

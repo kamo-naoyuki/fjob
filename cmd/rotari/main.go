@@ -1016,14 +1016,14 @@ func validatedJobDir(runDir, jobID string) (string, error) {
 	if !isValidPathElement(jobID) {
 		return "", fmt.Errorf("invalid job ID %q", jobID)
 	}
-	return filepath.Join(runDir, jobID), nil
+	return filepath.Join(runDir, filepath.Base(jobID)), nil
 }
 
 func validatedRunDir(paths pathSet, runID string) (string, error) {
 	if !isValidPathElement(runID) {
 		return "", fmt.Errorf("invalid run ID %q", runID)
 	}
-	return filepath.Join(paths.runsDir, runID), nil
+	return filepath.Join(paths.runsDir, filepath.Base(runID)), nil
 }
 
 func isValidProjectName(projectName string) bool {

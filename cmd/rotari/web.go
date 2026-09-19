@@ -267,7 +267,9 @@ func newWebHandler(baseDir, queueFilter string, allowControl bool) http.Handler 
 			writeWebError(writer, fmt.Errorf("project_name, run_id and job_id are required"))
 			return
 		}
-		jobDir, err := validatedJobDir(filepath.Join(baseDir, "projects", queueName, "runs", runID), jobID)
+		projectDir := filepath.Join(baseDir, "projects", filepath.Base(queueName))
+		runDir := filepath.Join(projectDir, "runs", filepath.Base(runID))
+		jobDir, err := validatedJobDir(runDir, jobID)
 		if err != nil {
 			writeWebError(writer, err)
 			return
