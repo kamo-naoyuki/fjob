@@ -27,6 +27,11 @@ target a specific run regardless of current queue state.
 
 ## Retry, copy, and array jobs
 
+**Can an array run only selected task IDs?**
+Yes. Use `--array 1,3,4` for a sparse task list (ranges such as `1-10` are
+also supported). Sparse lists run as independent scheduler submissions, so
+they do not require native sparse-array support from PBS, LSF, or Slurm.
+
 **I ran `rotari retry` — which jobs actually rerun?**
 `retry` is shorthand for `run --failed --unfinished`: jobs that failed or
 never finished are re-executed; jobs that already succeeded are carried

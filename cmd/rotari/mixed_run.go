@@ -52,7 +52,7 @@ func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, bat
 		if command.Array == nil {
 			continue
 		}
-		for task := command.Array.First; task <= command.Array.Last; task++ {
+		for _, task := range arrayTaskIDs(command.Array) {
 			taskID := fmt.Sprintf("%s-%d", command.ID, task)
 			if origin, ok := plan.CarriedOrigins[taskID]; ok {
 				if command.TaskOrigins == nil {
@@ -234,7 +234,7 @@ func prepareJobEnvironments(paths pathSet, runID string, jobs []JobSpec, runName
 				fmt.Sprintf("%s=%d", envArrayTaskID, *job.ArrayTaskID),
 				fmt.Sprintf("%s=%d", envArrayFirst, job.ArrayFirst),
 				fmt.Sprintf("%s=%d", envArrayLast, job.ArrayLast),
-				fmt.Sprintf("%s=%d", envArraySize, job.ArrayLast-job.ArrayFirst+1),
+				fmt.Sprintf("%s=%d", envArraySize, job.ArraySize),
 			)
 		}
 		if runName != "" {

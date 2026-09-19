@@ -149,7 +149,7 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "add",
 		Description: "add a command to a queue",
-		Usage:       "rotari add [--basedir DIR] [--project-name NAME] [--executor EXECUTOR] [--executor-option OPTION] [--working-directory DIR] [--env KEY=VALUE] [--job-name NAME] [--depends-on NAME] [--array FIRST-LAST] [--run] <command ...>",
+		Usage:       "rotari add [--basedir DIR] [--project-name NAME] [--executor EXECUTOR] [--executor-option OPTION] [--working-directory DIR] [--env KEY=VALUE] [--job-name NAME] [--depends-on NAME] [--array FIRST-LAST|TASK[,TASK...]] [--run] <command ...>",
 		Flags: append(commonCLIFlags(),
 			cliFlagSpec{Name: "executor", Description: "job executor", ValueName: "EXECUTOR", Values: executorNames()},
 			cliFlagSpec{Name: "executor-option", Description: "option passed to the selected scheduler (sbatch/qsub/...)", ValueName: "OPTION"},
@@ -157,7 +157,7 @@ var cliCommandSpecs = []cliCommandSpec{
 			cliFlagSpec{Name: "env", Description: "environment variable for the job; may be repeated", ValueName: "KEY=VALUE"},
 			cliFlagSpec{Name: "job-name", Description: "job name label", ValueName: "NAME"},
 			cliFlagSpec{Name: "depends-on", Description: "name of a prerequisite job; may be repeated", ValueName: "NAME"},
-			cliFlagSpec{Name: "array", Description: "create an array job range", ValueName: "FIRST-LAST"},
+			cliFlagSpec{Name: "array", Description: "create an array job range or selected tasks", ValueName: "FIRST-LAST|TASK[,TASK...]"},
 			cliFlagSpec{Name: "run", Description: "execute the queue after adding the command"},
 		),
 		HasPositional: true,

@@ -100,8 +100,11 @@ It resolves from `ROTARI_MASTERDIR`, then `$XDG_STATE_HOME/rotari/master`, then
 
 Register new runs before exposing location-independent commands. Re-registering
 the same mapping is idempotent; mapping one ID to another location must fail.
-The registry is only an index: run files remain authoritative. Registry
-retention and garbage collection are not defined yet.
+The registry is only an index: run files remain authoritative. Deleting a run
+through the CLI or web history controls removes its registry entry after the
+run files and metadata are updated. Registry entries for runs deleted outside
+rotari may remain as orphaned records; automatic garbage collection for those
+records is not defined yet.
 
 ## Run lifecycle
 
@@ -119,12 +122,12 @@ that mistake is never deferred to execution time; a `--depends-on` name may
 still refer to a job added later in the same queue, so unknown-name and cycle
 checks remain deferred to the execution boundary.
 
-An array queue command has an inclusive `first-last` range. Runtime expansion
-creates one `JobSpec` and persisted job directory per task. Local executors run
-those tasks as independent processes. Slurm, PBS, and LSF may submit a complete
-selected range as one native array; incomplete selections fall back to
-independent submissions so carried or omitted tasks are never started
-accidentally.
+An array queue command has an inclusive `first-last` range or an explicit
+comma-separated task list. Runtime expansion creates one `JobSpec` and
+persisted job directory per selected task. Local executors run those tasks as
+independent processes. Slurm, PBS, and LSF may submit a complete contiguous
+range as one native array; sparse selections fall back to independent
+submissions so scheduler support for sparse native arrays is not required.
 
 Result-based selection (`--failed`/`--unfinished`/`--success` in `copy`, and in
 rerun when `--partial-array=false`) and copied-job origin status operate on

@@ -48,6 +48,21 @@ func registerRunLocation(location runLocation) error {
 	return writeJSON(path, location)
 }
 
+func unregisterRun(runID string) error {
+	dir, err := runRegistryDir()
+	if err != nil {
+		return err
+	}
+	path, err := runLocationPath(dir, runID)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func resolveRunLocation(runID string) (runLocation, bool, error) {
 	dir, err := runRegistryDir()
 	if err != nil {

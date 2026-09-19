@@ -48,8 +48,9 @@ type QueuedCommand struct {
 }
 
 type ArraySpec struct {
-	First int `json:"first"`
-	Last  int `json:"last"`
+	First int   `json:"first"`
+	Last  int   `json:"last"`
+	Tasks []int `json:"tasks,omitempty"`
 }
 
 type JobOrigin struct {
@@ -87,6 +88,7 @@ type JobSpec struct {
 	ArrayTaskID      *int     `json:"array_task_id,omitempty"`
 	ArrayFirst       int      `json:"array_first,omitempty"`
 	ArrayLast        int      `json:"array_last,omitempty"`
+	ArraySize        int      `json:"array_size,omitempty"`
 	Environment      []string `json:"environment,omitempty"`
 }
 
@@ -135,22 +137,63 @@ func runStatus(exitCode int) string {
 }
 
 func parseArrayRange(value string) (ArraySpec, error) {
-	parts := strings.Split(value, "-")
-	if len(parts) != 2 {
-		return ArraySpec{}, fmt.Errorf("want FIRST-LAST")
+	values := strings.Split(value, ",")
+	if len(values) == 1 && strings.TrimSpace(values[0]) == "" {
+		return ArraySpec{}, fmt.Errorf("want FIRST-LAST or TASK[,TASK...]")
 	}
-	first, err := strconv.Atoi(strings.TrimSpace(parts[0]))
-	if err != nil {
-		return ArraySpec{}, fmt.Errorf("invalid first index: %w", err)
+	tasks := make([]int, 0, len(values))
+	seen := make(map[int]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return ArraySpec{}, fmt.Errorf("empty task index")
+		}
+		parts := strings.Split(value, "-")
+		if len(parts) > 2 {
+			return ArraySpec{}, fmt.Errorf("invalid task range %q", value)
+		}
+		first, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil {
+			return ArraySpec{}, fmt.Errorf("invalid task index: %w", err)
+		}
+		last := first
+		if len(parts) == 2 {
+			last, err = strconv.Atoi(strings.TrimSpace(parts[1]))
+			if err != nil {
+				return ArraySpec{}, fmt.Errorf("invalid last index: %w", err)
+			}
+			if first > last {
+				return ArraySpec{}, errors.New("first index must not be greater than last index")
+			}
+		}
+		for task := first; task <= last; task++ {
+			if seen[task] {
+				return ArraySpec{}, fmt.Errorf("duplicate task index: %d", task)
+			}
+			seen[task] = true
+			tasks = append(tasks, task)
+		}
 	}
-	last, err := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if err != nil {
-		return ArraySpec{}, fmt.Errorf("invalid last index: %w", err)
+	sort.Ints(tasks)
+	array := ArraySpec{First: tasks[0], Last: tasks[len(tasks)-1]}
+	if len(tasks) != array.Last-array.First+1 {
+		array.Tasks = tasks
 	}
-	if first > last {
-		return ArraySpec{}, errors.New("first index must not be greater than last index")
+	return array, nil
+}
+
+func arrayTaskIDs(array *ArraySpec) []int {
+	if array == nil {
+		return nil
 	}
-	return ArraySpec{First: first, Last: last}, nil
+	if len(array.Tasks) > 0 {
+		return array.Tasks
+	}
+	tasks := make([]int, 0, array.Last-array.First+1)
+	for task := array.First; task <= array.Last; task++ {
+		tasks = append(tasks, task)
+	}
+	return tasks
 }
 
 func formatRunLabel(runID, runName string) string {
@@ -874,7 +917,7 @@ func queueToJobs(commands []QueuedCommand) []JobSpec {
 			})
 			continue
 		}
-		for task := queued.Array.First; task <= queued.Array.Last; task++ {
+		for _, task := range arrayTaskIDs(queued.Array) {
 			id := fmt.Sprintf("%s-%d", queued.ID, task)
 			name := queued.Name
 			if name != "" {
@@ -884,7 +927,7 @@ func queueToJobs(commands []QueuedCommand) []JobSpec {
 			jobs = append(jobs, JobSpec{
 				ID: id, Command: queued.Command, WorkingDirectory: queued.WorkingDirectory, Name: name,
 				Executor: queued.Executor, ExecutorOptions: queued.ExecutorOptions, Environment: queued.Environment, DependsOn: queued.DependsOn,
-				ArrayGroup: queued.ID, ArrayTaskID: &taskID, ArrayFirst: queued.Array.First, ArrayLast: queued.Array.Last,
+				ArrayGroup: queued.ID, ArrayTaskID: &taskID, ArrayFirst: queued.Array.First, ArrayLast: queued.Array.Last, ArraySize: len(arrayTaskIDs(queued.Array)),
 			})
 		}
 	}

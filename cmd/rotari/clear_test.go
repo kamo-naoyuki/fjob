@@ -7,6 +7,7 @@ import (
 )
 
 func TestDeleteAllRunsResetsMetadata(t *testing.T) {
+	t.Setenv("ROTARI_MASTERDIR", t.TempDir())
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "demo")
 	if err != nil {
@@ -14,6 +15,9 @@ func TestDeleteAllRunsResetsMetadata(t *testing.T) {
 	}
 	for _, runID := range []string{"run-1", "run-2"} {
 		if err := os.MkdirAll(filepath.Join(paths.runsDir, runID), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := registerRun(paths, runID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -37,5 +41,36 @@ func TestDeleteAllRunsResetsMetadata(t *testing.T) {
 	}
 	if updated.Phase != "collecting" || updated.LastRunID != "" || updated.LastRunExitCode != 0 {
 		t.Fatalf("metadata = %+v, want reset collecting state", updated)
+	}
+	for _, runID := range []string{"run-1", "run-2"} {
+		if _, found, err := resolveRunLocation(runID); err != nil || found {
+			t.Fatalf("registry entry for %q: found=%v, err=%v; want removed", runID, found, err)
+		}
+	}
+}
+
+func TestClearRunHistoryRemovesRegistryEntry(t *testing.T) {
+	t.Setenv("ROTARI_MASTERDIR", t.TempDir())
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := "run-1"
+	if err := os.MkdirAll(filepath.Join(paths.runsDir, runID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.metaFile, Meta{Phase: "finished", LastRunID: runID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerRun(paths, runID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := clearRunHistory(baseDir, "demo", runID); err != nil {
+		t.Fatalf("clearRunHistory() error = %v", err)
+	}
+	if _, found, err := resolveRunLocation(runID); err != nil || found {
+		t.Fatalf("registry entry: found=%v, err=%v; want removed", found, err)
 	}
 }

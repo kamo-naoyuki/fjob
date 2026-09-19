@@ -57,7 +57,7 @@ func aggregatedJobResult(id string, array *ArraySpec, results map[string]JobResu
 		return result, finished
 	}
 	aggregate := JobResult{ID: id}
-	for task := array.First; task <= array.Last; task++ {
+	for _, task := range arrayTaskIDs(array) {
 		result, ok := results[fmt.Sprintf("%s-%d", id, task)]
 		if !ok {
 			return JobResult{}, false
@@ -178,7 +178,7 @@ func planRerunSelection(paths pathSet, queue Queue, selection string, jobIDs []s
 		} else {
 			// finalResults is keyed per expanded array task (see
 			// queueToJobs), not by the array command's own ID.
-			for task := command.Array.First; task <= command.Array.Last; task++ {
+			for _, task := range arrayTaskIDs(command.Array) {
 				taskID := fmt.Sprintf("%s-%d", command.ID, task)
 				plan.CarriedResults[taskID] = results[taskID]
 			}
@@ -211,7 +211,7 @@ func planRerunSelection(paths pathSet, queue Queue, selection string, jobIDs []s
 // lets show/web follow a carried task back to its own job directory in the
 // reference run, since QueuedCommand.Origin only covers the whole command.
 func planArrayTaskSelection(command QueuedCommand, selection string, results map[string]JobResult, runID, runDir, originCWD string, plan *rerunPlan) {
-	for task := command.Array.First; task <= command.Array.Last; task++ {
+	for _, task := range arrayTaskIDs(command.Array) {
 		taskID := fmt.Sprintf("%s-%d", command.ID, task)
 		result, finished := results[taskID]
 		if resultSelectionMatches(selection, finished, result.ExitCode) {

@@ -1103,7 +1103,7 @@ func showRunLogs(writer io.Writer, paths pathSet, runID string, failedOnly bool)
 				printCarriedForwardOutput(writer, paths, command.ID, command.Name, command.Command, command.WorkingDirectory, command.Origin, seen, failedOnly)
 				continue
 			}
-			for task := command.Array.First; task <= command.Array.Last; task++ {
+			for _, task := range arrayTaskIDs(command.Array) {
 				taskID := fmt.Sprintf("%s-%d", command.ID, task)
 				printCarriedForwardOutput(writer, paths, taskID, command.Name, command.Command, command.WorkingDirectory, command.TaskOrigins[taskID], seen, failedOnly)
 			}

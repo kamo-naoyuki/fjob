@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -596,13 +597,40 @@ func TestQueueToJobsExpandsArray(t *testing.T) {
 
 func TestParseArrayRange(t *testing.T) {
 	got, err := parseArrayRange("2-4")
-	if err != nil || got != (ArraySpec{First: 2, Last: 4}) {
+	if err != nil || got.First != 2 || got.Last != 4 || len(got.Tasks) != 0 {
 		t.Fatalf("parseArrayRange = %#v, %v", got, err)
 	}
-	for _, value := range []string{"", "4-2", "one-2", "1"} {
+	got, err = parseArrayRange("1,3,4")
+	if err != nil || !reflect.DeepEqual(got, ArraySpec{First: 1, Last: 4, Tasks: []int{1, 3, 4}}) {
+		t.Fatalf("parseArrayRange sparse = %#v, %v", got, err)
+	}
+	for _, value := range []string{"", "4-2", "one-2", "1,,3", "1,3,3"} {
 		if _, err := parseArrayRange(value); err == nil {
 			t.Errorf("parseArrayRange(%q) returned nil error", value)
 		}
+	}
+}
+
+func TestQueueToJobsExpandsSparseArray(t *testing.T) {
+	jobs := queueToJobs([]QueuedCommand{{
+		ID: "array", Command: []string{"echo", "hello"}, Array: &ArraySpec{First: 1, Last: 4, Tasks: []int{1, 3, 4}},
+	}})
+	if len(jobs) != 3 {
+		t.Fatalf("got %d jobs, want 3", len(jobs))
+	}
+	for index, wantTask := range []int{1, 3, 4} {
+		if jobs[index].ID != fmt.Sprintf("array-%d", wantTask) || *jobs[index].ArrayTaskID != wantTask || jobs[index].ArraySize != 3 {
+			t.Fatalf("job %d = %#v, want task %d with size 3", index, jobs[index], wantTask)
+		}
+	}
+}
+
+func TestSparseArrayUsesIndividualSubmissions(t *testing.T) {
+	jobs := queueToJobs([]QueuedCommand{{
+		ID: "array", Command: []string{"echo", "hello"}, Array: &ArraySpec{First: 1, Last: 4, Tasks: []int{1, 3, 4}},
+	}})
+	if completeArrayGroup(jobs, 1, 4) {
+		t.Fatal("sparse array must not use a native contiguous scheduler array")
 	}
 }
 
@@ -1339,6 +1367,7 @@ func TestPlanRerunSelectionPartialArrayReexecutesOnlyFailedTasks(t *testing.T) {
 }
 
 func TestDeleteRemovesOnlySelectedRun(t *testing.T) {
+	t.Setenv("ROTARI_MASTERDIR", t.TempDir())
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "default")
 	if err != nil {
@@ -1349,6 +1378,9 @@ func TestDeleteRemovesOnlySelectedRun(t *testing.T) {
 	}
 	for _, runID := range []string{"run-1", "run-2"} {
 		if err := os.Mkdir(filepath.Join(paths.runsDir, runID), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := registerRun(paths, runID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1371,6 +1403,12 @@ func TestDeleteRemovesOnlySelectedRun(t *testing.T) {
 	}
 	if meta.LastRunID != "run-1" || meta.LastRunExitCode != 1 || meta.Phase != "collecting" {
 		t.Fatalf("metadata = %#v, want latest remaining run-1", meta)
+	}
+	if _, found, err := resolveRunLocation("run-2"); err != nil || found {
+		t.Fatalf("deleted run registry entry: found=%v, err=%v; want removed", found, err)
+	}
+	if _, found, err := resolveRunLocation("run-1"); err != nil || !found {
+		t.Fatalf("remaining run registry entry: found=%v, err=%v; want retained", found, err)
 	}
 }
 

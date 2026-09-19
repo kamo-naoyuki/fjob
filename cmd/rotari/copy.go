@@ -241,7 +241,7 @@ func originTimestamps(runDir, id string, array *ArraySpec) (string, string) {
 		return readJobTimestamp(runDir, id, "submitted_at"), readJobTimestamp(runDir, id, "finished_at")
 	}
 	var submittedAt, finishedAt string
-	for task := array.First; task <= array.Last; task++ {
+	for _, task := range arrayTaskIDs(array) {
 		taskID := fmt.Sprintf("%s-%d", id, task)
 		if value := readJobTimestamp(runDir, taskID, "submitted_at"); value != "" && (submittedAt == "" || value < submittedAt) {
 			submittedAt = value

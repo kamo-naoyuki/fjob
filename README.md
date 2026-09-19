@@ -15,10 +15,11 @@
 
 **No DAGs to design. No pipeline to describe up front.**
 [Snakemake](https://github.com/snakemake/snakemake) and
-[Nextflow](https://github.com/nextflow-io/nextflow) are powerful for
-complex, data-dependent workflows, but most ad-hoc experiment loops don't
-benefits may not justify the upfront setup and learning curve of defining a
-workflow. Just queue what you want to run. **State lives in plain JSON
+[Nextflow](https://github.com/nextflow-io/nextflow) pursue a related goal:
+making complex, data-dependent workflows repeatable by defining their
+dependencies. For most ad-hoc experiment loops, though, their benefits may
+not justify the upfront setup and learning curve of defining a workflow.
+Just queue what you want to run. **State lives in plain JSON
 files on disk**, with no server or database to set up — it works the same
 whether you're on your laptop or logged into a remote compute node.
 
@@ -299,16 +300,19 @@ local run directory. Use `--working-directory DIR` to set the execution
 directory; for SSH this is a directory on the remote host. It can be changed
 later with `rotari change` or the web UI.
 
-Array jobs can be added with a numeric range:
+Array jobs can be added with a numeric range or a comma-separated task list:
 
 ```sh
 rotari add --array 1-10 --executor local ./train.sh
 rotari add --array 1-10 --executor slurm ./train.sh
+rotari add --array 1,3,4 --executor slurm ./train.sh
 ```
 
 Each task is tracked separately. Local execution starts one process per task;
 Slurm, PBS, and LSF submit native scheduler arrays when the complete range is
-selected. For each array task, rotari exposes:
+selected. Sparse task lists are submitted as independent jobs so they work
+with scheduler versions that do not support sparse native arrays. For each
+array task, rotari exposes:
 
 - `ROTARI_ARRAY_TASK_ID`: current task number
 - `ROTARI_ARRAY_FIRST`: first task number in the array
