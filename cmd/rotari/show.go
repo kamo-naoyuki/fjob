@@ -567,6 +567,9 @@ func showQueueJob(paths pathSet, queue Queue, jobID string) int {
 		if len(job.DependsOn) > 0 {
 			fmt.Printf("Depends on: %s\n", strings.Join(job.DependsOn, ", "))
 		}
+		if job.WorkingDirectory != "" {
+			fmt.Printf("Working directory: %s\n", job.WorkingDirectory)
+		}
 		fmt.Printf("Command: %s\n", strings.Join(job.Command, " "))
 		return 0
 	}
@@ -645,7 +648,7 @@ func compareQueueWithRun(queuePath, runCommandsPath string) (queueRunDiff, error
 }
 
 func sameJobSpec(left, right JobSpec) bool {
-	if left.ID != right.ID || left.Name != right.Name || left.Executor != right.Executor || left.ArrayGroup != right.ArrayGroup || left.ArrayFirst != right.ArrayFirst || left.ArrayLast != right.ArrayLast {
+	if left.ID != right.ID || left.Name != right.Name || left.WorkingDirectory != right.WorkingDirectory || left.Executor != right.Executor || left.ArrayGroup != right.ArrayGroup || left.ArrayFirst != right.ArrayFirst || left.ArrayLast != right.ArrayLast {
 		return false
 	}
 	if (left.ArrayTaskID == nil) != (right.ArrayTaskID == nil) || (left.ArrayTaskID != nil && *left.ArrayTaskID != *right.ArrayTaskID) {
@@ -1070,6 +1073,9 @@ func showRunLogs(writer io.Writer, paths pathSet, runID string, failedOnly bool)
 		}
 		header += " ==="
 		fmt.Fprintln(writer, headerColor(header))
+		if jobSpecs[jobID].WorkingDirectory != "" {
+			fmt.Fprintf(writer, "Working directory: %s\n", jobSpecs[jobID].WorkingDirectory)
+		}
 		fmt.Fprintf(writer, "Command: %s\n", command)
 		fmt.Fprintf(writer, "Output path: %s\n", filepath.Join(jobDir, "output"))
 
@@ -1094,12 +1100,12 @@ func showRunLogs(writer io.Writer, paths pathSet, runID string, failedOnly bool)
 	if queueErr == nil {
 		for _, command := range queue.Commands {
 			if command.Array == nil {
-				printCarriedForwardOutput(writer, paths, command.ID, command.Name, command.Command, command.Origin, seen, failedOnly)
+				printCarriedForwardOutput(writer, paths, command.ID, command.Name, command.Command, command.WorkingDirectory, command.Origin, seen, failedOnly)
 				continue
 			}
 			for task := command.Array.First; task <= command.Array.Last; task++ {
 				taskID := fmt.Sprintf("%s-%d", command.ID, task)
-				printCarriedForwardOutput(writer, paths, taskID, command.Name, command.Command, command.TaskOrigins[taskID], seen, failedOnly)
+				printCarriedForwardOutput(writer, paths, taskID, command.Name, command.Command, command.WorkingDirectory, command.TaskOrigins[taskID], seen, failedOnly)
 			}
 		}
 	}
@@ -1109,7 +1115,7 @@ func showRunLogs(writer io.Writer, paths pathSet, runID string, failedOnly bool)
 // printCarriedForwardOutput prints a carried-forward job's output read from
 // its origin run/job, if it was not itself re-executed in this run (i.e. it
 // has no directory of its own here).
-func printCarriedForwardOutput(writer io.Writer, paths pathSet, id, name string, command []string, origin *JobOrigin, seen map[string]bool, failedOnly bool) {
+func printCarriedForwardOutput(writer io.Writer, paths pathSet, id, name string, command []string, workingDirectory string, origin *JobOrigin, seen map[string]bool, failedOnly bool) {
 	if seen[id] || origin == nil {
 		return
 	}
@@ -1129,6 +1135,9 @@ func printCarriedForwardOutput(writer io.Writer, paths pathSet, id, name string,
 		headerColor = green
 	}
 	fmt.Fprintln(writer, headerColor(header))
+	if workingDirectory != "" {
+		fmt.Fprintf(writer, "Working directory: %s\n", workingDirectory)
+	}
 	fmt.Fprintf(writer, "Command: %s\n", strings.Join(command, " "))
 	originDir := filepath.Join(paths.runsDir, origin.RunID, origin.JobID)
 	fmt.Fprintf(writer, "Output path: %s\n", filepath.Join(originDir, "output"))

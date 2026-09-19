@@ -120,7 +120,7 @@ func submitSlurmJob(runDir string, job JobSpec, executorOptions []string) (slurm
 		return slurmJobMetadata{}, err
 	}
 	wrapperPath := filepath.Join(jobDir, "slurm-wrapper.sh")
-	if err := os.WriteFile(wrapperPath, []byte(statusWrapperScript(job.Command, jobDir, job.Environment)), 0o755); err != nil {
+	if err := os.WriteFile(wrapperPath, []byte(statusWrapperScript(job.Command, jobDir, job.Environment, job.WorkingDirectory)), 0o755); err != nil {
 		return slurmJobMetadata{}, err
 	}
 	outputPath := filepath.Join(jobDir, "output")
@@ -261,7 +261,11 @@ func schedulerArrayWrapperScript(jobs []JobSpec, taskVariable string) string {
 		if jobDir == "" {
 			jobDir = filepath.Join("$ROTARI_RUN_DIR", job.ID)
 		}
-		caseLines = append(caseLines, fmt.Sprintf("    %d)\n        %s\n        job_dir=%s\n        export %s=%s\n        mkdir -p \"$job_dir\" || exit 1\n        ;;", *job.ArrayTaskID, strings.Join(exports, "\n        "), shellQuote(jobDir), envJobDir, shellQuote(jobDir)))
+		changeDirectory := ""
+		if job.WorkingDirectory != "" {
+			changeDirectory = "        cd " + shellQuote(job.WorkingDirectory) + " || exit 1\n"
+		}
+		caseLines = append(caseLines, fmt.Sprintf("    %d)\n        %s\n        job_dir=%s\n        export %s=%s\n        mkdir -p \"$job_dir\" || exit 1\n%s        ;;", *job.ArrayTaskID, strings.Join(exports, "\n        "), shellQuote(jobDir), envJobDir, shellQuote(jobDir), changeDirectory))
 	}
 	return "#!/bin/sh\nset +e\ncase \"$" + taskVariable + "\" in\n" + strings.Join(caseLines, "\n") + "\n    *) exit 1 ;;\nesac\nexec >\"$job_dir/output\" 2>&1\nstatus_path=\"$job_dir/status.json\"\nhostname=$(hostname 2>/dev/null || true)\nwrite_status() {\n    phase=$1\n    code=$2\n    tmp=\"${status_path}.tmp.$$\"\n    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)\n    if [ \"$phase\" = \"running\" ]; then\n        printf '{\"phase\":\"running\",\"hosts\":[\"%s\"],\"started_at\":\"%s\"}\n' \"$hostname\" \"$now\" > \"$tmp\"\n    else\n        printf '{\"phase\":\"%s\",\"hosts\":[\"%s\"],\"exit_code\":%s,\"finished_at\":\"%s\"}\n' \"$phase\" \"$hostname\" \"$code\" \"$now\" > \"$tmp\"\n    fi\n    mv -f \"$tmp\" \"$status_path\"\n}\nwrite_status running 0\ntrap 'write_status cancelled 143; exit 143' TERM\ntrap 'write_status cancelled 130; exit 130' INT\n" + strings.Join(quoted, " ") + "\ncode=$?\nwrite_status finished \"$code\"\nexit \"$code\"\n"
 }
@@ -273,7 +277,7 @@ func slurmArrayWrapperScript(jobs []JobSpec) string {
 // statusWrapperScript wraps command in a shell script that records phase and
 // exit code to status.json, so any poll-based executor (Slurm, PBS, ...) can
 // determine the final result even if the scheduler's own accounting lags.
-func statusWrapperScript(command []string, jobDir string, environment []string) string {
+func statusWrapperScript(command []string, jobDir string, environment []string, workingDirectory string) string {
 	statusPath := filepath.Join(jobDir, "status.json")
 	quoted := make([]string, 0, len(command))
 	for _, arg := range command {
@@ -287,9 +291,14 @@ func statusWrapperScript(command []string, jobDir string, environment []string) 
 			exports = append(exports, "export "+parts[0]+"="+shellQuote(parts[1]))
 		}
 	}
+	changeDirectory := ""
+	if workingDirectory != "" {
+		changeDirectory = "cd " + shellQuote(workingDirectory) + " || exit 1\n"
+	}
 	return fmt.Sprintf(`#!/bin/sh
 set +e
 status_path=%s
+%s
 %s
 hostname=$(hostname 2>/dev/null || true)
 write_status() {
@@ -312,7 +321,7 @@ trap 'write_status cancelled 131; exit 131' QUIT
 code=$?
 write_status finished "$code"
 exit "$code"
-`, shellQuote(statusPath), strings.Join(exports, "\n"), commandLine)
+`, shellQuote(statusPath), strings.Join(exports, "\n"), changeDirectory, commandLine)
 }
 
 func shellQuote(value string) string {

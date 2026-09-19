@@ -81,8 +81,21 @@ that's normal and needs no `unlock`, unless the process is killed outright
 
 **Can I detach a synchronous run without cancelling it?**
 Yes. Press Ctrl-D while `rotari run` is waiting for progress. The client exits
-immediately and the run continues in the background; this is equivalent to
-starting the run with `--async` after it has begun.
+cleanly and the run continues in the background; this is equivalent to
+starting the run with `--async` after it has begun. This is the key difference
+from Ctrl-Z: Ctrl-D is rotari's detach command, while Ctrl-Z is the shell's
+job-control suspend command.
+
+**What happens if I press Ctrl-Z during a synchronous run?**
+The terminal suspends the foreground `rotari` client, but the run continues in
+the background because it is supervised by the separate server process. Use
+`fg` to resume the client and keep watching progress. Do not use Ctrl-Z as a
+way to detach: the stopped client is still a shell job, and its terminal
+connection is not cleanly handed off. If you close the terminal while it is
+stopped, the client is killed and the server sees a disconnect, which requests
+cancellation of the run. Use Ctrl-D for a one-way detach, or start with
+`rotari run --async` when you already know you do not need the interactive
+progress view.
 
 **Can `wait` find the run ID for me?**
 Yes. With no run ID, `rotari wait` detects the active run for the resolved

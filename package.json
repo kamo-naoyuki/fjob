@@ -1,0 +1,26 @@
+{
+  "name": "jobq",
+  "version": "1.0.0",
+  "description": "<picture>   <source media=\"(prefers-color-scheme: dark)\" srcset=\"docs/assets/rotari-logo-dark.svg\">   <source media=\"(prefers-color-scheme: light)\" srcset=\"docs/assets/rotari-logo-light.svg\">   <img src=\"docs/assets/rotari-logo-light.svg\" alt=\"rotari logo\"> </picture>",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kamo-naoyuki/rotari.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/kamo-naoyuki/rotari/issues"
+  },
+  "homepage": "https://github.com/kamo-naoyuki/rotari#readme",
+  "devDependencies": {
+    "jsdom": "^30.1.0"
+  }
+}

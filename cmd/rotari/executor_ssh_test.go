@@ -48,3 +48,10 @@ func TestSSHTargetRequiresHost(t *testing.T) {
 		t.Fatal("sshTarget accepted no target host")
 	}
 }
+
+func TestSSHWrapperScriptChangesWorkingDirectory(t *testing.T) {
+	script := sshWrapperScript([]string{"pwd"}, nil, "/remote/work")
+	if !strings.Contains(script, "cd '/remote/work' || exit 1") {
+		t.Fatalf("script = %q", script)
+	}
+}

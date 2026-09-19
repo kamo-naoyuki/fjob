@@ -31,15 +31,16 @@ type Queue struct {
 }
 
 type QueuedCommand struct {
-	ID              string     `json:"id"`
-	Command         []string   `json:"command"`
-	Executor        string     `json:"executor,omitempty"`
-	ExecutorOptions []string   `json:"executor_options,omitempty"`
-	Environment     []string   `json:"environment,omitempty"`
-	Name            string     `json:"name,omitempty"`
-	DependsOn       []string   `json:"depends_on,omitempty"`
-	Origin          *JobOrigin `json:"origin,omitempty"`
-	Array           *ArraySpec `json:"array,omitempty"`
+	ID               string     `json:"id"`
+	Command          []string   `json:"command"`
+	WorkingDirectory string     `json:"working_directory,omitempty"`
+	Executor         string     `json:"executor,omitempty"`
+	ExecutorOptions  []string   `json:"executor_options,omitempty"`
+	Environment      []string   `json:"environment,omitempty"`
+	Name             string     `json:"name,omitempty"`
+	DependsOn        []string   `json:"depends_on,omitempty"`
+	Origin           *JobOrigin `json:"origin,omitempty"`
+	Array            *ArraySpec `json:"array,omitempty"`
 	// TaskOrigins records, per expanded task ID (e.g. "id-1"), the origin of
 	// array tasks carried forward individually (see planArrayTaskSelection);
 	// Origin above only covers the whole (unexpanded) command.
@@ -75,17 +76,18 @@ type LockInfo struct {
 }
 
 type JobSpec struct {
-	ID              string   `json:"id"`
-	Command         []string `json:"command"`
-	Executor        string   `json:"executor,omitempty"`
-	ExecutorOptions []string `json:"executor_options,omitempty"`
-	Name            string   `json:"name,omitempty"`
-	DependsOn       []string `json:"depends_on,omitempty"`
-	ArrayGroup      string   `json:"array_group,omitempty"`
-	ArrayTaskID     *int     `json:"array_task_id,omitempty"`
-	ArrayFirst      int      `json:"array_first,omitempty"`
-	ArrayLast       int      `json:"array_last,omitempty"`
-	Environment     []string `json:"environment,omitempty"`
+	ID               string   `json:"id"`
+	Command          []string `json:"command"`
+	WorkingDirectory string   `json:"working_directory,omitempty"`
+	Executor         string   `json:"executor,omitempty"`
+	ExecutorOptions  []string `json:"executor_options,omitempty"`
+	Name             string   `json:"name,omitempty"`
+	DependsOn        []string `json:"depends_on,omitempty"`
+	ArrayGroup       string   `json:"array_group,omitempty"`
+	ArrayTaskID      *int     `json:"array_task_id,omitempty"`
+	ArrayFirst       int      `json:"array_first,omitempty"`
+	ArrayLast        int      `json:"array_last,omitempty"`
+	Environment      []string `json:"environment,omitempty"`
 }
 
 type JobResult struct {
@@ -784,6 +786,7 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 	}
 
 	cmd := exec.Command(job.Command[0], job.Command[1:]...)
+	cmd.Dir = job.WorkingDirectory
 	cmd.Env = mergeEnvironment(os.Environ(), job.Environment)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
@@ -866,7 +869,7 @@ func queueToJobs(commands []QueuedCommand) []JobSpec {
 		}
 		if queued.Array == nil {
 			jobs = append(jobs, JobSpec{
-				ID: queued.ID, Command: queued.Command, Name: queued.Name,
+				ID: queued.ID, Command: queued.Command, WorkingDirectory: queued.WorkingDirectory, Name: queued.Name,
 				Executor: queued.Executor, ExecutorOptions: queued.ExecutorOptions, Environment: queued.Environment, DependsOn: queued.DependsOn,
 			})
 			continue
@@ -879,7 +882,7 @@ func queueToJobs(commands []QueuedCommand) []JobSpec {
 			}
 			taskID := task
 			jobs = append(jobs, JobSpec{
-				ID: id, Command: queued.Command, Name: name,
+				ID: id, Command: queued.Command, WorkingDirectory: queued.WorkingDirectory, Name: name,
 				Executor: queued.Executor, ExecutorOptions: queued.ExecutorOptions, Environment: queued.Environment, DependsOn: queued.DependsOn,
 				ArrayGroup: queued.ID, ArrayTaskID: &taskID, ArrayFirst: queued.Array.First, ArrayLast: queued.Array.Last,
 			})

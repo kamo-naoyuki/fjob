@@ -269,6 +269,7 @@ rotari add --project-name build \
   --executor ssh \
   --executor-option="builder@worker-01" \
   --executor-option="-p 2222" \
+  --working-directory=/work/build \
   --env DATASET=nightly \
   --env CUDA_VISIBLE_DEVICES=0 \
   ./heavy-test.sh
@@ -294,8 +295,9 @@ precedence over a same-named user value.
 For the `ssh` executor, the first `--executor-option` is the SSH destination;
 remaining options are passed to `ssh`. Rotari runs the command over that SSH
 session, then stores its output, exit status, and destination host in the
-local run directory. SSH jobs use the batch-concurrency limit and are cancelled
-by terminating their local SSH session.
+local run directory. Use `--working-directory DIR` to set the execution
+directory; for SSH this is a directory on the remote host. It can be changed
+later with `rotari change` or the web UI.
 
 Array jobs can be added with a numeric range:
 
@@ -355,6 +357,13 @@ Pressing Ctrl-D during a synchronous `rotari run` detaches the client without
 cancelling the run. The terminal returns immediately and the run continues as
 if it had been started with `--async`; use `rotari wait --run-id RUN_ID` or
 `rotari show --run-id RUN_ID` to follow it.
+
+Ctrl-Z only suspends the foreground client through the shell's job control; the
+run continues while the client remains stopped, and `fg` resumes watching it.
+However, closing the terminal then kills the stopped client and disconnects
+the synchronous run, which requests cancellation. It is not a clean detach,
+so use Ctrl-D (or start with `rotari run --async`) when you want to leave the
+interactive progress view.
 
 An async run is started as a detached process in a new session (`setsid`), so
 it keeps running even if the terminal that launched it is closed. Use

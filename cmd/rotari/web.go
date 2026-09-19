@@ -31,20 +31,21 @@ type webRun struct {
 }
 
 type webJob struct {
-	ID              string     `json:"id"`
-	ArrayTaskID     *int       `json:"array_task_id,omitempty"`
-	ArrayFirst      int        `json:"array_first,omitempty"`
-	ArrayLast       int        `json:"array_last,omitempty"`
-	Name            string     `json:"name,omitempty"`
-	Command         []string   `json:"command"`
-	Executor        string     `json:"executor,omitempty"`
-	ExecutorOptions []string   `json:"executor_options,omitempty"`
-	DependsOn       []string   `json:"depends_on,omitempty"`
-	Result          *JobResult `json:"result,omitempty"`
-	Origin          *JobOrigin `json:"origin,omitempty"`
-	SubmittedAt     string     `json:"submitted_at,omitempty"`
-	FinishedAt      string     `json:"finished_at,omitempty"`
-	SchedulerState  string     `json:"scheduler_state,omitempty"`
+	ID               string     `json:"id"`
+	ArrayTaskID      *int       `json:"array_task_id,omitempty"`
+	ArrayFirst       int        `json:"array_first,omitempty"`
+	ArrayLast        int        `json:"array_last,omitempty"`
+	Name             string     `json:"name,omitempty"`
+	Command          []string   `json:"command"`
+	WorkingDirectory string     `json:"working_directory,omitempty"`
+	Executor         string     `json:"executor,omitempty"`
+	ExecutorOptions  []string   `json:"executor_options,omitempty"`
+	DependsOn        []string   `json:"depends_on,omitempty"`
+	Result           *JobResult `json:"result,omitempty"`
+	Origin           *JobOrigin `json:"origin,omitempty"`
+	SubmittedAt      string     `json:"submitted_at,omitempty"`
+	FinishedAt       string     `json:"finished_at,omitempty"`
+	SchedulerState   string     `json:"scheduler_state,omitempty"`
 }
 
 type webTimelinePoint struct {
@@ -80,17 +81,19 @@ type webCopyRequest struct {
 }
 
 type webChangeRequest struct {
-	QueueName            string   `json:"project_name"`
-	JobID                string   `json:"job_id"`
-	SetJobName           string   `json:"set_job_name,omitempty"`
-	Command              []string `json:"command,omitempty"`
-	Executor             string   `json:"executor,omitempty"`
-	ExecutorOptions      []string `json:"executor_options,omitempty"`
-	ClearExecutorOptions bool     `json:"clear_executor_options"`
-	Environment          []string `json:"environment,omitempty"`
-	ClearEnvironment     bool     `json:"clear_environment"`
-	DependsOn            []string `json:"depends_on,omitempty"`
-	ClearDependsOn       bool     `json:"clear_depends_on"`
+	QueueName             string   `json:"project_name"`
+	JobID                 string   `json:"job_id"`
+	SetJobName            string   `json:"set_job_name,omitempty"`
+	Command               []string `json:"command,omitempty"`
+	Executor              string   `json:"executor,omitempty"`
+	ExecutorOptions       []string `json:"executor_options,omitempty"`
+	ClearExecutorOptions  bool     `json:"clear_executor_options"`
+	WorkingDirectory      string   `json:"working_directory,omitempty"`
+	ClearWorkingDirectory bool     `json:"clear_working_directory"`
+	Environment           []string `json:"environment,omitempty"`
+	ClearEnvironment      bool     `json:"clear_environment"`
+	DependsOn             []string `json:"depends_on,omitempty"`
+	ClearDependsOn        bool     `json:"clear_depends_on"`
 }
 
 type webRemoveRequest struct {
@@ -318,8 +321,8 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 			writeWebError(writer, fmt.Errorf("project_name, job_id, and command are required"))
 			return
 		}
-		message, err := changeBatch(baseDir, change.QueueName, "", change.JobID, "", change.Executor,
-			change.ExecutorOptions, change.ClearExecutorOptions, change.Environment, change.ClearEnvironment, change.SetJobName, change.DependsOn, change.ClearDependsOn, change.Command)
+		message, err := changeBatchWithWorkingDirectory(baseDir, change.QueueName, "", change.JobID, "", change.Executor,
+			change.ExecutorOptions, change.ClearExecutorOptions, change.Environment, change.ClearEnvironment, change.WorkingDirectory, change.ClearWorkingDirectory, change.SetJobName, change.DependsOn, change.ClearDependsOn, change.Command)
 		if err != nil {
 			writeWebError(writer, err)
 			return
@@ -661,7 +664,7 @@ func loadWebJobs(runDir string, summary RunSummary) ([]webJob, error) {
 	for _, jobSpec := range taskJobs {
 		origin := origins[jobSpec.ID]
 		submittedAt, finishedAt := webJobTimestamps(runDir, jobSpec.ID, origin)
-		job := webJob{ID: jobSpec.ID, Name: jobSpec.Name, Command: jobSpec.Command, Executor: jobSpec.Executor, ExecutorOptions: jobSpec.ExecutorOptions, DependsOn: jobSpec.DependsOn, Origin: origin, ArrayTaskID: jobSpec.ArrayTaskID, ArrayFirst: jobSpec.ArrayFirst, ArrayLast: jobSpec.ArrayLast, SubmittedAt: submittedAt, FinishedAt: finishedAt, SchedulerState: loadSchedulerStatus(filepath.Join(runDir, jobSpec.ID))}
+		job := webJob{ID: jobSpec.ID, Name: jobSpec.Name, Command: jobSpec.Command, WorkingDirectory: jobSpec.WorkingDirectory, Executor: jobSpec.Executor, ExecutorOptions: jobSpec.ExecutorOptions, DependsOn: jobSpec.DependsOn, Origin: origin, ArrayTaskID: jobSpec.ArrayTaskID, ArrayFirst: jobSpec.ArrayFirst, ArrayLast: jobSpec.ArrayLast, SubmittedAt: submittedAt, FinishedAt: finishedAt, SchedulerState: loadSchedulerStatus(filepath.Join(runDir, jobSpec.ID))}
 		if result, ok := results[jobSpec.ID]; ok {
 			job.Result = &result
 		} else if status, ok := loadSlurmStatus(filepath.Join(runDir, jobSpec.ID, "status.json")); ok && jobStatusTerminal(status) {
@@ -831,9 +834,19 @@ func webHTML() string {
 		"retry failed or unfinished jobs from this older run",
 		"retry failed or unfinished jobs from this run",
 	).Replace(template)
-	return strings.Replace(template,
+	template = strings.Replace(template,
 		`<select class="executor-input"><option value="local">local</option><option value="slurm">slurm</option></select>`,
 		`<select class="executor-input">'+executorNames.map(name=>'<option value="'+esc(name)+'">'+esc(name)+'</option>').join('')+'</select>`, 1)
+	template = strings.Replace(template,
+		`row.children[5].innerHTML='<input class="command-input" value="'+esc(JSON.stringify(job.command))+'">';`,
+		`row.children[5].innerHTML='<input class="command-input" value="'+esc(JSON.stringify(job.command))+'"><input class="working-directory-input" placeholder="working directory" value="'+esc(job.working_directory||'')+'">';`, 1)
+	template = strings.Replace(template,
+		`depends_on:depends,clear_depends_on:depends.length===0`,
+		`depends_on:depends,clear_depends_on:depends.length===0,working_directory:row.querySelector('.working-directory-input').value,clear_working_directory:row.querySelector('.working-directory-input').value===''`, 1)
+	template = strings.Replace(template,
+		`queue_name:queue,job_id:jobID`,
+		`project_name:queue,job_id:jobID`, 1)
+	return template
 }
 
 func methodNotAllowed(writer http.ResponseWriter) {

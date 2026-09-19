@@ -103,7 +103,7 @@ func submitPBSJob(runDir string, job JobSpec, options []string) (pbsJobMetadata,
 		return pbsJobMetadata{}, err
 	}
 	wrapperPath := filepath.Join(jobDir, "pbs-wrapper.sh")
-	if err := os.WriteFile(wrapperPath, []byte(statusWrapperScript(job.Command, jobDir, job.Environment)), 0o755); err != nil {
+	if err := os.WriteFile(wrapperPath, []byte(statusWrapperScript(job.Command, jobDir, job.Environment, job.WorkingDirectory)), 0o755); err != nil {
 		return pbsJobMetadata{}, err
 	}
 	outputPath := filepath.Join(jobDir, "output")

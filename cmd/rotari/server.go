@@ -31,6 +31,7 @@ type serverRequest struct {
 	Async            bool       `json:"async,omitempty"`
 	Executor         string     `json:"executor,omitempty"`
 	ExecutorOptions  []string   `json:"executor_options,omitempty"`
+	WorkingDirectory string     `json:"working_directory,omitempty"`
 	Environment      []string   `json:"environment,omitempty"`
 	JobIDs           []string   `json:"job_ids,omitempty"`
 	Selection        string     `json:"selection,omitempty"`
@@ -215,6 +216,7 @@ func cmdAdd(args []string) int {
 	basedir := cliString(fs, "basedir", "")
 	queueNameOption := cliString(fs, "project-name", "")
 	executor := cliString(fs, "executor", "")
+	workingDirectory := cliString(fs, "working-directory", "")
 	var executorOptions stringSliceFlag
 	cliValue(fs, &executorOptions, "executor-option")
 	var environment stringSliceFlag
@@ -255,7 +257,7 @@ func cmdAdd(args []string) int {
 		printErrorf("invalid --env: %v", err)
 		return 1
 	}
-	message, err := enqueueCommand(baseDir, queueName, left, *executor, executorOptions, environment, *jobName, dependsOn, array)
+	message, err := enqueueCommandWithWorkingDirectory(baseDir, queueName, left, *executor, executorOptions, environment, *workingDirectory, *jobName, dependsOn, array)
 	if err != nil {
 		printError(err)
 		return 1
@@ -532,7 +534,7 @@ func (server *rotariServer) handle(baseDir string, conn net.Conn) {
 	case "ping":
 		response = serverResponse{OK: true, PID: os.Getpid(), Protocol: serverProtocolVersion}
 	case "submit":
-		message, err := enqueueCommand(baseDir, request.QueueName, request.Command, request.Executor, request.ExecutorOptions, request.Environment, request.JobName, request.DependsOn, request.Array)
+		message, err := enqueueCommandWithWorkingDirectory(baseDir, request.QueueName, request.Command, request.Executor, request.ExecutorOptions, request.Environment, request.WorkingDirectory, request.JobName, request.DependsOn, request.Array)
 		response = serverResponse{OK: err == nil, Message: message}
 		if err != nil {
 			response.Message = err.Error()
@@ -1106,6 +1108,10 @@ func finishCancelMessage(message string, paths pathSet, queueName, runID string,
 }
 
 func enqueueCommand(baseDir, queueName string, command []string, executor string, executorOptions, environment []string, jobName string, dependsOn []string, arrays ...*ArraySpec) (string, error) {
+	return enqueueCommandWithWorkingDirectory(baseDir, queueName, command, executor, executorOptions, environment, "", jobName, dependsOn, arrays...)
+}
+
+func enqueueCommandWithWorkingDirectory(baseDir, queueName string, command []string, executor string, executorOptions, environment []string, workingDirectory, jobName string, dependsOn []string, arrays ...*ArraySpec) (string, error) {
 	if queueName == "" || len(command) == 0 {
 		return "", errors.New("project name and command are required")
 	}
@@ -1140,7 +1146,7 @@ func enqueueCommand(baseDir, queueName string, command []string, executor string
 		array = arrays[0]
 	}
 	job := QueuedCommand{
-		ID: makeJobID(), Command: command, Executor: executor, ExecutorOptions: executorOptions, Environment: environment, Name: jobName, DependsOn: dependsOn, Array: array,
+		ID: makeJobID(), Command: command, WorkingDirectory: workingDirectory, Executor: executor, ExecutorOptions: executorOptions, Environment: environment, Name: jobName, DependsOn: dependsOn, Array: array,
 	}
 	// Dependencies may refer to jobs added later, so only duplicate names are checked here.
 	if job.Name != "" {

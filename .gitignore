@@ -10,6 +10,7 @@
 /docs/web-demo/
 /docs/demo-*.gif
 /.venv/
+/node_modules/
 
 # Go workspace files
 /go.work

@@ -52,7 +52,7 @@ func (sshExecutor) Submit(runDir string, job JobSpec, options []string) (JobHand
 		return JobHandle{}, err
 	}
 	cmd := exec.Command("ssh", append(sshOptions, "--", host, "sh", "-s")...)
-	cmd.Stdin = strings.NewReader(sshWrapperScript(job.Command, job.Environment))
+	cmd.Stdin = strings.NewReader(sshWrapperScript(job.Command, job.Environment, job.WorkingDirectory))
 	cmd.Stdout = output
 	cmd.Stderr = output
 	if err := cmd.Start(); err != nil {
@@ -144,7 +144,7 @@ func sshTarget(options []string) (string, []string, error) {
 	return expanded[0], expanded[1:], nil
 }
 
-func sshWrapperScript(command []string, environment []string) string {
+func sshWrapperScript(command []string, environment []string, workingDirectory string) string {
 	exports := make([]string, 0, len(environment))
 	for _, entry := range environment {
 		parts := strings.SplitN(entry, "=", 2)
@@ -156,5 +156,9 @@ func sshWrapperScript(command []string, environment []string) string {
 	for _, arg := range command {
 		quoted = append(quoted, shellQuote(arg))
 	}
-	return "#!/bin/sh\nset +e\n" + strings.Join(exports, "\n") + "\nexec " + strings.Join(quoted, " ") + "\n"
+	changeDirectory := ""
+	if workingDirectory != "" {
+		changeDirectory = "cd " + shellQuote(workingDirectory) + " || exit 1\n"
+	}
+	return "#!/bin/sh\nset +e\n" + strings.Join(exports, "\n") + "\n" + changeDirectory + "exec " + strings.Join(quoted, " ") + "\n"
 }

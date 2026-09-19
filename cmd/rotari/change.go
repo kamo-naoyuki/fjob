@@ -18,6 +18,8 @@ func cmdChange(args []string) int {
 	jobID := cliString(fs, "job-id", "")
 	jobName := cliString(fs, "job-name", "")
 	executor := cliString(fs, "executor", "")
+	workingDirectory := cliString(fs, "working-directory", "")
+	clearWorkingDirectory := cliBool(fs, "clear-working-directory", false)
 	var executorOptions stringSliceFlag
 	cliValue(fs, &executorOptions, "executor-option")
 	clearExecutorOptions := cliBool(fs, "clear-executor-options", false)
@@ -32,7 +34,7 @@ func cmdChange(args []string) int {
 		return 1
 	}
 	if (*jobID == "" && *jobName == "") || (*jobID != "" && *jobName != "") ||
-		(len(fs.Args()) == 0 && *executor == "" && len(executorOptions) == 0 && !*clearExecutorOptions && len(environment) == 0 && !*clearEnvironment &&
+		(len(fs.Args()) == 0 && *executor == "" && len(executorOptions) == 0 && !*clearExecutorOptions && *workingDirectory == "" && !*clearWorkingDirectory && len(environment) == 0 && !*clearEnvironment &&
 			*setJobName == "" && len(dependsOn) == 0 && !*clearDependsOn) ||
 		(*executor != "" && !isKnownExecutor(*executor)) {
 		printError("usage: " + cliUsage("change"))
@@ -48,8 +50,8 @@ func cmdChange(args []string) int {
 		printError(err)
 		return 1
 	}
-	message, err := changeBatch(baseDir, queueName, *runID, *jobID, *jobName, *executor,
-		executorOptions, *clearExecutorOptions, environment, *clearEnvironment, *setJobName, dependsOn, *clearDependsOn, fs.Args())
+	message, err := changeBatchWithWorkingDirectory(baseDir, queueName, *runID, *jobID, *jobName, *executor,
+		executorOptions, *clearExecutorOptions, environment, *clearEnvironment, *workingDirectory, *clearWorkingDirectory, *setJobName, dependsOn, *clearDependsOn, fs.Args())
 	if err != nil {
 		printError(err)
 		return 1
@@ -60,6 +62,13 @@ func cmdChange(args []string) int {
 
 func changeBatch(baseDir, queueName, requestedRunID, requestedJobID, requestedJobName, executor string,
 	executorOptions []string, clearExecutorOptions bool, environment []string, clearEnvironment bool, setJobName string, dependsOn []string,
+	clearDependsOn bool, command []string) (string, error) {
+	return changeBatchWithWorkingDirectory(baseDir, queueName, requestedRunID, requestedJobID, requestedJobName, executor,
+		executorOptions, clearExecutorOptions, environment, clearEnvironment, "", false, setJobName, dependsOn, clearDependsOn, command)
+}
+
+func changeBatchWithWorkingDirectory(baseDir, queueName, requestedRunID, requestedJobID, requestedJobName, executor string,
+	executorOptions []string, clearExecutorOptions bool, environment []string, clearEnvironment bool, workingDirectory string, clearWorkingDirectory bool, setJobName string, dependsOn []string,
 	clearDependsOn bool, command []string) (string, error) {
 	if err := validateEnvironment(environment); err != nil {
 		return "", fmt.Errorf("invalid environment: %w", err)
@@ -115,6 +124,9 @@ func changeBatch(baseDir, queueName, requestedRunID, requestedJobID, requestedJo
 	}
 	if len(environment) > 0 || clearEnvironment {
 		changed.Environment = append([]string(nil), environment...)
+	}
+	if workingDirectory != "" || clearWorkingDirectory {
+		changed.WorkingDirectory = workingDirectory
 	}
 	if setJobName != "" && setJobName != changed.Name {
 		for index, job := range queueToJobs(queue.Commands) {

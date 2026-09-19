@@ -182,6 +182,11 @@ common `--env` option. Its values are passed to every executor and copied into
 run snapshots. Generated `ROTARI_*` variables override user values with the
 same name; invalid variable names are rejected at all queue mutation boundaries.
 
+`QueuedCommand.WorkingDirectory` stores an optional executor-side working
+directory. It is copied into each expanded `JobSpec` and applied before the
+command starts by local, SSH, Slurm, PBS, and LSF executors. An SSH path is
+resolved on the remote host; it is not the run's local `context.json` `cwd`.
+
 The SSH executor treats its first executor option as the target host and the
 remaining options as `ssh` options. It manages a local SSH session per job,
 records output and final status locally, and does not require the remote host
@@ -211,10 +216,14 @@ A synchronous client disconnect, including Ctrl-C, requests cancellation and
 returns to the caller immediately (exit code 130); the server-side run keeps
 executing in the background and only then runs normal finalization. Ctrl-D
 sends an explicit detach control before disconnecting instead, leaving the run
-uncancelled and transferring completion cleanup to the background waiter. Async
-workers are monitored by the server; their exit decrements the active-run
-count so the server can stop. Manual interrupted-run recovery is reserved for
-failures that bypass finalization.
+uncancelled and transferring completion cleanup to the background waiter. Ctrl-Z
+does not send a rotari protocol message: the terminal suspends the foreground
+client while the server-side run continues, so `fg` can resume the client but
+Ctrl-Z is not a clean detach. If the stopped client is killed when its terminal
+closes, the resulting connection EOF follows the normal disconnect path and
+requests cancellation. Async workers are monitored by the server; their exit
+decrements the active-run count so the server can stop. Manual interrupted-run
+recovery is reserved for failures that bypass finalization.
 A completed run, sync or async, decrements the active-run count immediately
 via `beginRun`/`endRun`; reaching zero stops the server right away rather than
 waiting for the idle timeout, so tests and callers must not assume the server

@@ -22,7 +22,6 @@ echo "building rotari..."
 export ROTARI_BASEDIR="${state_dir}"
 export ROTARI_PROJECT_NAME=demo
 
-"${binary}" check
 "${binary}" add --job-name prepare sh -c 'echo preparation complete'
 "${binary}" add --job-name train --depends-on prepare sh -c 'echo training complete'
 "${binary}" add --job-name failed sh -c 'echo validation failed; exit 1'
