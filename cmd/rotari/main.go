@@ -838,11 +838,22 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: "empty command"}
 	}
 
-	cmd := exec.Command(job.Command[0], job.Command[1:]...)
-	cmd.Dir = job.WorkingDirectory
-	cmd.Env = mergeEnvironment(os.Environ(), job.Environment)
+	// Run through the same self-reporting wrapper as scheduler executors
+	// (statusWrapperScript, executor_slurm.go) so the job process itself
+	// records its own status.json even if this coordinator process dies
+	// before cmd.Wait() returns; see docs/internals.md.
+	wrapperPath := filepath.Join(jobDir, "local-wrapper.sh")
+	wrapper := statusWrapperScript(job.Command, jobDir, job.Environment, job.WorkingDirectory)
+	if err := os.WriteFile(wrapperPath, []byte(wrapper), stateScriptMode()); err != nil {
+		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
+	}
+
+	cmd := exec.Command("sh", wrapperPath)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
+	// New process group so Suspend/Resume/Cancel (which signal -pid) reach
+	// both the wrapper and the actual command it execs.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte("1\n"), stateFileMode())
 		_ = os.WriteFile(filepath.Join(jobDir, "finished_at"), []byte(nowRFC3339()+"\n"), stateFileMode())
@@ -1284,11 +1295,85 @@ func ensureProjectIdleForPaths(paths pathSet, operation string) error {
 	case projectRunning:
 		return fmt.Errorf("project %q is running; %s is not allowed", paths.queueName, operation)
 	case projectInterrupted:
-		return fmt.Errorf("project %q has interrupted run %q; %s is not allowed; recover with: rotari unlock --basedir %s --project-name %s --run-id %s",
-			paths.queueName, runID, operation, shellQuote(paths.baseDir), shellQuote(paths.queueName), shellQuote(runID))
+		detail, stillRunning := interruptedRunStatusDetail(paths, runID)
+		message := fmt.Sprintf("project %q has interrupted run %q%s; %s is not allowed\nInspect before deciding: rotari show --basedir %s --project-name %s --run-id %s\n",
+			paths.queueName, runID, detail, operation, shellQuote(paths.baseDir), shellQuote(paths.queueName), shellQuote(runID))
+		if stillRunning {
+			message += "Do not recover until you have independently confirmed those jobs have actually stopped.\n"
+		}
+		message += fmt.Sprintf("Recover with: rotari unlock --basedir %s --project-name %s --run-id %s",
+			shellQuote(paths.baseDir), shellQuote(paths.queueName), shellQuote(runID))
+		return errors.New(message)
 	default:
 		return nil
 	}
+}
+
+// interruptedRunJobStatus summarizes what a run's own job directories report
+// (command.json/status/status.json), independent of running.lock/meta.json.
+type interruptedRunJobStatus struct {
+	Total        int
+	StillRunning int
+}
+
+// scanInterruptedRunJobStatus counts jobs whose own status/status.json is
+// missing or non-terminal as "still running" -- this also covers a job
+// directory that was cut off mid-write by the same crash, since there is no
+// way to tell that apart from a job that is genuinely still executing, and
+// treating "unknown" as "running" is the safer default here.
+func scanInterruptedRunJobStatus(runDir string) (interruptedRunJobStatus, error) {
+	entries, err := os.ReadDir(runDir)
+	if err != nil {
+		return interruptedRunJobStatus{}, err
+	}
+	var status interruptedRunJobStatus
+	for _, entry := range entries {
+		jobDir := filepath.Join(runDir, entry.Name())
+		if !entry.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(jobDir, "command.json")); err != nil {
+			continue
+		}
+		status.Total++
+		if _, ok := readJobStatus(filepath.Join(jobDir, "status")); ok {
+			continue
+		}
+		if slurm, ok := loadSlurmStatus(filepath.Join(jobDir, "status.json")); ok && jobStatusTerminal(slurm) {
+			continue
+		}
+		status.StillRunning++
+	}
+	return status, nil
+}
+
+// interruptedRunStatusDetail renders the job-count and phase/timestamp clause
+// shared by ensureProjectIdleForPaths and reset's interrupted-run messages.
+// The returned string is empty when the run has no recorded job directories
+// yet. stillRunning reports whether any job appears non-terminal, so callers
+// can add a stronger warning before offering to recover.
+func interruptedRunStatusDetail(paths pathSet, runID string) (detail string, stillRunning bool) {
+	status, err := scanInterruptedRunJobStatus(filepath.Join(paths.runsDir, runID))
+	if err != nil || status.Total == 0 {
+		return "", false
+	}
+	var jobsClause string
+	if status.StillRunning > 0 {
+		jobsClause = fmt.Sprintf("%d of %d job(s) appear to still be running", status.StillRunning, status.Total)
+	} else {
+		jobsClause = fmt.Sprintf("all %d job(s) report having finished", status.Total)
+	}
+	meta, metaErr := loadMeta(paths.metaFile)
+	if metaErr != nil || meta.UpdatedAt == "" {
+		return ": " + jobsClause, status.StillRunning > 0
+	}
+	var phaseClause string
+	if meta.Phase == "cancelling" {
+		phaseClause = fmt.Sprintf("a cancellation had already been requested for this run, but had not finished, as of its last recorded update at %s", meta.UpdatedAt)
+	} else {
+		phaseClause = fmt.Sprintf("this run was still executing, with no cancellation requested, as of its last recorded update at %s", meta.UpdatedAt)
+	}
+	return fmt.Sprintf(": %s (%s)", jobsClause, phaseClause), status.StillRunning > 0
 }
 
 func ensureProjectIdle(baseDir, queueName, operation string) error {

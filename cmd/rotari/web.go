@@ -58,16 +58,25 @@ type webTimelinePoint struct {
 }
 
 type webQueueState struct {
-	QueueName    string   `json:"project_name"`
-	Queue        Queue    `json:"queue"`
-	Runs         []webRun `json:"runs"`
-	RunnerPID    int      `json:"runner_pid,omitempty"`
-	RunningRunID string   `json:"running_run_id,omitempty"`
+	QueueName       string   `json:"project_name"`
+	Queue           Queue    `json:"queue"`
+	Runs            []webRun `json:"runs"`
+	RunnerPID       int      `json:"runner_pid,omitempty"`
+	RunningRunID    string   `json:"running_run_id,omitempty"`
+	RunnerHost      string   `json:"runner_host,omitempty"`
+	RunnerStartedAt string   `json:"runner_started_at,omitempty"`
+}
+
+type webServerState struct {
+	PID           int  `json:"pid,omitempty"`
+	PIDFileExists bool `json:"pid_file_exists"`
+	SocketExists  bool `json:"socket_exists"`
 }
 
 type webState struct {
 	BaseDir      string                  `json:"base_dir"`
 	Queues       []webQueueState         `json:"projects"`
+	Server       webServerState          `json:"server"`
 	Environments []environmentDefinition `json:"environments"`
 	UpdatedAt    string                  `json:"updated_at"`
 }
@@ -530,7 +539,7 @@ func newWebHandler(baseDir, queueFilter string, allowControl bool) http.Handler 
 }
 
 func loadWebState(baseDir, queueFilter string) (webState, error) {
-	state := webState{BaseDir: baseDir, Environments: environmentDefinitions(), UpdatedAt: nowRFC3339()}
+	state := webState{BaseDir: baseDir, Server: loadWebServerState(baseDir), Environments: environmentDefinitions(), UpdatedAt: nowRFC3339()}
 	for index := range state.Environments {
 		// Only expose whether the variable is set, never its value: it may hold secrets (API keys, tokens).
 		_, state.Environments[index].Set = os.LookupEnv(state.Environments[index].Name)
@@ -563,6 +572,23 @@ func loadWebState(baseDir, queueFilter string) (webState, error) {
 	}
 	state.UpdatedAt = formatDisplayTimestamp(state.UpdatedAt)
 	return state, nil
+}
+
+func loadWebServerState(baseDir string) webServerState {
+	state := webServerState{}
+	if _, err := os.Stat(serverSocketPath(baseDir)); err == nil {
+		state.SocketExists = true
+	}
+	data, err := os.ReadFile(serverPIDPath(baseDir))
+	if err != nil {
+		return state
+	}
+	state.PIDFileExists = true
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err == nil && pid > 0 {
+		state.PID = pid
+	}
+	return state
 }
 
 func generateStaticWeb(outputDir, baseDir, queueFilter string) error {
@@ -677,6 +703,8 @@ func loadWebQueueState(paths pathSet) (webQueueState, error) {
 		if json.Unmarshal(data, &lock) == nil {
 			state.RunningRunID = lock.RunID
 			state.RunnerPID = lock.PID
+			state.RunnerHost = lock.Host
+			state.RunnerStartedAt = lock.StartedAt
 			runningStartedAt = lock.StartedAt
 		}
 	}
@@ -713,6 +741,7 @@ func loadWebQueueState(paths pathSet) (webQueueState, error) {
 }
 
 func formatWebQueueDisplayTimes(state *webQueueState) {
+	state.RunnerStartedAt = formatDisplayTimestamp(state.RunnerStartedAt)
 	for index := range state.Queue.Commands {
 		origin := state.Queue.Commands[index].Origin
 		if origin == nil {
@@ -1083,8 +1112,10 @@ const webIndexHTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>rotari</title><style>.runs tr.latest-run td{font-weight:600;background:rgba(184,217,242,.06)}.runs th:last-child,.runs td:last-child{width:1%;min-width:0;white-space:nowrap;text-align:left;padding-left:8px;padding-right:8px}
 :root{color-scheme:dark;--bg:#10151b;--panel:#18212b;--line:#2d3a47;--text:#e8eef4;--muted:#94a3b3;--good:#63d297;--bad:#ff7c7c;--warn:#f3c969}.command-guide{white-space:pre-wrap;background:#0b1015;border:1px solid var(--line);padding:14px;color:#d7e2ea;margin:12px 0 18px;overflow:auto}
+#disconnect-banner{display:none;background:#3b1d1d;border:1px solid var(--bad);color:#ffd6d6;padding:10px 14px;margin-bottom:16px;border-radius:4px;font-size:14px}#disconnect-banner.show{display:block}
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#10151b,#182733);color:var(--text);font:15px/1.5 ui-sans-serif,system-ui,sans-serif}main{max-width:1100px;margin:0 auto;padding:36px 22px}header{display:flex;justify-content:space-between;align-items:end;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:24px}h1{margin:0;font-size:32px;letter-spacing:.04em;display:flex;align-items:center;gap:10px}.brand-icon{width:.85em;height:.85em}h2{font-size:18px;margin:0 0 12px}.meta{color:var(--muted);font-size:13px}.toolbar{display:flex;gap:8px}button{border:1px solid var(--line);background:#202d39;color:var(--text);padding:8px 12px;border-radius:5px;cursor:pointer}button:hover{border-color:#7190a8}button:disabled{opacity:.45;cursor:not-allowed}input,select{border:1px solid var(--line);background:#101820;color:var(--text);padding:7px 8px;min-width:100px}.dirty{border-color:var(--warn);background:#3b331d;box-shadow:0 0 0 1px rgba(243,201,105,.25)}section{background:rgba(24,33,43,.9);border:1px solid var(--line);padding:18px;margin-bottom:20px}.summary{display:flex;gap:28px;color:var(--muted);font-size:14px}.runs{width:100%;border-collapse:collapse}.runs th,.runs td{text-align:left;border-bottom:1px solid var(--line);padding:10px 8px}.runs th{color:var(--muted);font-size:12px;text-transform:uppercase}.runs th:last-child,.runs td:last-child{white-space:nowrap;width:1%;vertical-align:top}.runs td.latest-run{font-weight:600;background:rgba(184,217,242,.06)}.latest-badge{color:#b8d9f2;font-size:11px;font-weight:400;letter-spacing:.04em;margin-left:6px}.status-finished{color:var(--good)}.status-failed{color:var(--bad)}.status-running{color:var(--warn)}.run-id{font-family:ui-monospace,monospace;color:#b8d9f2;cursor:pointer}.log{white-space:pre-wrap;background:#0b1015;border:1px solid var(--line);padding:14px;min-height:100px;max-height:360px;overflow:auto;color:#d7e2ea}.empty{color:var(--muted);padding:20px 0}.output-modal{position:fixed;inset:0;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:24px;z-index:10}.output-panel{width:min(1100px,96vw);height:min(760px,90vh);background:var(--panel);border:1px solid var(--line);padding:18px;box-shadow:0 12px 50px #000}.output-panel.compact{width:min(900px,92vw);height:auto}.output-panel header{margin:0 0 12px;padding:0 0 10px}.output-panel .log{height:calc(100% - 48px);max-height:none;margin:0}.output-panel.compact .log{height:auto;max-height:240px;min-height:0}@media(max-width:650px){header{display:block}.toolbar{margin-top:14px}.summary{flex-wrap:wrap;gap:10px}.runs th:nth-child(3),.runs td:nth-child(3){display:none}}
 </style></head><body><main><header><div><h1><!--brand-icon-->rotari Web</h1><div class="meta" id="location">loading...</div></div><div class="toolbar"><a class="link" href="/environment/">Environment variables</a><a class="link" href="/docs/">CLI docs</a><button onclick="refresh()">Refresh</button></div></header>
+<div id="disconnect-banner">Lost connection to the rotari server. The page below may be stale &mdash; retrying...</div>
 <section><h2 id="page-title">All queues</h2><div class="summary" id="summary"></div></section><div id="app" class="empty">loading...</div><div id="output-modal" class="output-modal" style="display:none" onclick="if(event.target===this)closeOutputModal()"><div class="output-panel" onclick="event.stopPropagation()"><header><strong>Output</strong><button onclick="closeOutputModal()">Close</button></header><pre id="modal-log" class="log"></pre></div></div></main><script>
 let state;
 const expandedRunGraphics={};
@@ -1092,7 +1123,7 @@ let selectedOutput='';
 let selectedLog=null;
 let followTimer=null;
 let sortState={queue:{key:'name',direction:1},run:{key:'started',direction:-1},job:{key:'name',direction:1},queueJobs:{key:'name',direction:1}};
-async function refresh(){if(document.activeElement&&document.activeElement.closest('.web-queue-commands input,.web-queue-commands select'))return;const r=await fetch('/api/state');if(!r.ok){document.getElementById('app').textContent=await r.text();return}state=await r.json();render()}
+async function refresh(){if(document.activeElement&&document.activeElement.closest('.web-queue-commands input,.web-queue-commands select'))return;let r;try{r=await fetch('/api/state')}catch(error){document.getElementById('disconnect-banner').classList.add('show');return}document.getElementById('disconnect-banner').classList.remove('show');if(!r.ok){document.getElementById('app').textContent=await r.text();return}state=await r.json();render()}
 function render(){const queues=state.queues||[];const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'){renderOverview(queues);return}const queue=queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));if(!queue){renderMissing('Queue not found');return}if(parts[2]==='run'){renderRun(queue,decodeURIComponent(parts[3]));return}renderQueue(queue)}
 function renderOverview(queues){let queued=0,runs=0,running=0;queues.forEach(q=>{queued+=(q.queue.commands||[]).length;runs+=q.runs.length;running+=q.runs.filter(r=>r.running).length});document.getElementById('location').textContent=state.base_dir+' / all queues';document.getElementById('page-title').textContent='All queues';document.getElementById('summary').innerHTML='<span>'+queues.length+' queues</span><span>'+queued+' queued</span><span>'+runs+' runs</span><span>'+running+' running</span>';const rows=queues.map(q=>{let latest=null;for(const run of q.runs){if(!latest||run.started_at>latest.started_at)latest=run}return '<tr><td><a class="link" href="/queue/'+encodeURIComponent(q.queue_name)+'">'+esc(q.queue_name)+'</a></td><td>'+(q.queue.commands||[]).length+'</td><td>'+q.runs.length+'</td><td>'+q.runs.filter(r=>r.running).length+'</td><td>'+(latest?'<a class="link" href="/queue/'+encodeURIComponent(q.queue_name)+'/run/'+encodeURIComponent(latest.run_id)+'">'+esc(latest.run_name||latest.run_id)+'</a>':'-')+'</td><td class="status-'+(latest?latest.status:'')+'">'+esc(latest?latest.status:'-')+'</td><td>'+esc(latest?latest.started_at:'-')+'</td></tr>'}).join('');document.getElementById('app').innerHTML=queues.length?'<table class="runs queue-overview"><thead><tr><th data-sort="name">Queue</th><th data-sort="queued">Queued</th><th data-sort="runs">Runs</th><th data-sort="running">Running</th><th>Latest run</th><th data-sort="status">Status</th><th data-sort="started">Started</th></tr></thead><tbody>'+rows+'</tbody></table>':'No queues found.'}
 function renderQueue(q){document.getElementById('location').textContent=state.base_dir+' / '+q.queue_name;document.getElementById('page-title').textContent=q.queue_name;document.getElementById('summary').innerHTML='<span>'+(q.queue.commands||[]).length+' queued</span><span>'+q.runs.length+' runs</span><span>'+q.runs.filter(r=>r.running).length+' running</span>';const rows=q.runs.map(r=>'<tr><td><a class="link run-id" href="/queue/'+encodeURIComponent(q.queue_name)+'/run/'+encodeURIComponent(r.run_id)+'">'+esc(r.run_id)+'</a></td><td class="status-'+r.status+'">'+esc(r.status)+(r.running?' ...':'')+'</td><td>'+(r.finished_at?esc(r.exit_code):'-')+'</td><td>'+esc(r.started_at||'-')+'</td><td>'+esc(r.finished_at||'-')+'</td></tr>').join('');document.getElementById('app').innerHTML='<div class="toolbar"><a class="link" href="/">All queues</a></div>'+(rows?'<table class="runs"><thead><tr><th data-sort="run">Run</th><th data-sort="status">Status</th><th data-sort="exit">Exit</th><th data-sort="started">Started</th><th data-sort="finished">Finished</th></tr></thead><tbody>'+rows+'</tbody></table>':'<div class="empty">No runs found.</div>')}
@@ -1180,6 +1211,7 @@ function fixRunStatisticsColors(){const colors={succeeded:'#63d297',failed:'#ff7
 function addLoadTimeline(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(item=>item.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const section=document.querySelector('.run-environment');const samples=(run&&run.context&&run.context.load_samples||[]).filter(sample=>sample.at);if(!section||samples.length<2||section.querySelector('.load-timeline'))return;const width=640,height=230,left=42,top=16,right=16,bottom=42,plotWidth=width-left-right,plotHeight=height-top-bottom;const times=samples.map(sample=>Date.parse(sample.at));const start=Math.min(...times),end=Math.max(...times),span=Math.max(1,end-start);const maximum=Math.max(1,...samples.flatMap(sample=>[sample.one||0,sample.five||0,sample.fifteen||0]));const x=index=>left+(times[index]-start)/span*plotWidth;const y=value=>top+plotHeight-(value/maximum)*plotHeight;const colors={one:'#63d297',five:'#f3c969',fifteen:'#70b7ff'};const labels={one:'1 min',five:'5 min',fifteen:'15 min'};const wrap=document.createElement('div');wrap.className='load-timeline';wrap.style.marginTop='16px';wrap.style.overflowX='auto';const legend=document.createElement('div');legend.style.display='flex';legend.style.gap='20px';legend.style.marginBottom='8px';Object.keys(colors).forEach(key=>{const item=document.createElement('span');item.className='meta';item.style.color=colors[key];item.textContent=labels[key];legend.append(item)});const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 '+width+' '+height);svg.setAttribute('role','img');svg.setAttribute('aria-label','Host load average over time');svg.style.display='block';svg.style.width='100%';svg.style.minWidth='520px';const add=(name,attrs,text)=>{const node=document.createElementNS('http://www.w3.org/2000/svg',name);Object.entries(attrs).forEach(([key,value])=>node.setAttribute(key,value));if(text!==undefined)node.textContent=text;svg.append(node)};[0,.5,1].forEach(ratio=>{const value=maximum*ratio,py=y(value);add('line',{x1:left,y1:py,x2:width-right,y2:py,stroke:'#344451','stroke-width':1});add('text',{x:4,y:py+4,fill:'#94a3b3','font-size':11},value.toFixed(1))});Object.keys(colors).forEach(key=>add('polyline',{points:samples.map((sample,index)=>x(index).toFixed(1)+','+y(sample[key]||0).toFixed(1)).join(' '),fill:'none',stroke:colors[key],'stroke-width':2,'stroke-linejoin':'round','stroke-linecap':'round'}));const format=value=>new Date(value).toLocaleTimeString();add('text',{x:left,y:height-12,fill:'#94a3b3','font-size':11},format(start));add('text',{x:width-right,y:height-12,fill:'#94a3b3','font-size':11,'text-anchor':'end'},format(end));wrap.append(legend,svg);section.append(wrap)}
 function simplifyRunStatistics(){document.querySelectorAll('.run-statistics').forEach(section=>{[...section.children].slice(1).forEach(child=>{child.style.display='none'})})}
 function addRunHostsColumn(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const table=document.querySelector('#app table.runs');if(!run||!table||table.querySelector('.job-host-header'))return;const headers=[...table.querySelectorAll('thead th')];const commandIndex=headers.findIndex(header=>header.textContent.trim()==='Command');if(commandIndex<0)return;const header=document.createElement('th');header.className='job-host-header';header.textContent='Hosts';headers[commandIndex].after(header);table.querySelectorAll('tbody tr').forEach((row,index)=>{const cell=document.createElement('td');const hosts=run.jobs[index]&&run.jobs[index].result&&run.jobs[index].result.hosts||[];cell.textContent=hosts.length?hosts.join(','):'-';row.children[commandIndex].after(cell)})}
+function addProjectRuntime(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||!parts[1])return;const queue=state.queues.find(item=>item.queue_name===decodeURIComponent(parts[1]));const app=document.getElementById('app');if(!queue||!app||app.querySelector('.project-runtime'))return;const active=!!queue.running_run_id;const runner=active?'Active runner: '+queue.running_run_id+(queue.runner_host?' on '+queue.runner_host:'')+(queue.runner_pid?' (PID '+queue.runner_pid+')':''):'No runner lock';const server=state.server||{};const coordinator=(server.socket_exists?'socket present':'socket absent')+(server.pid_file_exists?(server.pid?' / PID '+server.pid:' / PID record unreadable'):' / no PID record');const section=document.createElement('section');section.className='project-runtime';section.innerHTML='<h2>Project runtime</h2><div class="summary"><span class="'+(active?'status-running':'meta')+'">'+esc(runner)+'</span></div><details><summary>Internal state</summary><div class="meta" style="margin-top:10px">Runner lock: '+(active?'present':'absent')+(queue.runner_started_at?' | Started: '+esc(queue.runner_started_at):'')+'<br>Coordinator record: '+esc(coordinator)+'<br>State lock: advisory and intentionally not probed</div></details>';const controls=app.querySelector('.toolbar');if(controls)controls.after(section);else app.prepend(section)}
 const originalEnhancePage=enhancePage;enhancePage=function(){originalEnhancePage();addRunStatistics();addRunEnvironment();addLoadTimeline();renderJobTimelineScratch();spaceGraphicLegends();simplifyRunStatistics();fixTimelineBarWidths();syncTimelineBar();collapseRunGraphics();alignTimelineHeading();alignGraphicHeadings()}
-function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}const originalRender=render;render=function(){originalRender();enhancePage();enhanceQueueOverview();addQueueOverviewPathActions();const parts=location.pathname.split('/').filter(Boolean);if(parts[0]==='queue'&&!parts[2]){const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));if(queue){const commands=queue.queue.commands||[];addQueueEditors(queue,commands);enhanceQueueSourceContext(commands)}}addRunHostLine();addExecutionGuide();addDeleteRunButton();addPathTableActions();removeLegacyOutputBox();keepGlobalOutputBox();placeOutputBox();renameCopyButtons();labelEquivalentCommand();addRunJobStatusColumn();addRunHostsColumn();addRunningOutputButtons();addRunningCancelButtons();mergeActionColumns();labelJobActionHeaders();styleActionColumns();markJobHeaders();markLatestRun();enableTableSorting();restoreSelectedOutput();applyStatusColors();fixRunStatisticsColors();fixTimelineLegendColors()};window.addEventListener('popstate',render);refresh();setInterval(refresh,2000);
+function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}const originalRender=render;render=function(){originalRender();enhancePage();enhanceQueueOverview();addQueueOverviewPathActions();const parts=location.pathname.split('/').filter(Boolean);if(parts[0]==='queue'&&!parts[2]){const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));if(queue){const commands=queue.queue.commands||[];addQueueEditors(queue,commands);enhanceQueueSourceContext(commands)}}addProjectRuntime();addRunHostLine();addExecutionGuide();addDeleteRunButton();addPathTableActions();removeLegacyOutputBox();keepGlobalOutputBox();placeOutputBox();renameCopyButtons();labelEquivalentCommand();addRunJobStatusColumn();addRunHostsColumn();addRunningOutputButtons();addRunningCancelButtons();mergeActionColumns();labelJobActionHeaders();styleActionColumns();markJobHeaders();markLatestRun();enableTableSorting();restoreSelectedOutput();applyStatusColors();fixRunStatisticsColors();fixTimelineLegendColors()};window.addEventListener('popstate',render);refresh();setInterval(refresh,2000);
 </script></body></html>`

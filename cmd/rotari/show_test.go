@@ -462,6 +462,40 @@ func TestShowJobDisplaysPersistedDetails(t *testing.T) {
 	}
 }
 
+func TestShowJobSurfacesAccountingUnavailableFromSummary(t *testing.T) {
+	paths, err := resolvePaths(t.TempDir(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, jobID := "run-1", "job-1"
+	runDir := filepath.Join(paths.runsDir, runID)
+	jobDir := filepath.Join(runDir, jobID)
+	job := JobSpec{ID: jobID, Command: []string{"python", "work.py"}, Executor: "slurm"}
+	if err := writeJSON(filepath.Join(runDir, "commands.json"), Queue{Commands: []QueuedCommand{{
+		ID: job.ID, Command: job.Command, Executor: job.Executor,
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(jobDir, "command.json"), job); err != nil {
+		t.Fatal(err)
+	}
+	// No "status" file and no "status.json" -- as when squeue and sacct were
+	// both unreachable -- leaves summary.json as the only source of the result.
+	if err := writeJSON(filepath.Join(runDir, "summary.json"), RunSummary{Results: []JobResult{
+		{ID: jobID, ExitCode: 1, Error: "Slurm accounting result and wrapper status are unavailable"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if code := showJob(&output, paths, runID, jobID); code != 0 {
+		t.Fatalf("showJob exit code = %d, want 0", code)
+	}
+	if want := "Status: 1 (Slurm accounting result and wrapper status are unavailable)"; !strings.Contains(output.String(), want) {
+		t.Fatalf("showJob output does not contain %q:\n%s", want, output.String())
+	}
+}
+
 func TestShowJobFollowsCarriedForwardOrigin(t *testing.T) {
 	paths, err := resolvePaths(t.TempDir(), "demo")
 	if err != nil {

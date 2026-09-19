@@ -252,6 +252,36 @@ func TestCancelJobsRejectsAbsoluteAndNestedJobIDs(t *testing.T) {
 	}
 }
 
+func TestCancelQueueJobsRejectsUnsafeRunIDFromLock(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.lockFile, LockInfo{RunID: "../outside"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := cancelQueueJobs(baseDir, "default", nil, false); err == nil {
+		t.Fatal("cancelQueueJobs accepted unsafe run ID from lock")
+	}
+}
+
+func TestControlQueueJobsRejectsUnsafeRunIDFromLock(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.lockFile, LockInfo{RunID: "nested/run"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := controlQueueJobs(baseDir, "default", nil, "suspend"); err == nil {
+		t.Fatal("controlQueueJobs accepted unsafe run ID from lock")
+	}
+}
+
 func TestCmdAddThenCmdRunExecutesLocalJobEndToEnd(t *testing.T) {
 	// A short, non-nested temp dir is required: the unix socket path derived
 	// from baseDir must stay under the ~108 byte sun_path limit.
@@ -348,6 +378,23 @@ func TestServerHandlePing(t *testing.T) {
 	}
 	if !response.OK || response.PID == 0 || response.Protocol != serverProtocolVersion {
 		t.Fatalf("response = %+v, want successful ping", response)
+	}
+}
+
+func TestServerLoggerCapsFileSize(t *testing.T) {
+	logger := &serverLogger{path: filepath.Join(t.TempDir(), "server.log")}
+	logger.writef("%s", strings.Repeat("x", maxServerLogSize))
+	logger.writef("latest event")
+
+	data, err := os.ReadFile(logger.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > maxServerLogSize {
+		t.Fatalf("server log size = %d, want at most %d", len(data), maxServerLogSize)
+	}
+	if !strings.Contains(string(data), "latest event") {
+		t.Fatalf("server log does not contain latest event")
 	}
 }
 

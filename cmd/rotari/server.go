@@ -60,10 +60,43 @@ const runDetachControl byte = 0x04
 
 const serverProtocolVersion = 2
 
+const maxServerLogSize = 1 << 20
+
+type serverLogger struct {
+	mu   sync.Mutex
+	path string
+}
+
+func (logger *serverLogger) writef(format string, args ...interface{}) {
+	if logger == nil {
+		return
+	}
+
+	line := nowRFC3339() + " " + fmt.Sprintf(format, args...) + "\n"
+	if len(line) > maxServerLogSize {
+		line = line[:maxServerLogSize]
+	}
+
+	logger.mu.Lock()
+	defer logger.mu.Unlock()
+	file, err := os.OpenFile(logger.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, stateFileMode())
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	if info, err := file.Stat(); err == nil && (info.Size() >= maxServerLogSize || info.Size()+int64(len(line)) > maxServerLogSize) {
+		if err := file.Truncate(0); err != nil {
+			return
+		}
+	}
+	_, _ = file.WriteString(line)
+}
+
 type rotariServer struct {
 	listener   net.Listener
 	stopped    chan struct{}
 	stopOnce   sync.Once
+	logger     *serverLogger
 	accessMu   sync.Mutex
 	lastAccess time.Time
 	activeRuns int
@@ -465,7 +498,12 @@ func runServer(baseDir string) int {
 	}
 	defer unregisterServer(masterDir, baseDir)
 
-	server := &rotariServer{listener: listener, stopped: make(chan struct{}), lastAccess: time.Now()}
+	server := &rotariServer{
+		listener: listener, stopped: make(chan struct{}), lastAccess: time.Now(),
+		logger: &serverLogger{path: filepath.Join(baseDir, "server.log")},
+	}
+	server.logger.writef("started pid=%d", os.Getpid())
+	defer server.logger.writef("stopped")
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
@@ -501,6 +539,7 @@ func (server *rotariServer) isStopped() bool {
 
 func (server *rotariServer) stop() {
 	server.stopOnce.Do(func() {
+		server.logger.writef("stopping")
 		close(server.stopped)
 		_ = server.listener.Close()
 	})
@@ -535,9 +574,11 @@ func (server *rotariServer) handle(baseDir string, conn net.Conn) {
 	server.touch()
 	var request serverRequest
 	if err := json.NewDecoder(conn).Decode(&request); err != nil {
+		server.logger.writef("request decode failed: %v", err)
 		_ = json.NewEncoder(conn).Encode(serverResponse{Message: err.Error()})
 		return
 	}
+	server.logger.writef("request op=%s", request.Op)
 	response := serverResponse{}
 	encoder := json.NewEncoder(conn)
 	switch request.Op {
@@ -916,6 +957,9 @@ func controlQueueJobs(baseDir, queueName string, jobIDs []string, operation stri
 	if err := json.Unmarshal(data, &lock); err != nil {
 		return "", fmt.Errorf("invalid running lock: %w", err)
 	}
+	if !validWebID(lock.RunID) {
+		return "", fmt.Errorf("invalid run ID %q", lock.RunID)
+	}
 	runDir := filepath.Join(paths.runsDir, lock.RunID)
 	allJobs := len(jobIDs) == 0
 	targets := append([]string(nil), jobIDs...)
@@ -1001,6 +1045,9 @@ func cancelQueueJobs(baseDir, queueName string, jobIDs []string, wait bool) (str
 	var lock LockInfo
 	if err := json.Unmarshal(data, &lock); err != nil {
 		return "", fmt.Errorf("invalid running lock: %w", err)
+	}
+	if !validWebID(lock.RunID) {
+		return "", fmt.Errorf("invalid run ID %q", lock.RunID)
 	}
 	runDir := filepath.Join(paths.runsDir, lock.RunID)
 	if len(jobIDs) > 0 {

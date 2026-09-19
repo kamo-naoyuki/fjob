@@ -63,8 +63,15 @@ func cmdReset(args []string) int {
 		confirmed := *recoverOption
 		if !confirmed {
 			if !isTerminal(os.Stdin) {
-				printErrorf("project %q has interrupted run %q; reset requires confirmation\nConfirm with:\n  rotari reset --basedir %s --project-name %s --recover",
-					queueName, runID, shellQuote(paths.baseDir), shellQuote(paths.queueName))
+				detail, stillRunning := interruptedRunStatusDetail(paths, runID)
+				message := fmt.Sprintf("project %q has interrupted run %q%s; reset requires confirmation\nInspect before deciding: rotari show --basedir %s --project-name %s --run-id %s\n",
+					queueName, runID, detail, shellQuote(paths.baseDir), shellQuote(paths.queueName), shellQuote(runID))
+				if stillRunning {
+					message += "Do not recover until you have independently confirmed those jobs have actually stopped.\n"
+				}
+				message += fmt.Sprintf("Confirm with:\n  rotari reset --basedir %s --project-name %s --recover",
+					shellQuote(paths.baseDir), shellQuote(paths.queueName))
+				printError(message)
 				return 1
 			}
 			confirmed, err = confirmResetOfInterruptedRun(os.Stdin, os.Stderr, paths, runID)
@@ -104,7 +111,8 @@ func cmdReset(args []string) int {
 }
 
 func confirmResetOfInterruptedRun(input io.Reader, output io.Writer, paths pathSet, runID string) (bool, error) {
-	fmt.Fprintf(output, "project %q has interrupted run %q. Confirm all jobs have stopped and reset the queue? [y/N] ", paths.queueName, runID)
+	detail, _ := interruptedRunStatusDetail(paths, runID)
+	fmt.Fprintf(output, "project %q has interrupted run %q%s.\nConfirm all jobs have stopped and reset the queue? [y/N] ", paths.queueName, runID, detail)
 	answer, err := bufio.NewReader(input).ReadString('\n')
 	if err != nil && len(answer) == 0 {
 		return false, err

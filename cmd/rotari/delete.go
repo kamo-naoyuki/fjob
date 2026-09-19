@@ -42,13 +42,8 @@ func cmdDelete(args []string) int {
 		return 1
 	}
 	defer release()
-	running, err := isRunning(paths.lockFile)
-	if err != nil {
-		printErrorf("failed to check queue: %v", err)
-		return 1
-	}
-	if running {
-		printErrorf("project '%s' is running; clear is not allowed", queueName)
+	if err := ensureProjectIdleForPaths(paths, "delete"); err != nil {
+		printError(err)
 		return 1
 	}
 
@@ -165,12 +160,8 @@ func clearRunHistory(baseDir, queueName, runID string) error {
 		return fmt.Errorf("failed to lock queue: %w", err)
 	}
 	defer release()
-	running, err := isRunning(paths.lockFile)
-	if err != nil {
+	if err := ensureProjectIdleForPaths(paths, "delete"); err != nil {
 		return err
-	}
-	if running {
-		return fmt.Errorf("project %q is running; clear is not allowed", queueName)
 	}
 	return deleteRun(paths, runID)
 }

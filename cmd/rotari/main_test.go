@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -2320,6 +2321,9 @@ func TestCancelJobsCancelsSelectedLocalJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	child := exec.Command("sleep", "30")
+	// runOneJob starts jobs as their own process group leader (Setpgid) so
+	// signal(-pid) reaches the wrapped command too; mirror that here.
+	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -2359,6 +2363,9 @@ func TestControlQueueJobsSuspendsAndResumesSelectedLocalJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	child := exec.Command("sh", "-c", fmt.Sprintf("while :; do printf x >> %q; done", outputPath))
+	// runOneJob starts jobs as their own process group leader (Setpgid) so
+	// signal(-pid) reaches the wrapped command too; mirror that here.
+	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -2484,6 +2491,9 @@ func TestControlQueueJobsControlsAllRunningJobsAndSkipsFinishedJobs(t *testing.T
 	children := make([]*exec.Cmd, 0, 2)
 	for _, jobID := range []string{"running-1", "running-2"} {
 		child := exec.Command("sleep", "30")
+		// runOneJob starts jobs as their own process group leader (Setpgid) so
+		// signal(-pid) reaches the wrapped command too; mirror that here.
+		child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := child.Start(); err != nil {
 			t.Fatal(err)
 		}

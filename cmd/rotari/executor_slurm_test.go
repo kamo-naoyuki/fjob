@@ -477,6 +477,7 @@ func TestWaitSlurmJobFailureBoundariesWithFakeSlurm(t *testing.T) {
 		name       string
 		statusJSON string
 		squeue     string
+		squeueCode int
 		sacct      string
 		sacctCode  int
 		wantCode   int
@@ -488,6 +489,13 @@ func TestWaitSlurmJobFailureBoundariesWithFakeSlurm(t *testing.T) {
 			sacctCode: 1,
 			wantCode:  1,
 			wantError: "Slurm accounting result and wrapper status are unavailable",
+		},
+		{
+			name:       "squeue fails like a down slurmctld falls back to accounting",
+			squeueCode: 1,
+			sacct:      "FAILED|7:0\n",
+			wantCode:   7,
+			wantError:  "failed",
 		},
 		{
 			name:       "corrupted wrapper status falls back to accounting",
@@ -508,7 +516,11 @@ func TestWaitSlurmJobFailureBoundariesWithFakeSlurm(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			binDir := t.TempDir()
-			writeExecutable(t, binDir, "squeue", fmt.Sprintf("#!/bin/sh\nprintf '%%s' %q\n", testCase.squeue))
+			if testCase.squeueCode == 0 {
+				writeExecutable(t, binDir, "squeue", fmt.Sprintf("#!/bin/sh\nprintf '%%s' %q\n", testCase.squeue))
+			} else {
+				writeExecutable(t, binDir, "squeue", fmt.Sprintf("#!/bin/sh\nprintf '%%s' %q\nexit %d\n", testCase.squeue, testCase.squeueCode))
+			}
 			if testCase.sacctCode == 0 {
 				writeExecutable(t, binDir, "sacct", fmt.Sprintf("#!/bin/sh\nprintf '%%s' %q\n", testCase.sacct))
 			} else {

@@ -135,17 +135,19 @@ project and waits for it. Specify `--project-name` when the base directory has
 multiple projects.
 
 **How does rotari actually stop a running job on Ctrl-C or `rotari cancel`?**
-It depends on the executor. `local` sends `SIGTERM` to the job's direct child
-process only — not a process group — so a wrapper script that spawns its own
-children must forward the signal itself if you want those killed too. `ssh`
-sends `SIGTERM` to the local `ssh` client process supervising the remote
-command; whether that reaches the remote command depends on your `ssh`
-options (e.g. a `-tt` pseudo-terminal). `slurm`/`pbs`/`lsf` call the
-scheduler's native cancel command (`scancel`/`qdel`/`bkill`) against the
-job's cluster ID instead of signaling a local process. In every case rotari
-only asks the job to stop (`SIGTERM` or the scheduler equivalent); it never
-escalates to `SIGKILL` for you, so a job that ignores the signal keeps
-running until it exits on its own or you intervene manually.
+It depends on the executor. `local` runs the job command through its own
+self-reporting wrapper script in its own process group, and sends `SIGTERM` to
+that whole process group, so both the wrapper and the command it launched are
+signaled — but a command that itself spawns further children of its own still
+has to forward the signal to those if you want them killed too. `ssh` sends
+`SIGTERM` to the local `ssh` client process supervising the remote command;
+whether that reaches the remote command depends on your `ssh` options (e.g. a
+`-tt` pseudo-terminal). `slurm`/`pbs`/`lsf` call the scheduler's native cancel
+command (`scancel`/`qdel`/`bkill`) against the job's cluster ID instead of
+signaling a local process. In every case rotari only asks the job to stop
+(`SIGTERM` or the scheduler equivalent); it never escalates to `SIGKILL` for
+you, so a job that ignores the signal keeps running until it exits on its own
+or you intervene manually.
 
 **I ran the runner on one host and `rotari web`/CLI on another over a shared
 base directory — why do `cancel`/`suspend`/`resume` say the job isn't
@@ -214,6 +216,12 @@ No. The web UI is a separate, optional process you start explicitly
 no effect on any run. It is unrelated to the background supervisor described
 below.
 
+**What does the project page's “Project runtime” panel show?**
+It shows the persisted runner-lock record for that project, when present, and
+whether the local coordinator's socket and PID records exist. It is a
+troubleshooting view, not a liveness probe: in particular, the short-lived
+advisory state lock is intentionally not inspected.
+
 **Is `rotari web` safe to expose beyond `127.0.0.1`?**
 Treat it as an unauthenticated admin surface, not a public dashboard. By
 default the `copy`/`change`/`remove`/`cancel`/`clear-run` APIs are enabled
@@ -253,6 +261,27 @@ shared HPC/lab filesystems. If you'd rather keep that private, set
 `ROTARI_PRIVATE_STATE=true` to switch newly created state to owner-only
 `0700`/`0600`; it doesn't retroactively change existing directories, and the
 server's control socket is always `0600` either way (see above).
+
+**What happens to jobs that are still running if the server/supervisor
+process itself is killed (`kill -9`, OOM, host reboot, ...)?**
+The jobs themselves are not children of the server in a way that would kill
+them too — they (or, for `local`, the wrapper script running them) keep
+running to completion and record their own final `status.json`, the same
+self-reporting mechanism scheduler executors already relied on. What's lost is
+the coordinator that was going to collect all jobs' results into the run's
+`summary.json` and clear the queue/lock: the run is left as "interrupted"
+(`meta.json` phase stays `running`/`cancelling`), and `add`/`copy`/`run`
+against that project are rejected until you resolve it with `unlock` (keep
+the queue, mark it recovered) or `reset --recover` (discard the queue). Rotari
+does not automatically detect that recovery moment and kill leftover running
+jobs for you — `reset --recover` only asks you to confirm they have actually
+stopped before discarding state, since it cannot safely assume a process ID
+recorded before the crash still refers to the same job (PIDs get reused, and
+jobs on another host can't be signaled locally at all). The rejection/
+confirmation messages themselves now say how many jobs still look non-terminal
+(based on that same `status`/`status.json`) and when the run was last known to
+be active, so you have a starting point before deciding whether to `unlock` or
+`reset --recover` — but you still have to make that call yourself.
 
 ## Timestamps and environment
 

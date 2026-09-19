@@ -47,12 +47,8 @@ func removeBatch(baseDir, queueName, requestedRunID string, requestedJobIDs []st
 		return "", fmt.Errorf("failed to lock queue: %w", err)
 	}
 	defer release()
-	running, err := isRunning(paths.lockFile)
-	if err != nil {
-		return "", fmt.Errorf("failed to check queue: %w", err)
-	}
-	if running {
-		return "", fmt.Errorf("project %q is running; remove is not allowed", queueName)
+	if err := ensureProjectIdleForPaths(paths, "remove"); err != nil {
+		return "", err
 	}
 
 	queue, err := loadQueue(paths.queueFile)

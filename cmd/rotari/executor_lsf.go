@@ -212,6 +212,10 @@ func waitLSFJob(runDir string, job lsfJobMetadata) JobResult {
 			writeSchedulerStatus(jobDir, state)
 		}
 		if state == "" {
+			// A directory listing nudges NFS clients to drop stale attribute/dentry
+			// caches, the same way the Slurm wait loop does, before re-checking the
+			// wrapper's own status.json.
+			_, _ = os.ReadDir(jobDir)
 			if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
 				return jobResultFromStatus(job.JobID, job.Command, status)
 			}

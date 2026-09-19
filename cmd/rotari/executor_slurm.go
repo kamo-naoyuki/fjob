@@ -431,6 +431,8 @@ func waitSlurmJob(runDir string, job slurmJobMetadata) JobResult {
 			writeSchedulerStatus(jobDir, state)
 		}
 		if state == "" {
+			// A directory listing nudges NFS clients to drop stale attribute/dentry
+			// caches before re-checking the wrapper's own status.json.
 			_, _ = os.ReadDir(jobDir)
 			if status, ok := loadSlurmStatus(statusPath); ok && status.Phase == "finished" {
 				return jobResultFromStatus(job.JobID, job.Command, status)
@@ -472,9 +474,14 @@ func slurmJobActive(jobID string) (bool, error) {
 }
 
 func slurmJobState(jobID string) (string, error) {
+	// A failing squeue (e.g. slurmctld briefly unreachable) is treated the same
+	// as the job having left the queue view, not a fatal error, so a transient
+	// controller outage doesn't get the still-running job reported as failed;
+	// the caller falls back to polling sacct within its accounting deadline,
+	// mirroring pbsJobState/lsfJobState.
 	output, err := runSlurmCommand("squeue", "--noheader", "--jobs", jobID, "--format=%T")
 	if err != nil {
-		return "", fmt.Errorf("squeue: %w", err)
+		return "", nil
 	}
 	return strings.ToLower(strings.TrimSpace(string(output))), nil
 }

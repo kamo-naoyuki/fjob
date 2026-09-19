@@ -974,8 +974,21 @@ func showJob(writer io.Writer, paths pathSet, runID, jobID string) int {
 		summary, err := loadRunSummary(filepath.Join(runDir, "summary.json"))
 		if err == nil {
 			for _, result := range summary.Results {
-				if result.ID == jobSpecs[jobID].ID && strings.HasPrefix(result.Error, "blocked") {
+				if result.ID != jobSpecs[jobID].ID {
+					continue
+				}
+				switch {
+				case strings.HasPrefix(result.Error, "blocked"):
 					fmt.Fprintf(writer, "%s %s\n", cyan("Status:"), yellow("blocked (dependency failed)"))
+				case result.Error != "":
+					// No status/status.json file was ever written for this job (e.g. the
+					// scheduler and its accounting were both unreachable), so this is the
+					// only place the reason surfaces.
+					fmt.Fprintf(writer, "%s %s\n", cyan("Status:"), red(fmt.Sprintf("%d (%s)", result.ExitCode, result.Error)))
+				case result.ExitCode == 0:
+					fmt.Fprintf(writer, "%s %s\n", cyan("Status:"), green(strconv.Itoa(result.ExitCode)))
+				default:
+					fmt.Fprintf(writer, "%s %s\n", cyan("Status:"), red(strconv.Itoa(result.ExitCode)))
 				}
 			}
 		}

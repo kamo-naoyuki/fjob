@@ -43,5 +43,7 @@ func (localExecutor) signal(jobDir string, sig syscall.Signal) error {
 	if err != nil || !processAlive(pid) {
 		return fmt.Errorf("job is not running")
 	}
-	return syscall.Kill(pid, sig)
+	// pid is the local-wrapper.sh process group leader (Setpgid: true in
+	// runOneJob); signal the whole group so the wrapped command is reached too.
+	return syscall.Kill(-pid, sig)
 }

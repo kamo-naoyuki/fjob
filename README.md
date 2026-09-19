@@ -8,47 +8,34 @@
 
 [![Go CI](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml/badge.svg)](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml) [![Slurm + PBS CI](https://img.shields.io/github/actions/workflow/status/kamo-naoyuki/rotari/scheduler-integration.yml?branch=main&label=Slurm%20%2B%20PBS%20CI)](https://github.com/kamo-naoyuki/rotari/actions/workflows/scheduler-integration.yml) [![codecov](https://codecov.io/gh/kamo-naoyuki/rotari/graph/badge.svg)](https://codecov.io/gh/kamo-naoyuki/rotari) [![SonarCloud Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=kamo-naoyuki_rotari&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=kamo-naoyuki_rotari) [![web demo](https://img.shields.io/website?url=https%3A%2F%2Fkamo-naoyuki.github.io%2Frotari%2F&label=web%20demo&style=flat)](https://kamo-naoyuki.github.io/rotari/)
 
-
 **Rotari turns trial-and-error into a repeatable loop**: run a batch of jobs, see which failed, fix only their commands, and run it again — without losing the history of what already worked.
 
 It is for experiments and builds that you run repeatedly, but where defining a
 full workflow up front would be more work than the iteration itself.
 
-**Local commands, remote SSH commands, and scheduler jobs (Slurm, PBS, LSF) live in the same queue**, even when they depend on each other. **Every run keeps its own snapshot** of commands, status, and logs, so nothing gets lost between "one more try" and the next.
+**Local commands, remote SSH commands, and scheduler jobs (Slurm, PBS, LSF) live
+in the same queue**, even when they depend on each other. **Every run keeps its
+own snapshot** of commands, status, and logs, so nothing gets lost between
+"one more try" and the next.
 
 **No DAGs to design. No pipeline to describe up front.**
-[Snakemake](https://github.com/snakemake/snakemake) and
-[Nextflow](https://github.com/nextflow-io/nextflow) pursue a related goal:
-making complex, data-dependent workflows repeatable by defining their
-dependencies. For most ad-hoc experiment loops, though, their benefits may
-not justify the upfront setup and learning curve of defining a workflow.
-Just queue what you want to run. **State lives in plain JSON
-files on disk**, with no server or database to set up — it works the same
-whether you're on your laptop or logged into a remote compute node.
 
-## What rotari is not
+Just queue what you want to run. **State lives in plain JSON files on disk**,
+with no server or database to set up — it works the same whether you're on your
+laptop or logged into a remote compute node.
 
-Rotari is a **job execution and experiment iteration coordinator**. It is not:
+## How is Rotari different?
 
-- a DAG workflow engine
-- a distributed scheduler
-- a cluster resource manager or Slurm replacement
-- a reproducibility framework
-- a container orchestrator
+Rotari focuses on **managing the iteration of experiments**, rather than executing or distributing individual tasks.
 
-It can dispatch jobs through local execution, SSH, Slurm, PBS, and LSF, but
-those backends remain responsible for cluster resources and scheduling policy.
+* **[Dask](https://github.com/dask/dask)** focuses on distributing Python computations across workers. Rotari focuses on running experiments as command-line jobs and keeping track of their execution history.
+* **[Snakemake](https://github.com/snakemake/snakemake) and [Nextflow](https://github.com/nextflow-io/nextflow)** focus on defining dependencies between tasks and data to build reproducible workflows. Rotari focuses on successive runs of an experiment without requiring the workflow to be defined up front.
+* **[Slurm](https://github.com/SchedMD/slurm), [PBS](https://github.com/openpbs/openpbs), and LSF** focus on scheduling and executing jobs on a cluster. Rotari adds an experiment-oriented layer for tracking, inspecting, retrying, and modifying runs.
+* **Shell scripts** are flexible and easy to start with, but repeated executions and their history are usually managed manually. Rotari makes that iteration history explicit.
 
-| Plain shell (background jobs) | rotari |
-| --- | --- |
-| ![shell background jobs demo](https://kamo-naoyuki.github.io/rotari/demo-shell.gif) | ![rotari demo](https://kamo-naoyuki.github.io/rotari/demo-rotari.gif) |
+These tools can also be used together. A Rotari run can execute a shell script, a Snakemake workflow, a Python program using Dask, or a job submitted to Slurm.
 
-If you've used [Kaldi](https://github.com/kaldi-asr/kaldi)'s or
-[ESPnet](https://github.com/espnet/espnet)'s `run.pl`/`queue.pl` — the
-local/cluster job dispatch scripts common in speech recognition research —
-you'll recognize the core ideas: array-job-like parallel execution, log and
-success/failure tracking, and a backend-independent interface for local and
-cluster execution.
+If you've used [Kaldi](https://github.com/kaldi-asr/kaldi)'s or [ESPnet](https://github.com/espnet/espnet)'s `run.pl`/`queue.pl`, the model should feel familiar: commands are dispatched locally or to a cluster, with logs and success/failure tracked consistently across backends. Rotari extends this idea with persistent run history and experiment-oriented iteration.
 
 ## Installation
 
@@ -203,6 +190,7 @@ about project/run resolution, retries, array jobs, interrupted runs, and locking
 
 See the [web demo](https://kamo-naoyuki.github.io/rotari/) for a read-only UI
 using generated example data.
+The Pages build also publishes the generated [package dependency graph](https://kamo-naoyuki.github.io/rotari/architecture/).
 
 Start the local web status UI separately from the job runner:
 
@@ -218,6 +206,9 @@ It reads job state from the state directory and shows the working directory
 and terminal command needed to copy jobs for another run. While a run is
 active, scheduler jobs show their latest Slurm, PBS, or LSF state, such as
 `pending`, `running`, or `suspended`.
+Each project page also has a collapsible runtime panel showing its runner-lock
+record (run ID, host, PID, and start time) and the local coordinator's socket
+and PID records for troubleshooting.
 Stopping the web server does not stop the runner or any jobs.
 
 By default the web UI allows job control: `copy`/`change`/`remove`/`cancel`/
@@ -285,6 +276,7 @@ The state directory mirrors this lifecycle:
 
 ```text
 <basedir>/
+├── server.log
 └── projects/
   └── <project-name>/
     ├── queue.json
@@ -684,6 +676,10 @@ rotari server status
 rotari server list
 rotari server shutdown
 ```
+
+The supervisor records lifecycle, request, and error events in
+`<basedir>/server.log`. The file is capped at 1 MiB and is truncated before a
+new event would exceed that limit.
 
 ## Run registry maintenance
 

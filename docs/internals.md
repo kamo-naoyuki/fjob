@@ -16,6 +16,7 @@ The normal state layout is:
 
 ```text
 <basedir>/
+├── server.log
 └── projects/<project>/
     ├── queue.json
     ├── meta.json
@@ -34,6 +35,11 @@ The normal state layout is:
 Files may appear incrementally while a run is active. Readers must tolerate
 missing optional or not-yet-written run files without inventing completed
 results.
+
+The background server writes lifecycle, request, and error events to
+`<basedir>/server.log`. It is a bounded diagnostic log: before an event would
+make it exceed 1 MiB, the regular file is truncated and the new event is
+written. Run output remains the durable execution record.
 
 ## Core design contracts
 
@@ -54,7 +60,14 @@ the user-facing documentation, and the affected tests together.
     indexes or coordination aids and must be recoverable from persisted files.
 6. The server coordinates access and execution; it is not persistent
     authority for project or run state.
-7. Executors implement job execution and scheduler integration, not run
+7. Each project owns one mutable current queue as the staging area for the
+    next run. Queue edits change that queue; starting a run snapshots it, and
+    normal completion clears the consumed queue. An interrupted run retains
+    the queue until it is recovered or reset.
+8. A project has at most one active run and runner at a time. That runner may
+    execute multiple jobs concurrently, while different projects can run
+    independently.
+9. Executors implement job execution and scheduler integration, not run
     semantics. Run planning, dependency handling, carry-forward, and summary
     finalization belong to rotari's shared execution path.
 
@@ -249,6 +262,24 @@ supplied). `show --json` emits one object with the resolved location, run
 summary when available, and saved commands. These modes are additive; default
 CLI output remains human-facing.
 
+## Job execution durability
+
+Every executor runs the job command through a self-reporting wrapper script
+that writes its own `<job-id>/status.json` (phase, exit code, hosts) as the
+command starts and finishes, independent of whatever process launched it.
+This was originally built for scheduler executors (Slurm/PBS/LSF,
+`statusWrapperScript` in `executor_slurm.go`) so scheduler accounting lag
+couldn't hide the real result, and the local executor (`runOneJob`, `main.go`)
+uses the same wrapper for the same reason at a different failure point: if the
+coordinating process (the server for a sync run, `__worker-run` for an async
+run) is killed while a local job is still running, the orphaned job keeps
+running under the wrapper and still records its own `status.json` when it
+exits, instead of leaving no result at all. `show`/`web.go`'s existing
+status -> status.json -> summary.json fallback chain requires no changes to
+benefit from this. It does not, by itself, make anything actively kill or
+reconcile a leftover running job on recovery -- `reset --recover`/`unlock`
+still only ask an operator to confirm jobs have stopped.
+
 ## Shared-state coordination
 
 Shared-base operation across hosts relies on the shared filesystem preserving
@@ -264,8 +295,10 @@ different projects largely isolate queue and run state even under one shared
 base directory. Base-level server and registry state, along with the shared
 filesystem semantics, remain common dependencies.
 
-`controlQueueJobs` and `cancelJobs` signal `local`-executor jobs by PID, which
-is only meaningful on the host that actually spawned the process.
+`controlQueueJobs` and `cancelJobs` signal `local`-executor jobs by process
+group (the wrapper's PID doubles as its process group ID via `Setpgid`, so a
+negative PID reaches both the wrapper and the command it execs), which is
+only meaningful on the host that actually spawned the process.
 `localExecutorHostMismatch` (`job_executor.go`) compares the current host
 against the run's `context.json` `Hostname` before attempting that signal, so
 running the CLI or web UI on a different host than the runner over a shared
@@ -328,6 +361,12 @@ bound address is reported after the listener is created, not the requested
 one. `cmdWeb` prints a stderr warning (via `isLoopbackWebHost`) whenever
 `--host` resolves to something other than `localhost`/a loopback IP, since
 the server has no authentication.
+
+`loadWebState` exposes persisted coordination metadata for the project page's
+runtime panel: `running.lock` fields (run ID, PID, host, start time) and the
+presence of the base directory's `server.sock`/`server.pid` records. The panel
+does not query process liveness and must not infer that `state.lock` is held:
+it is a short-lived advisory `flock` file whose existence is not lock state.
 
 The background server's control surface (`submit`/`cancel`/`suspend`/
 `resume`/`run`/`shutdown` over the `server.sock` Unix socket) is only as safe
@@ -406,11 +445,37 @@ Project mutations hold the advisory `state.lock`. `running.lock` represents an
 active run and includes host information because local PID checks cannot prove
 remote process liveness.
 
+`inspectProjectRunState` (`main.go`) derives one of three states from just
+`running.lock` and `meta.json` -- never from job-level files like a job's own
+self-reported `status.json` (see "Job execution durability" above), which only
+feeds `show`/the web UI, not this state machine:
+
+| State                 | `running.lock`                                   | `meta.json` phase              | `run`/`add`/`copy`/`change`/`delete`/`remove` | `reset`                                  |
+|------------------------|---------------------------------------------------|---------------------------------|------------------------------------------|--------------------------------------------|
+| `projectIdle`          | absent, or present but stale (auto-removed)        | `collecting`/`finished`         | allowed                                  | allowed                                    |
+| `projectRunning`       | present; owning coordinator PID is alive (a lock recorded on another host is always treated as alive, since liveness can't be checked remotely) | `running`/`cancelling`           | rejected: "is running; ... is not allowed" | rejected: same message                     |
+| `projectInterrupted`   | absent, or present but the coordinator PID is dead (auto-removed on the same host) | `running`/`cancelling` with `last_run_id` set | rejected: "has interrupted run ...; recover with unlock" | `--recover` (or interactive confirmation) proceeds |
+
 A dead local run lock is removed automatically, but `meta.json` remaining in
 `running` or `cancelling` phase with a `last_run_id` marks an interrupted run.
-Queue-mutating `add`, `copy`, and `run` operations must reject that state so a
-retained execution queue cannot be extended or rerun accidentally. `unlock`
-with the exact run ID acknowledges recovery, keeps the retained queue, and
+`ensureProjectIdleForPaths` (`main.go`) is the single shared check behind
+`run`/`add`/`copy`/`change`/`delete`/`remove`: every one of them rejects both
+`projectRunning` and `projectInterrupted` with the same message, instead of
+each command hand-rolling its own `running.lock` liveness check (which used to
+mean some of them silently ignored an interrupted run instead of rejecting
+it), so a retained execution queue cannot be extended or rerun accidentally.
+`interruptedRunStatusDetail` (`main.go`) adds a job-status summary to that
+rejection and to `reset`'s own interrupted-run messages: it scans the run's
+job directories (not `summary.json`, which an interrupted run never got to
+write) and reports how many jobs' own `status`/`status.json` still look
+non-terminal, alongside whether `meta.json`'s phase was `running` or
+`cancelling` and its last-updated timestamp when the coordinator disappeared.
+A job whose own status is missing or unparseable counts as "still running" --
+there is no way to tell that apart from one genuinely still executing, so the
+message errs toward caution rather than assuming the best. This only makes
+the existing rejection/confirmation messages more informative; it does not
+change what `--recover`/`unlock` themselves are allowed to do.
+`unlock` with the exact run ID acknowledges recovery, keeps the retained queue, and
 returns the phase to `collecting`; it works whether the stale lock remains or
 was already removed. `reset` discards the current, not-yet-run queue while
 keeping queue defaults and run history; interactively it asks for the same

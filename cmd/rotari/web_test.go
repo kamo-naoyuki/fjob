@@ -120,6 +120,15 @@ func TestWebHTMLIncludesEmbeddedThemeFavicons(t *testing.T) {
 	}
 }
 
+func TestWebHTMLIncludesProjectRuntime(t *testing.T) {
+	html := webHTML()
+	for _, want := range []string{"function addProjectRuntime()", "addProjectRuntime();addRunHostLine()", "Project runtime", "Internal state", "State lock: advisory and intentionally not probed"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("web HTML does not contain %q", want)
+		}
+	}
+}
+
 func TestWebCancelRunRejectsStaleRunID(t *testing.T) {
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "default")
@@ -185,6 +194,42 @@ func TestLoadWebStateIncludesAllQueues(t *testing.T) {
 	}
 	if len(filtered.Queues) != 1 || filtered.Queues[0].QueueName != "test" {
 		t.Fatalf("filtered queues = %#v, want test", filtered.Queues)
+	}
+}
+
+func TestLoadWebStateIncludesRuntimeRecords(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.queueFile, Queue{}); err != nil {
+		t.Fatal(err)
+	}
+	lock := LockInfo{RunID: "run-active", PID: 1234, Host: "worker-a", StartedAt: "2026-09-16T00:00:00Z"}
+	if err := writeJSON(paths.lockFile, lock); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(serverPIDPath(baseDir), []byte("5678\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(serverSocketPath(baseDir), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := loadWebState(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := state.Queues[0]
+	if project.RunningRunID != lock.RunID || project.RunnerPID != lock.PID || project.RunnerHost != lock.Host {
+		t.Fatalf("project runtime = %#v, want lock %#v", project, lock)
+	}
+	if project.RunnerStartedAt != formatDisplayTimestamp(lock.StartedAt) {
+		t.Fatalf("runner started at = %q, want formatted lock timestamp", project.RunnerStartedAt)
+	}
+	if !state.Server.SocketExists || !state.Server.PIDFileExists || state.Server.PID != 5678 {
+		t.Fatalf("server runtime = %#v, want socket and PID record", state.Server)
 	}
 }
 
