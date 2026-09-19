@@ -105,7 +105,7 @@ func TestApplyRunRegistryGCRejectsFuturePlan(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if code := applyRunRegistryGC(masterDir); code == 0 {
+	if applyRunRegistryGC(masterDir) == 0 {
 		t.Fatal("applyRunRegistryGC() succeeded with a future-dated plan")
 	}
 }

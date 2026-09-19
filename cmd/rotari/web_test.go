@@ -278,6 +278,25 @@ func TestWebSeparatesLogsFromActions(t *testing.T) {
 	}
 }
 
+func TestWebQueueWorkingDirectoryUsesSeparateEditableColumn(t *testing.T) {
+	html := webHTML()
+	for _, want := range []string{
+		"header.dataset.sort='working_directory';header.textContent='Working directory'",
+		"function rowCell(row,key)",
+		"rowCell(row,'command')",
+		"rowCell(row,'working_directory')",
+		"ensureQueueWorkingDirectoryColumn(commands);addQueueEditors(queue,commands)",
+		"<td>'+esc(j.working_directory||'-')+'</td><td class=\"command\">",
+		"data-sort=\"working_directory\">Working directory",
+		"data-sort=\"command\">Command",
+		"function markJobHeaders(){}",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("web queue table does not contain %q", want)
+		}
+	}
+}
+
 func TestLoadWebJobsIncludesCommandMetadata(t *testing.T) {
 	runDir := t.TempDir()
 	queue := Queue{Commands: []QueuedCommand{{

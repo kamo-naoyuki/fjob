@@ -72,6 +72,14 @@ func TestResolveProjectNamePriority(t *testing.T) {
 	}
 }
 
+func TestResolvePathsRejectsProjectTraversal(t *testing.T) {
+	for _, projectName := range []string{"../outside", ".", "..", "nested/project"} {
+		if _, err := resolvePaths(t.TempDir(), projectName); err == nil {
+			t.Errorf("resolvePaths accepted unsafe project name %q", projectName)
+		}
+	}
+}
+
 func TestResolveBaseDirPriority(t *testing.T) {
 	const envName = "ROTARI_BASEDIR"
 	old, existed := os.LookupEnv(envName)

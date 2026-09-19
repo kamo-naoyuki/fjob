@@ -238,6 +238,12 @@ func TestCmdServerRequestFailsWithoutRunningServer(t *testing.T) {
 	}
 }
 
+func TestCancelJobsRejectsJobTraversal(t *testing.T) {
+	if _, err := cancelJobs(t.TempDir(), "default", "run-1", []string{"../outside"}); err == nil {
+		t.Fatal("cancelJobs accepted unsafe job ID")
+	}
+}
+
 func TestCmdAddThenCmdRunExecutesLocalJobEndToEnd(t *testing.T) {
 	// A short, non-nested temp dir is required: the unix socket path derived
 	// from baseDir must stay under the ~108 byte sun_path limit.

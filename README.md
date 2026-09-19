@@ -39,9 +39,6 @@ rotari is a **job execution and experiment iteration coordinator**. It is not:
 It can dispatch jobs through local execution, SSH, Slurm, PBS, and LSF, but
 those backends remain responsible for cluster resources and scheduling policy.
 
-Rotari turns trial-and-error into a repeatable loop:
-
-
 | Plain shell (background jobs) | rotari |
 | --- | --- |
 | ![shell background jobs demo](https://kamo-naoyuki.github.io/rotari/demo-shell.gif) | ![rotari demo](https://kamo-naoyuki.github.io/rotari/demo-rotari.gif) |

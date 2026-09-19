@@ -878,13 +878,43 @@ func webHTML() string {
 		`<select class="executor-input">'+executorNames.map(name=>'<option value="'+esc(name)+'">'+esc(name)+'</option>').join('')+'</select>`, 1)
 	template = strings.Replace(template,
 		`row.children[5].innerHTML='<input class="command-input" value="'+esc(JSON.stringify(job.command))+'">';`,
-		`row.children[5].innerHTML='<input class="command-input" value="'+esc(JSON.stringify(job.command))+'"><input class="working-directory-input" placeholder="working directory" value="'+esc(job.working_directory||'')+'">';`, 1)
+		`rowCell(row,'command').innerHTML='<input class="command-input" value="'+esc(JSON.stringify(job.command))+'">';rowCell(row,'working_directory').innerHTML='<input class="working-directory-input" placeholder="working directory" value="'+esc(job.working_directory||'')+'">';`, 1)
+	template = strings.Replace(template,
+		`function addQueueEditors(queue,commands){`,
+		`function rowCell(row,key){const headers=[...row.closest('table').querySelectorAll('thead th')];const index=headers.findIndex(header=>header.dataset.sort===key);return index<0?null:row.children[index]}
+function ensureQueueWorkingDirectoryColumn(commands){const table=document.querySelector('.web-queue-commands table');if(!table)return;const headerRow=table.querySelector('thead tr');if(!headerRow||headerRow.querySelector('[data-sort="working_directory"]'))return;const header=document.createElement('th');header.dataset.sort='working_directory';header.textContent='Working directory';const commandHeader=headerRow.querySelector('[data-sort="command"]');if(commandHeader)headerRow.insertBefore(header,commandHeader);else headerRow.append(header);table.querySelectorAll('tbody tr').forEach((row,index)=>{const cell=document.createElement('td');cell.textContent=commands[index]&&commands[index].working_directory||'-';const commandCell=rowCell(row,'command');if(commandCell)row.insertBefore(cell,commandCell);else row.append(cell)})}
+function addQueueEditors(queue,commands){`, 1)
 	template = strings.Replace(template,
 		`depends_on:depends,clear_depends_on:depends.length===0`,
 		`depends_on:depends,clear_depends_on:depends.length===0,working_directory:row.querySelector('.working-directory-input').value,clear_working_directory:row.querySelector('.working-directory-input').value===''`, 1)
 	template = strings.Replace(template,
+		`addQueueEditors(queue,commands);enhanceQueueSourceContext(commands)`,
+		`ensureQueueWorkingDirectoryColumn(commands);addQueueEditors(queue,commands);enhanceQueueSourceContext(commands)`, 1)
+	template = strings.Replace(template,
+		`row.children[0].innerHTML='<input class="job-name-input" value="'+esc(job.name||'')+'"><div class="meta">'+esc(job.id)+'</div>';`,
+		`rowCell(row,'name').innerHTML='<input class="job-name-input" value="'+esc(job.name||'')+'"><div class="meta">'+esc(job.id)+'</div>';`, 1)
+	template = strings.Replace(template,
+		`row.children[2].innerHTML='<select class="executor-input"><option value="local">local</option><option value="slurm">slurm</option></select>';row.children[2].querySelector('select').value=job.executor||'local';`,
+		`rowCell(row,'executor').innerHTML='<select class="executor-input"><option value="local">local</option><option value="slurm">slurm</option></select>';rowCell(row,'executor').querySelector('select').value=job.executor||'local';`, 1)
+	template = strings.Replace(template,
+		`row.children[2].innerHTML='<select class="executor-input">'+executorNames.map(name=>'<option value="'+esc(name)+'">'+esc(name)+'</option>').join('')+'</select>';row.children[2].querySelector('select').value=job.executor||'local';`,
+		`rowCell(row,'executor').innerHTML='<select class="executor-input">'+executorNames.map(name=>'<option value="'+esc(name)+'">'+esc(name)+'</option>').join('')+'</select>';rowCell(row,'executor').querySelector('select').value=job.executor||'local';`, 1)
+	template = strings.Replace(template,
+		`row.children[3].innerHTML='<input class="executor-option-input" value="'+esc(JSON.stringify(job.executor_options||[]))+'">';row.children[4].innerHTML='<input class="depends-input" value="'+esc(JSON.stringify(job.depends_on||[]))+'">';`,
+		`rowCell(row,'options').innerHTML='<input class="executor-option-input" value="'+esc(JSON.stringify(job.executor_options||[]))+'">';rowCell(row,'depends').innerHTML='<input class="depends-input" value="'+esc(JSON.stringify(job.depends_on||[]))+'">';`, 1)
+	template = strings.Replace(template,
+		`<td>'+esc(dependencies||'-')+'</td><td class="command">`,
+		`<td>'+esc(dependencies||'-')+'</td><td>'+esc(j.working_directory||'-')+'</td><td class="command">`, 1)
+	template = strings.Replace(template,
+		`<th>Job name / ID</th><th>Executor</th><th>Executor options</th><th>Dependencies</th><th>Command</th><th>Started</th><th>Finished</th><th>Exit / error</th><th></th>`,
+		`<th data-sort="name">Job name / ID</th><th data-sort="executor">Executor</th><th data-sort="options">Executor options</th><th data-sort="depends">Dependencies</th><th data-sort="working_directory">Working directory</th><th data-sort="command">Command</th><th data-sort="started">Started</th><th data-sort="finished">Finished</th><th data-sort="exit">Exit / error</th><th data-sort="output"></th>`, 1)
+	template = strings.Replace(template,
+		`function markJobHeaders(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='project'||parts[2]!=='run')return;const table=document.querySelector('#app table.runs');if(!table)return;const keys=['name','status','executor','slurm','depends','command','exit'];table.querySelectorAll('thead th').forEach((header,index)=>{if(index<keys.length)header.dataset.sort=keys[index]})}`,
+		`function markJobHeaders(){}`, 1)
+	template = strings.Replace(template,
 		`queue_name:queue,job_id:jobID`,
 		`project_name:queue,job_id:jobID`, 1)
+	template = strings.Replace(template, "--queue-name", "--project-name", -1)
 	return template
 }
 

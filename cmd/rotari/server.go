@@ -1049,6 +1049,9 @@ func cancelJobs(runDir, queueName, runID string, jobIDs []string) (string, error
 	}
 	cancelled := 0
 	for jobID := range requested {
+		if jobID == "" || jobID == "." || jobID == ".." || filepath.Base(jobID) != jobID {
+			return "", fmt.Errorf("invalid job ID %q", jobID)
+		}
 		jobDir := filepath.Join(runDir, jobID)
 		if executor, err := jobOwnerExecutor(jobDir); err == nil {
 			canceller, ok := executor.(Canceller)

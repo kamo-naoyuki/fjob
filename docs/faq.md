@@ -145,8 +145,6 @@ only asks the job to stop (`SIGTERM` or the scheduler equivalent); it never
 escalates to `SIGKILL` for you, so a job that ignores the signal keeps
 running until it exits on its own or you intervene manually.
 
-## Web UI
-
 **Is there a Python API?**
 Yes. The optional `python/` package is a thin subprocess wrapper around the
 `rotari` executable. It does not reimplement queue or execution behavior.
@@ -156,6 +154,8 @@ CLI's JSON output, while CLI errors remain exceptions. It accepts executable
 argument lists, not Python functions or closures to serialize and submit. This
 is deliberately different from function-oriented frameworks such as
 [Submitit](https://github.com/facebookincubator/submitit).
+
+## Web UI
 
 **Does closing/stopping `rotari web` stop my jobs?**
 No. The web UI is a separate, optional process you start explicitly

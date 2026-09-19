@@ -957,6 +957,9 @@ type pathSet struct {
 }
 
 func resolvePaths(cliBaseDir, projectName string) (pathSet, error) {
+	if projectName == "" || projectName == "." || projectName == ".." || filepath.Base(projectName) != projectName {
+		return pathSet{}, fmt.Errorf("invalid project name %q", projectName)
+	}
 	baseDir, explicit, err := resolveBaseDir(cliBaseDir)
 	if err != nil {
 		return pathSet{}, err
@@ -1009,25 +1012,23 @@ func privateStateEnabled() bool {
 }
 
 func stateDirMode() os.FileMode {
-	if privateStateEnabled() {
-		return 0o700
-	}
-	return 0o755
+	return stateMode(0o700, 0o755)
 }
 
 func stateFileMode() os.FileMode {
-	if privateStateEnabled() {
-		return 0o600
-	}
-	return 0o644
+	return stateMode(0o600, 0o644)
 }
 
 // stateScriptMode is for generated wrapper scripts, which must stay executable.
 func stateScriptMode() os.FileMode {
+	return stateMode(0o700, 0o755)
+}
+
+func stateMode(privateMode, sharedMode os.FileMode) os.FileMode {
 	if privateStateEnabled() {
-		return 0o700
+		return privateMode
 	}
-	return 0o755
+	return sharedMode
 }
 
 func resolveProjectName(baseDir string, cliProjectName string) (string, error) {
