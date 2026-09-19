@@ -1,0 +1,26 @@
+# Go build artifacts and local rotari state
+/rotari
+/.rotari-state/
+/.example-state*/
+/*.test
+/coverage.out
+/coverage.html
+/docs/web-demo/
+/docs/demo-*.gif
+/.venv/
+/node_modules/
+
+# Go workspace files
+/go.work
+/go.work.sum
+
+# NFS temporary files
+.nfs*
+
+# Slurm log
+slurm-*.out
+
+# Local Go build cache (sandbox fallback)
+/.gocache/
+
+activate_python.sh

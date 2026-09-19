@@ -1,0 +1,22 @@
+language: ja
+
+reviews:
+  profile: chill
+  high_level_summary: true
+  poem: false
+  request_changes_workflow: false
+  path_filters:
+    - "!docs/web-demo/**"
+    - "!**/*.svg"
+  path_instructions:
+    - path: "**/*.go"
+      instructions: |
+        Pay particular attention to persisted state semantics, locking, executor behavior,
+        error handling, and whether changes preserve compatibility across local and scheduler executors.
+    - path: "python/**/*.py"
+      instructions: |
+        Check that the Python interface remains a thin CLI projection and does not duplicate
+        queue or execution semantics from the Go implementation.
+
+chat:
+  auto_reply: true

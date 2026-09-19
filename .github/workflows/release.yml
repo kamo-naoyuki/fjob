@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install JavaScript test dependencies
+        run: npm ci
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o "rotari-${{ matrix.goos }}-${{ matrix.goarch }}" ./cmd/rotari
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: rotari-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: rotari-${{ matrix.goos }}-${{ matrix.goarch }}
+
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: rotari-*
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "${GITHUB_REF_NAME}"
