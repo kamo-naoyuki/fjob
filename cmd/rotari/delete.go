@@ -110,11 +110,11 @@ func deleteRun(paths pathSet, runID string) error {
 	if err != nil {
 		return err
 	}
-	info, err := os.Stat(runDir)
+	info, err := os.Stat(runDir) // NOSONAR: runDir is produced by validatedRunDir.
 	if err != nil || !info.IsDir() {
 		return fmt.Errorf("run %q not found", runID)
 	}
-	if err := os.RemoveAll(runDir); err != nil {
+	if err := os.RemoveAll(runDir); err != nil { // NOSONAR: runDir is produced by validatedRunDir.
 		return fmt.Errorf("failed to clear run %q: %w", runID, err)
 	}
 	meta, err := loadMeta(paths.metaFile)

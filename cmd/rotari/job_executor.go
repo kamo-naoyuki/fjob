@@ -76,7 +76,7 @@ type Canceller interface {
 // scheduler-style executor writes job.json with its own "executor" name, so
 // that job.json alone (not its mere existence) tells us which one to use.
 func jobOwnerExecutor(jobDir string) (JobExecutor, error) {
-	if data, err := os.ReadFile(filepath.Join(jobDir, "job.json")); err == nil {
+	if data, err := os.ReadFile(filepath.Join(jobDir, "job.json")); err == nil { // NOSONAR: jobDir is supplied only by validated executor paths.
 		var meta struct {
 			Executor string `json:"executor"`
 		}

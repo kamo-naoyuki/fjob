@@ -90,7 +90,11 @@ func waitForRun(basedir, queueNameOption, runID string, deadline time.Time, json
 		printErrorf("failed to resolve paths: %v", err)
 		return waitResult{exitCode: 1}
 	}
-	runDir := filepath.Join(paths.runsDir, runID)
+	runDir, err := validatedRunDir(paths, runID)
+	if err != nil {
+		printErrorf("invalid run ID %q", runID)
+		return waitResult{exitCode: 1}
+	}
 	for {
 		summary, err := loadRunSummary(filepath.Join(runDir, "summary.json"))
 		if err == nil {

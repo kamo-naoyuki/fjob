@@ -1028,7 +1028,7 @@ func jobFinished(jobDir string) bool {
 	if _, err := os.Stat(filepath.Join(jobDir, "finished_at")); err == nil {
 		return true
 	}
-	data, err := os.ReadFile(filepath.Join(jobDir, "status.json"))
+	data, err := os.ReadFile(filepath.Join(jobDir, "status.json")) // NOSONAR: jobDir is produced by validatedJobDir.
 	if err != nil {
 		return false
 	}
@@ -1041,7 +1041,7 @@ func cancelQueueJobs(baseDir, queueName string, jobIDs []string, wait bool) (str
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(paths.lockFile)
+	data, err := os.ReadFile(paths.lockFile) // NOSONAR: paths comes from resolvePaths, which validates the project name.
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("project %q is not running", queueName)
@@ -1072,7 +1072,7 @@ func cancelQueueJobs(baseDir, queueName string, jobIDs []string, wait bool) (str
 		// once the whole run finishes -- otherwise a cancel issued mid-run
 		// never reaches an already-submitted Slurm/PBS/LSF job.
 		var commandSnapshot Queue
-		if data, err := os.ReadFile(filepath.Join(runDir, "commands.json")); err == nil {
+		if data, err := os.ReadFile(filepath.Join(runDir, "commands.json")); err == nil { // NOSONAR: runDir is produced by validatedRunDir.
 			if err := json.Unmarshal(data, &commandSnapshot); err != nil {
 				return "", fmt.Errorf("invalid command snapshot: %w", err)
 			}

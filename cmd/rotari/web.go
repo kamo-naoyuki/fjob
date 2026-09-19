@@ -521,7 +521,7 @@ func newWebHandler(baseDir, queueFilter string, allowControl bool) http.Handler 
 			writeWebError(writer, err)
 			return
 		}
-		data, err := os.ReadFile(paths.lockFile)
+		data, err := os.ReadFile(paths.lockFile) // NOSONAR: paths comes from resolvePaths after validWebID validation.
 		if err != nil {
 			writeWebError(writer, fmt.Errorf("project %q is not running", cancel.QueueName))
 			return

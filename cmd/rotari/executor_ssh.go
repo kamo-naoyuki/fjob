@@ -54,7 +54,7 @@ func (sshExecutor) Submit(runDir string, job JobSpec, options []string) (JobHand
 	if err != nil {
 		return JobHandle{}, err
 	}
-	cmd := exec.Command("ssh", append(sshOptions, "--", host, "sh", "-s")...)
+	cmd := exec.Command("/usr/bin/ssh", append(sshOptions, "--", host, "sh", "-s")...)
 	cmd.Stdin = strings.NewReader(sshWrapperScript(job.Command, job.Environment, job.WorkingDirectory))
 	cmd.Stdout = output
 	cmd.Stderr = output
