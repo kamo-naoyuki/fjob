@@ -106,7 +106,8 @@ run files and metadata are updated. Registry entries for runs deleted outside
 rotari may remain as orphaned records. `rotari gc` scans for such records and
 caches the plan for ten minutes; `rotari gc --apply` removes only unchanged
 cached entries whose run directory is still absent. Automatic garbage
-collection is not performed.
+collection is not performed. Malformed or invalid registry files are reported
+and left untouched for manual inspection.
 
 ## Run lifecycle
 

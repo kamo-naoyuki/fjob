@@ -28,8 +28,10 @@ target a specific run regardless of current queue state.
 **How do I clean up run registry entries left by manual deletion?**
 Run `rotari gc` to scan for registry entries whose run directories no longer
 exist. It caches the candidates for ten minutes and does not delete anything
-by itself. Review the result, then run `rotari gc --apply`; it removes only
-unchanged candidates and skips any run directory that has reappeared.
+by itself. Malformed or invalid registry files are reported and left
+untouched; inspect their run data and repair or remove them manually. Review
+the result, then run `rotari gc --apply`; it removes only unchanged candidates
+and skips any run directory that has reappeared.
 
 ## Retry, copy, and array jobs
 

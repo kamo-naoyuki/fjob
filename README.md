@@ -11,6 +11,9 @@
 
 **Rotari turns trial-and-error into a repeatable loop**: run a batch of jobs, see which failed, fix only their commands, and run it again — without losing the history of what already worked.
 
+It is for experiments and builds that you run repeatedly, but where defining a
+full workflow up front would be more work than the iteration itself.
+
 **Local commands, remote SSH commands, and scheduler jobs (Slurm, PBS, LSF) live in the same queue**, even when they depend on each other. **Every run keeps its own snapshot** of commands, status, and logs, so nothing gets lost between "one more try" and the next.
 
 **No DAGs to design. No pipeline to describe up front.**
@@ -659,6 +662,8 @@ rotari gc
 
 The candidates and their locations are printed and cached for ten minutes.
 The temporary GC plan is stored at `<masterdir>/gc.json`.
+Malformed or invalid registry files are listed and left untouched; inspect
+their run data and repair or remove them manually.
 After reviewing them, apply that exact plan:
 
 ```sh

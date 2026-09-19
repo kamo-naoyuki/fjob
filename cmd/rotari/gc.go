@@ -38,7 +38,7 @@ func cmdGC(args []string) int {
 }
 
 func scanRunRegistryGC(masterDir string) int {
-	entries, err := orphanRunRegistryEntries(masterDir)
+	entries, skipped, err := orphanRunRegistryEntries(masterDir)
 	if err != nil {
 		printErrorf("failed to scan run registry: %v", err)
 		return 1
@@ -57,6 +57,13 @@ func scanRunRegistryGC(masterDir string) int {
 	for _, entry := range entries {
 		fmt.Printf("  %s -> %s/projects/%s/runs/%s\n", entry.RunID, entry.BaseDir, entry.ProjectName, entry.RunID)
 	}
+	if len(skipped) > 0 {
+		fmt.Printf("skipped %d invalid run registry entr%s; no automatic changes made\n", len(skipped), pluralSuffix(len(skipped)))
+		for _, path := range skipped {
+			fmt.Printf("  %s\n", path)
+		}
+		fmt.Println("Inspect these files and repair or remove them manually only after confirming their run data is safe.")
+	}
 	fmt.Printf("GC plan cached at %s (expires in %s)\n", cachePath, runRegistryGCCacheTTL)
 	fmt.Printf("review the plan, then run: rotari gc --apply\n")
 	return 0
@@ -69,34 +76,39 @@ func pluralSuffix(count int) string {
 	return "ies"
 }
 
-func orphanRunRegistryEntries(masterDir string) ([]runLocation, error) {
+func orphanRunRegistryEntries(masterDir string) ([]runLocation, []string, error) {
 	dir := filepath.Join(masterDir, "runs")
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	orphans := make([]runLocation, 0)
+	skipped := make([]string, 0)
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		var location runLocation
 		if err := json.Unmarshal(data, &location); err != nil {
+			skipped = append(skipped, filepath.Join(dir, entry.Name()))
 			continue
 		}
 		if !validRunRegistryLocation(location) || runLocationExists(location) {
+			if !validRunRegistryLocation(location) {
+				skipped = append(skipped, filepath.Join(dir, entry.Name()))
+			}
 			continue
 		}
 		orphans = append(orphans, location)
 	}
-	return orphans, nil
+	return orphans, skipped, nil
 }
 
 func validRunRegistryLocation(location runLocation) bool {
@@ -129,7 +141,8 @@ func applyRunRegistryGC(masterDir string) int {
 		return 1
 	}
 	createdAt, err := time.Parse(time.RFC3339, cache.CreatedAt)
-	if err != nil || time.Since(createdAt) > runRegistryGCCacheTTL {
+	age := time.Since(createdAt)
+	if err != nil || age < 0 || age > runRegistryGCCacheTTL {
 		printError("cached GC plan has expired; run 'rotari gc' again")
 		return 1
 	}
