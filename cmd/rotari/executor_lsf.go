@@ -66,8 +66,8 @@ func (lsfExecutor) Cancel(jobDir string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := runLSFCommand("bkill", metadata.LSFJobID); err != nil {
-		return fmt.Errorf("bkill %s: %w", metadata.LSFJobID, err)
+	if output, err := runLSFCommand("bkill", metadata.LSFJobID); err != nil {
+		return fmt.Errorf("bkill %s: %w", metadata.LSFJobID, schedulerCommandHint("bkill", output, err))
 	}
 	return nil
 }
@@ -77,8 +77,8 @@ func (lsfExecutor) runControl(jobDir, command string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := runLSFCommand(command, metadata.LSFJobID); err != nil {
-		return fmt.Errorf("%s %s: %w", command, metadata.LSFJobID, err)
+	if output, err := runLSFCommand(command, metadata.LSFJobID); err != nil {
+		return fmt.Errorf("%s %s: %w", command, metadata.LSFJobID, schedulerCommandHint(command, output, err))
 	}
 	return nil
 }

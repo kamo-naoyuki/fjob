@@ -118,20 +118,18 @@ var kvKeyPattern = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*=`)
 // colorKeyValueMessage highlights "key=value" fields in a single-line message:
 // keys (and any surrounding label text) use labelColor, while "=" and the
 // value are rendered in white so field separators stand out. A "command="
-// value runs to the end of the line; a "[...]" value runs to its closing
+// value runs to the end of the message; a "[...]" value runs to its closing
 // bracket; other values run to the next space.
 func colorKeyValueMessage(text string, labelColor func(string) string) string {
-	matches := kvKeyPattern.FindAllStringIndex(text, -1)
-	if len(matches) == 0 {
-		return labelColor(text)
-	}
 	var b strings.Builder
 	last := 0
-	for _, m := range matches {
-		keyStart, eqEnd := m[0], m[1]
-		if keyStart < last {
-			continue
+	for {
+		m := kvKeyPattern.FindStringIndex(text[last:])
+		if m == nil {
+			b.WriteString(labelColor(text[last:]))
+			break
 		}
+		keyStart, eqEnd := last+m[0], last+m[1]
 		key := text[keyStart : eqEnd-1]
 		b.WriteString(labelColor(text[last:keyStart]))
 		b.WriteString(labelColor(key))
@@ -141,11 +139,7 @@ func colorKeyValueMessage(text string, labelColor func(string) string) string {
 		var valEnd int
 		switch {
 		case key == "command":
-			if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
-				valEnd = valStart + nl
-			} else {
-				valEnd = len(text)
-			}
+			valEnd = len(text)
 		case strings.HasPrefix(rest, "["):
 			if end := strings.IndexByte(rest, ']'); end >= 0 {
 				valEnd = valStart + end + 1
@@ -165,6 +159,5 @@ func colorKeyValueMessage(text string, labelColor func(string) string) string {
 			break
 		}
 	}
-	b.WriteString(labelColor(text[last:]))
 	return b.String()
 }

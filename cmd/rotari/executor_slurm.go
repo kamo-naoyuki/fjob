@@ -76,8 +76,8 @@ func (slurmExecutor) Cancel(jobDir string) error {
 	if err := json.Unmarshal(data, &metadata); err != nil {
 		return fmt.Errorf("invalid Slurm metadata: %w", err)
 	}
-	if _, err := runSlurmCommand("scancel", metadata.SlurmJobID); err != nil {
-		return fmt.Errorf("scancel %s: %w", metadata.SlurmJobID, err)
+	if output, err := runSlurmCommand("scancel", metadata.SlurmJobID); err != nil {
+		return fmt.Errorf("scancel %s: %w", metadata.SlurmJobID, schedulerCommandHint("scancel", output, err))
 	}
 	return nil
 }
@@ -91,8 +91,8 @@ func (slurmExecutor) scontrol(jobDir, command string) error {
 	if err := json.Unmarshal(data, &metadata); err != nil {
 		return fmt.Errorf("invalid Slurm metadata: %w", err)
 	}
-	if _, err := runSlurmCommand("scontrol", command, metadata.SlurmJobID); err != nil {
-		return fmt.Errorf("scontrol %s %s: %w", command, metadata.SlurmJobID, err)
+	if output, err := runSlurmCommand("scontrol", command, metadata.SlurmJobID); err != nil {
+		return fmt.Errorf("scontrol %s %s: %w", command, metadata.SlurmJobID, schedulerCommandHint("scontrol", output, err))
 	}
 	return nil
 }

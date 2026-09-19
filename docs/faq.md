@@ -4,7 +4,7 @@ Answers to specific "what happens if...?" questions about rotari's behavior.
 For feature walkthroughs, see [README.md](../README.md); for the underlying
 contracts, see [internals.md](internals.md).
 
-## Projects, queues, and runs
+## Projects, queues, runs, and registry
 
 **What's the difference between a project, a queue, and a run?**
 A project is a named container (`--project-name`) that holds one current
@@ -33,7 +33,7 @@ untouched; inspect their run data and repair or remove them manually. Review
 the result, then run `rotari gc --apply`; it removes only unchanged candidates
 and skips any run directory that has reappeared.
 
-## Retry, copy, and array jobs
+## Retries, copying, arrays, and dependencies
 
 **Can an array run only selected task IDs?**
 Yes. Use `--array 1,3,4` for a sparse task list (ranges such as `1-10` are
@@ -98,6 +98,8 @@ run has really stopped, then run `rotari unlock --run-id RUN_ID` explicitly;
 running it while the job might still be alive can let a second run start
 against the same queue.
 
+## Client control and job cancellation
+
 **Is it safe to Ctrl-C a synchronous `rotari run`?**
 Yes, but the terminal returns immediately, before jobs actually stop. Ctrl-C
 prints "Cancellation requested..." and exits with code 130 right away — it
@@ -144,6 +146,55 @@ job's cluster ID instead of signaling a local process. In every case rotari
 only asks the job to stop (`SIGTERM` or the scheduler equivalent); it never
 escalates to `SIGKILL` for you, so a job that ignores the signal keeps
 running until it exits on its own or you intervene manually.
+
+**I ran the runner on one host and `rotari web`/CLI on another over a shared
+base directory — why do `cancel`/`suspend`/`resume` say the job isn't
+running even though it clearly is?**
+For a `local`-executor job, those commands signal the job by PID, and a PID
+is only meaningful on the host that actually spawned the process. Run the
+command from the same host as the runner instead. rotari detects this
+mismatch by comparing the current host against the run's recorded hostname
+and reports which host the job actually runs on, rather than a bare "not
+running".
+
+**What about plain `rotari cancel` with no `--job-id`, cancelling the whole
+run at once — does that have the same cross-host problem?**
+Yes, and it used to be worse: without a specific job, cancel signals the
+runner's whole process group by the PID recorded in `running.lock`. From the
+wrong host that PID doesn't exist, and the old code treated "no such
+process" as "already stopped" and reported success — silently doing nothing
+while the real runner, on another host, kept going. rotari now checks the
+lock's recorded host first and errors instead of guessing, the same way
+per-job `cancel`/`suspend`/`resume` do.
+
+**Same setup, but the job runs through Slurm/PBS/LSF instead of `local` —
+why do I still get an error from `rotari web`/CLI on another host?**
+Unlike `local`, these executors don't use PID signaling, so there's no host
+mismatch check for them. But `cancel`/`suspend`/`resume` still shell out to
+that scheduler's own client command (`scancel`/`scontrol`, `qdel`/`qsig`,
+`bkill`/`bstop`/`bresume`), which must be installed and configured on
+whichever host runs it. A web/CLI host outside the cluster that only shares
+the state directory over NFS typically doesn't have those binaries, so the
+command fails with a "command not found" error naming the missing binary
+instead of a scheduler response. Run `rotari web`/CLI from a host that has
+that scheduler's client tools installed (e.g. a login node), or use `ssh` as
+the executor, whose control commands only need local SSH access to the
+remote host.
+
+**The run/job status column says "running", but for a Slurm/PBS/LSF job
+that can also mean it's actually still queued (`PENDING`) in the scheduler,
+not executing yet — what happens if I `suspend`/`cancel` it then?**
+rotari's own "running" here only means "submitted and not yet finished", not
+"currently executing on a compute node" — it doesn't poll the scheduler
+before every UI render. `cancel` works either way (`scancel`/`qdel`/`bkill`
+also dequeue a still-pending job). `suspend`, however, is rejected by the
+scheduler itself for a job that hasn't started running yet; rotari surfaces
+that scheduler's own explanation (e.g. Slurm's `slurm_suspend error: Job is
+not running`) instead of a bare "exit status 1", so the error tells you the
+job is pending rather than actually running. `resume` on a job that was
+never suspended is normally a harmless no-op for the same reason.
+
+## Python interface
 
 **Is there a Python API?**
 Yes. The optional `python/` package is a thin subprocess wrapper around the

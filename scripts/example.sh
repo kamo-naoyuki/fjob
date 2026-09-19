@@ -19,10 +19,10 @@ rm -f "${ROTARI_BASEDIR}/example-array-task-1-marker" "${ROTARI_BASEDIR}/example
 
 # Mix local and Slurm jobs in one queue. Executor options are attached per job.
 # The two jobs after prepare can run in parallel with each other.
-rotari add --job-name prepare --executor local sh -c 'sleep 1; echo preparation job'
+rotari add --job-name prepare --executor local sh -c 'sleep 200; echo preparation job'
 rotari add --job-name slurm-job --depends-on prepare \
     --executor slurm --array 1-2 --executor-option "--cpus-per-task=2" \
-    sh -c 'sleep 2; echo "Slurm array task ${ROTARI_ARRAY_TASK_ID}"
+    sh -c 'sleep 200; echo "Slurm array task ${ROTARI_ARRAY_TASK_ID}"
 marker="${ROTARI_BASEDIR}/example-array-task-1-marker"
 if [ "${ROTARI_ARRAY_TASK_ID}" = "1" ] && [ ! -f "${marker}" ]; then touch "${marker}"; exit 1; fi'
 rotari add --job-name failing-job --depends-on prepare \

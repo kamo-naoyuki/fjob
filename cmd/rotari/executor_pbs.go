@@ -65,8 +65,8 @@ func (pbsExecutor) qsig(jobDir, signal string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := runPBSCommand("qsig", "-s", signal, metadata.PBSJobID); err != nil {
-		return fmt.Errorf("qsig -s %s %s: %w", signal, metadata.PBSJobID, err)
+	if output, err := runPBSCommand("qsig", "-s", signal, metadata.PBSJobID); err != nil {
+		return fmt.Errorf("qsig -s %s %s: %w", signal, metadata.PBSJobID, schedulerCommandHint("qsig", output, err))
 	}
 	return nil
 }
@@ -76,8 +76,8 @@ func (pbsExecutor) Cancel(jobDir string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := runPBSCommand("qdel", metadata.PBSJobID); err != nil {
-		return fmt.Errorf("qdel %s: %w", metadata.PBSJobID, err)
+	if output, err := runPBSCommand("qdel", metadata.PBSJobID); err != nil {
+		return fmt.Errorf("qdel %s: %w", metadata.PBSJobID, schedulerCommandHint("qdel", output, err))
 	}
 	return nil
 }

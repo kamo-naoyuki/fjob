@@ -82,12 +82,12 @@ func TestCmdDeleteRejectsUnsafeProjectAndRunIDsAtCLI(t *testing.T) {
 		{"--basedir", baseDir, "--project-name", "demo", "--run-id", "../outside"},
 		{"--basedir", baseDir, "--project-name", "demo", "--run-id", "nested/run-1"},
 	} {
-		if code := cmdDelete(args); code == 0 {
+		if cmdDelete(args) == 0 {
 			t.Fatalf("cmdDelete accepted unsafe CLI input: %v", args)
 		}
 	}
 
-	if code := cmdAdd([]string{"--basedir", baseDir, "--project-name", "../outside", "echo", "ok"}); code == 0 {
+	if cmdAdd([]string{"--basedir", baseDir, "--project-name", "../outside", "echo", "ok"}) == 0 {
 		t.Fatal("cmdAdd accepted unsafe project name through CLI")
 	}
 }

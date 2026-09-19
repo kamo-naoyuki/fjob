@@ -336,6 +336,31 @@ func TestLoadWebJobsIncludesSchedulerState(t *testing.T) {
 	}
 }
 
+func TestLoadWebJobsIncludesFinishedLocalJobBeforeRunSummary(t *testing.T) {
+	runDir := filepath.Join(t.TempDir(), "run-1")
+	jobDir := filepath.Join(runDir, "job-1")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(runDir, "commands.json"), Queue{Commands: []QueuedCommand{{ID: "job-1", Command: []string{"sh", "-c", "exit 0"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "status"), []byte("0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "finished_at"), []byte("2026-09-19T00:00:01Z\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	jobs, err := loadWebJobs(runDir, RunSummary{RunID: "run-1", Status: "running"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Result == nil || jobs[0].Result.ExitCode != 0 {
+		t.Fatalf("jobs = %#v, want finished local result", jobs)
+	}
+}
+
 func TestLoadWebJobsProjectsFinishedSchedulerStatus(t *testing.T) {
 	runDir := t.TempDir()
 	queue := Queue{Commands: []QueuedCommand{{ID: "array-1", Command: []string{"true"}, Executor: "slurm"}}}

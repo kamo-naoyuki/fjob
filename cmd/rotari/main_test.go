@@ -2393,6 +2393,64 @@ func TestControlQueueJobsSuspendsAndResumesSelectedLocalJob(t *testing.T) {
 	waitForFileSize(t, outputPath, suspendedSize+1)
 }
 
+func TestControlQueueJobsReportsHostMismatchForLocalJob(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(paths.runsDir, "run-1")
+	jobDir := filepath.Join(runDir, "job-1")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.lockFile, LockInfo{PID: os.Getpid(), RunID: "run-1", StartedAt: nowRFC3339()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(runDir, "context.json"), RunContext{Hostname: "other-host"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "pid"), fmt.Appendf(nil, "%d\n", os.Getpid()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = controlQueueJobs(baseDir, "default", []string{"job-1"}, "suspend")
+	if err == nil {
+		t.Fatal("suspend across hosts unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "other-host") {
+		t.Fatalf("error = %q, want it to mention the recorded host", err)
+	}
+	if _, err := cancelJobs(runDir, "default", "run-1", []string{"job-1"}); err == nil {
+		t.Fatal("cancel across hosts unexpectedly succeeded")
+	} else if !strings.Contains(err.Error(), "other-host") {
+		t.Fatalf("error = %q, want it to mention the recorded host", err)
+	}
+}
+
+func TestCancelQueueRejectsWholeRunFromWrongHost(t *testing.T) {
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A PID that isn't this test process's own, recorded as owned by
+	// another host: the pre-fix code would signal -pid locally, get ESRCH,
+	// swallow it, and report success without cancelling anything remote.
+	if err := writeJSON(paths.lockFile, LockInfo{PID: os.Getpid() + 1, RunID: "run-1", StartedAt: nowRFC3339(), Host: "other-host"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(paths.runsDir, "run-1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err = cancelQueue(baseDir, "default", false)
+	if err == nil {
+		t.Fatal("cancel of a whole run on another host unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "other-host") {
+		t.Fatalf("error = %q, want it to mention the recorded host", err)
+	}
+}
+
 func waitForFileSize(t *testing.T, path string, want int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

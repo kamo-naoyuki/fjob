@@ -483,6 +483,70 @@ func TestEnsureServerReusesCompatibleServer(t *testing.T) {
 	}
 }
 
+// TestCmdCancelRejectsWholeRunFromWrongHostViaCLI exercises the actual CLI
+// entry point (cmdCancel -> ensureServer -> sendServerRequest -> server.handle)
+// rather than calling cancelQueueJobs directly, so the host-mismatch guard is
+// verified on the same code path a real `rotari cancel` invocation uses.
+func TestCmdCancelRejectsWholeRunFromWrongHostViaCLI(t *testing.T) {
+	baseDir, err := os.MkdirTemp("", "rotari-cli-host-mismatch-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(baseDir) })
+
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A PID that isn't this test process's own, recorded as owned by
+	// another host, mirrors a runner that is genuinely still active
+	// elsewhere over a shared base directory.
+	if err := writeJSON(paths.lockFile, LockInfo{PID: os.Getpid() + 1, RunID: "run-1", StartedAt: nowRFC3339(), Host: "other-host"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(paths.runsDir, "run-1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	listener, err := net.Listen("unix", serverSocketPath(baseDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	server := &rotariServer{listener: listener, stopped: make(chan struct{}), lastAccess: time.Now()}
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go server.handle(baseDir, conn)
+		}
+	}()
+
+	oldStderr := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = writer
+	code := cmdCancel([]string{"--basedir", baseDir, "--project-name", "default"})
+	os.Stderr = oldStderr
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 1 {
+		t.Fatalf("cmdCancel exit = %d, want 1; stderr=%s", code, output)
+	}
+	if !strings.Contains(string(output), "other-host") {
+		t.Fatalf("stderr = %q, want it to mention the recorded host", output)
+	}
+}
+
 func TestCmdServerStatusReportsRunningServer(t *testing.T) {
 	baseDir, err := os.MkdirTemp("", "rotari-status-server-")
 	if err != nil {

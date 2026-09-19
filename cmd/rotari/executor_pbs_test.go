@@ -189,6 +189,21 @@ func TestPBSExecutorSuspendsAndResumesJob(t *testing.T) {
 	}
 }
 
+func TestPBSReportsMissingSchedulerBinaries(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	jobDir := t.TempDir()
+	if err := writeJSON(filepath.Join(jobDir, "job.json"), pbsJobMetadata{Executor: "pbs", PBSJobID: "123.headnode"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := (pbsExecutor{}).Suspend(jobDir); err == nil || !strings.Contains(err.Error(), "not installed on this host") {
+		t.Fatalf("Suspend error = %v, want a hint that qsig is missing on this host", err)
+	}
+	if err := (pbsExecutor{}).Cancel(jobDir); err == nil || !strings.Contains(err.Error(), "not installed on this host") {
+		t.Fatalf("Cancel error = %v, want a hint that qdel is missing on this host", err)
+	}
+}
+
 func TestWaitPBSJobUsesWrapperStatus(t *testing.T) {
 	runDir := t.TempDir()
 	job := pbsJobMetadata{Executor: "pbs", JobID: "job-1", Command: []string{"echo", "hi"}, PBSJobID: "123.headnode"}

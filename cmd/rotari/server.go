@@ -946,6 +946,9 @@ func controlQueueJobs(baseDir, queueName string, jobIDs []string, operation stri
 			}
 			return "", fmt.Errorf("job %q is not running", jobID)
 		}
+		if host, mismatch := localExecutorHostMismatch(executor, runDir); mismatch {
+			return "", fmt.Errorf("job %q runs on host %q; run %s from that host", jobID, host, operation)
+		}
 		suspender, ok := executor.(Suspender)
 		if !ok {
 			return "", fmt.Errorf("executor %q does not support %s", executor.Name(), operation)
@@ -957,6 +960,11 @@ func controlQueueJobs(baseDir, queueName string, jobIDs []string, operation stri
 		}
 		if err != nil {
 			return "", fmt.Errorf("%s job %s: %w", operation, jobID, err)
+		}
+		if operation == "resume" {
+			writeSchedulerStatus(jobDir, "running")
+		} else {
+			writeSchedulerStatus(jobDir, "suspended")
 		}
 		controlled++
 	}
@@ -1026,6 +1034,9 @@ func cancelQueueJobs(baseDir, queueName string, jobIDs []string, wait bool) (str
 		}
 		return finishCancelMessage(message, paths, queueName, lock.RunID, wait)
 	}
+	if host, mismatch := runningWorkerHostMismatch(lock); mismatch {
+		return "", fmt.Errorf("run %q is owned by host %q; run cancel from that host", lock.RunID, host)
+	}
 	if err := syscall.Kill(-lock.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return "", fmt.Errorf("cancel local worker: %w", err)
 	}
@@ -1054,6 +1065,9 @@ func cancelJobs(runDir, queueName, runID string, jobIDs []string) (string, error
 		}
 		jobDir := filepath.Join(runDir, jobID)
 		if executor, err := jobOwnerExecutor(jobDir); err == nil {
+			if host, mismatch := localExecutorHostMismatch(executor, runDir); mismatch {
+				return "", fmt.Errorf("job %q runs on host %q; run cancel from that host", jobID, host)
+			}
 			canceller, ok := executor.(Canceller)
 			if !ok {
 				return "", fmt.Errorf("executor %q does not support cancel", executor.Name())

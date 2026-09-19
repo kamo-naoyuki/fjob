@@ -106,6 +106,11 @@ type webCancelRequest struct {
 	JobID     string `json:"job_id"`
 }
 
+type webJobControlRequest struct {
+	QueueName string `json:"project_name"`
+	JobID     string `json:"job_id"`
+}
+
 type webCancelRunRequest struct {
 	QueueName string `json:"project_name"`
 	RunID     string `json:"run_id"`
@@ -150,7 +155,7 @@ func cmdWeb(args []string) int {
 	if !isLoopbackWebHost(*host) {
 		controlWarning := "job logs and environment variable names"
 		if *allowControl {
-			controlWarning = "job logs, environment variable names, and job control (cancel/change/remove/copy) operations"
+			controlWarning = "job logs, environment variable names, and job control (cancel/suspend/resume/change/remove/copy) operations"
 		}
 		printErrorf("WARNING: --host %s exposes %s over unauthenticated HTTP.", *host, controlWarning)
 	}
@@ -421,6 +426,56 @@ func newWebHandler(baseDir, queueFilter string, allowControl bool) http.Handler 
 			return
 		}
 		message, err := cancelQueueJobs(baseDir, cancel.QueueName, []string{cancel.JobID}, false)
+		if err != nil {
+			writeWebError(writer, err)
+			return
+		}
+		writeWebJSON(writer, map[string]string{"message": message})
+	})
+	mux.HandleFunc("/api/suspend-job", func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			methodNotAllowed(writer)
+			return
+		}
+		if !allowControl {
+			forbiddenReadOnly(writer)
+			return
+		}
+		var control webJobControlRequest
+		if err := json.NewDecoder(request.Body).Decode(&control); err != nil {
+			writeWebError(writer, err)
+			return
+		}
+		if !validWebID(control.QueueName) || !validWebID(control.JobID) {
+			writeWebError(writer, fmt.Errorf("project_name and job_id are required"))
+			return
+		}
+		message, err := controlQueueJobs(baseDir, control.QueueName, []string{control.JobID}, "suspend")
+		if err != nil {
+			writeWebError(writer, err)
+			return
+		}
+		writeWebJSON(writer, map[string]string{"message": message})
+	})
+	mux.HandleFunc("/api/resume-job", func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			methodNotAllowed(writer)
+			return
+		}
+		if !allowControl {
+			forbiddenReadOnly(writer)
+			return
+		}
+		var control webJobControlRequest
+		if err := json.NewDecoder(request.Body).Decode(&control); err != nil {
+			writeWebError(writer, err)
+			return
+		}
+		if !validWebID(control.QueueName) || !validWebID(control.JobID) {
+			writeWebError(writer, fmt.Errorf("project_name and job_id are required"))
+			return
+		}
+		message, err := controlQueueJobs(baseDir, control.QueueName, []string{control.JobID}, "resume")
 		if err != nil {
 			writeWebError(writer, err)
 			return
@@ -711,6 +766,8 @@ func loadWebJobs(runDir string, summary RunSummary) ([]webJob, error) {
 			if job.FinishedAt == "" {
 				job.FinishedAt = status.FinishedAt
 			}
+		} else if result, ok := loadLocalJobResult(filepath.Join(runDir, jobSpec.ID), jobSpec); ok {
+			job.Result = &result
 		} else if exitCode, ok := loadTerminalSchedulerState(filepath.Join(runDir, jobSpec.ID)); ok {
 			job.Result = &JobResult{ID: jobSpec.ID, Command: jobSpec.Command, ExitCode: exitCode}
 		}
@@ -725,6 +782,21 @@ func loadWebJobs(runDir string, summary RunSummary) ([]webJob, error) {
 		webJobs = append(webJobs, webJob{ID: result.ID, Command: result.Command, Result: &resultCopy, SubmittedAt: readJobTimestamp(runDir, result.ID, "submitted_at"), FinishedAt: readJobTimestamp(runDir, result.ID, "finished_at")})
 	}
 	return webJobs, nil
+}
+
+func loadLocalJobResult(jobDir string, job JobSpec) (JobResult, bool) {
+	if _, err := os.Stat(filepath.Join(jobDir, "finished_at")); err != nil {
+		return JobResult{}, false
+	}
+	data, err := os.ReadFile(filepath.Join(jobDir, "status"))
+	if err != nil {
+		return JobResult{}, false
+	}
+	exitCode, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return JobResult{}, false
+	}
+	return JobResult{ID: job.ID, Command: job.Command, ExitCode: exitCode}, true
 }
 
 func webJobTimestamps(runDir, jobID string, origin *JobOrigin) (string, string) {
@@ -1074,8 +1146,9 @@ function markLatestRun(){const parts=location.pathname.split('/').filter(Boolean
 function addQueueOverviewPathActions(){if(location.pathname!=='/'&&location.pathname!=='')return;const table=document.querySelector('.queue-overview');if(!table)return;const header=document.createElement('th');header.textContent='Actions';table.querySelector('thead tr').append(header);const queues=state.queues||[];table.querySelectorAll('tbody tr').forEach((row,index)=>{const queue=queues[index];const cell=document.createElement('td');if(queue)addPathButton(cell,state.base_dir+'/queues/'+queue.queue_name);row.append(cell)})}
 function jobDisplayStatus(job,run){const result=job.result;if(!result)return job.scheduler_state||(run.running?'running':'pending');if(result.error==='blocked by failed dependency')return 'blocked';return result.exit_code===0?'success':'failed'}
 function addRunJobStatusColumn(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const table=document.querySelector('#app table.runs');if(!run||!table||table.querySelector('.job-status-header'))return;const header=document.createElement('th');header.className='job-status-header';header.dataset.sort='status';header.textContent='Status';table.querySelector('thead tr').insertBefore(header,table.querySelector('thead tr').children[1]);const rows=table.querySelectorAll('tbody tr');(run.jobs||[]).forEach((job,index)=>{if(!rows[index])return;const status=document.createElement('td');status.textContent=jobDisplayStatus(job,run);rows[index].insertBefore(status,rows[index].children[1])})}
-function addRunningOutputButtons(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const table=document.querySelector('#app table.runs');if(!run||!run.running||!table)return;table.querySelectorAll('tbody tr').forEach((row,index)=>{const cell=row.children[row.children.length-2];if(cell&&cell.textContent.trim()==='-'){const job=run.jobs[index];if(job){const button=document.createElement('button');button.textContent='Output';button.onclick=()=>showLog(queue.queue_name,run.run_id,job.id,button);cell.textContent='';cell.append(button)}}})}
-function addRunningCancelButtons(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const table=document.querySelector('#app table.runs');if(!run||!run.running||!table)return;table.querySelectorAll('tbody tr').forEach((row,index)=>{const job=run.jobs[index];const actions=row.lastElementChild;if(!job||!actions||actions.querySelector('.cancel-job'))return;const button=document.createElement('button');button.className='cancel-job';button.textContent='Cancel';button.onclick=()=>cancelJob(queue.queue_name,job.id,job.name||job.id);actions.append(' ',button)})}
+function addRunningOutputButtons(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const table=document.querySelector('#app table.runs');if(!run||!table)return;table.querySelectorAll('tbody tr').forEach((row,index)=>{const cell=row.children[row.children.length-2];if(cell&&cell.textContent.trim()==='-'){const job=run.jobs[index];if(job){const started=!!job.submitted_at||!!job.result||run.running;const button=document.createElement('button');button.textContent='View log';button.disabled=!started;button.title=started?'':'Job has not started yet';button.onclick=()=>showLog(queue.queue_name,run.run_id,job.id,button);cell.textContent='';cell.append(button)}}})}
+function addRunningCancelButtons(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const queue=state.queues.find(q=>q.queue_name===decodeURIComponent(parts[1]));const run=queue&&queue.runs.find(item=>item.run_id===decodeURIComponent(parts[3]));const table=document.querySelector('#app table.runs');if(!run||!table)return;table.querySelectorAll('tbody tr').forEach((row,index)=>{const job=run.jobs[index];const actions=row.lastElementChild;if(!job||!actions||actions.querySelector('.cancel-job'))return;const status=jobDisplayStatus(job,run);const suspended=status==='suspended';const controllable=status==='running'||suspended;const cancelButton=document.createElement('button');cancelButton.className='cancel-job';cancelButton.textContent='Cancel';cancelButton.disabled=!controllable;cancelButton.title=controllable?'':'Job is not running';cancelButton.onclick=()=>cancelJob(queue.queue_name,job.id,job.name||job.id);const suspendButton=document.createElement('button');suspendButton.className=suspended?'suspend-job dirty':'suspend-job';suspendButton.textContent=suspended?'Resume':'Suspend';suspendButton.disabled=!controllable;suspendButton.title=controllable?'':'Job is not running';suspendButton.onclick=()=>suspendOrResumeJob(queue.queue_name,job.id,job.name||job.id,suspended);actions.append(' ',cancelButton,' ',suspendButton)})}
+async function suspendOrResumeJob(queue,jobID,label,resume){const endpoint=resume?'/api/resume-job':'/api/suspend-job';const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_name:queue,job_id:jobID})});const text=await response.text();if(!response.ok){alert(text);return}await refresh()}
 async function cancelJob(queue,jobID,label){if(!confirm('Cancel '+label+'?'))return;const response=await fetch('/api/cancel-job',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_name:queue,job_id:jobID})});const text=await response.text();if(!response.ok){alert(text);return}await refresh()}
 function mergeActionColumns(){document.querySelectorAll('#app table.runs').forEach(table=>{const headerRow=table.querySelector('thead tr');const bodyRows=table.querySelectorAll('tbody tr');if(!headerRow||!bodyRows.length)return;const headers=headerRow.children;if(headers.length<2||headers[headers.length-1].textContent.trim()!=='Actions')return;const actionIndex=headers.length-1;const outputIndex=actionIndex-1;const outputLabel=headers[outputIndex].textContent.trim();if(outputLabel!=='Output'&&outputLabel!=='Source output')return;headers[outputIndex].remove();bodyRows.forEach(row=>{const outputCell=row.children[outputIndex];const actionCell=row.children[actionIndex];if(outputCell&&actionCell){const nodes=[...outputCell.childNodes,...actionCell.childNodes].filter(node=>node.nodeType!==3||node.textContent.trim());actionCell.textContent='';nodes.forEach(node=>actionCell.append(node));outputCell.remove()}})})}
 function normalizeJobActionHeaders(){const parts=location.pathname.split('/').filter(Boolean);if(parts[0]!=='queue'||parts[2]!=='run')return;const table=document.querySelector('#app table.runs');if(!table)return;const headers=table.querySelectorAll('thead th');if(headers.length>=2)headers[headers.length-2].textContent='Output'}

@@ -173,6 +173,21 @@ func TestLSFExecutorSuspendsAndResumesJob(t *testing.T) {
 	}
 }
 
+func TestLSFReportsMissingSchedulerBinaries(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	jobDir := t.TempDir()
+	if err := writeJSON(filepath.Join(jobDir, "job.json"), lsfJobMetadata{Executor: "lsf", LSFJobID: "123"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := (lsfExecutor{}).Suspend(jobDir); err == nil || !strings.Contains(err.Error(), "not installed on this host") {
+		t.Fatalf("Suspend error = %v, want a hint that bstop is missing on this host", err)
+	}
+	if err := (lsfExecutor{}).Cancel(jobDir); err == nil || !strings.Contains(err.Error(), "not installed on this host") {
+		t.Fatalf("Cancel error = %v, want a hint that bkill is missing on this host", err)
+	}
+}
+
 func TestWaitLSFJobUsesWrapperStatus(t *testing.T) {
 	runDir := t.TempDir()
 	job := lsfJobMetadata{Executor: "lsf", JobID: "job-1", Command: []string{"echo", "hi"}, LSFJobID: "123"}

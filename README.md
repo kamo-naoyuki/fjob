@@ -28,7 +28,7 @@ whether you're on your laptop or logged into a remote compute node.
 
 ## What rotari is not
 
-rotari is a **job execution and experiment iteration coordinator**. It is not:
+Rotari is a **job execution and experiment iteration coordinator**. It is not:
 
 - a DAG workflow engine
 - a distributed scheduler
@@ -130,6 +130,10 @@ raw completion scripts.
 export ROTARI_PROJECT_NAME=build
 # export ROTARI_BASEDIR="$HOME/.local/state/rotari"
 
+# Start this example from a clean queue. This preserves run history but
+# discards any commands currently queued for the project.
+rotari reset
+
 # Queue multiple commands, then run them together.
 rotari add make
 rotari add go test ./...
@@ -217,13 +221,24 @@ active, scheduler jobs show their latest Slurm, PBS, or LSF state, such as
 Stopping the web server does not stop the runner or any jobs.
 
 By default the web UI allows job control: `copy`/`change`/`remove`/`cancel`/
-`clear-run` all work from the UI, with no authentication. Pass
-`--allow-control=false` for a read-only UI that only serves state, logs, and
-the CLI/env docs and rejects the control APIs with `403 Forbidden`.
+`suspend`/`resume`/`clear-run` all work from the UI, with no authentication.
+Pass `--allow-control=false` for a read-only UI that only serves state, logs,
+and the CLI/env docs and rejects the control APIs with `403 Forbidden`.
 The `/api/state` and `/environment/` pages report which environment
 variables are *set*, never their values, so secrets such as API tokens are
 not exposed over HTTP.
-
+> **NOTE:** `cancel`/`suspend`/`resume` on a `local`-executor job signal it by
+> PID, which only works from the host that actually runs it. If `rotari web`
+> (or the CLI) runs on a different host than the runner over a shared base
+> directory, these operations fail with an error naming the job's actual host
+> instead of silently doing nothing; run the command from that host instead.
+> Slurm/PBS/LSF executors avoid this PID limitation, but their control
+> commands (`scontrol`/`qsig`/`bstop`/...) still need that scheduler's client
+> tools installed and configured on whichever host runs them; if a web/CLI
+> host outside the cluster only shares the state directory over NFS, run
+> `rotari web`/CLI from a host that actually has those client tools (e.g. a
+> login node), or expect a "command not found" error naming the missing
+> binary.
 > **WARNING:** `--host 0.0.0.0` (or any non-loopback address) exposes job
 > commands, logs, and — unless you pass `--allow-control=false` — job-control
 > operations to anyone who can reach that address. There is no
@@ -570,6 +585,13 @@ rotari cancel --project-name build --job-id JOB_ID
 `--job-id` is optional. Without it, all running jobs in the queue are
 cancelled. With it, only the specified running jobs are cancelled, and the
 option may be repeated. `--job-id` cannot be used with `--wait`.
+
+Whole-run cancel (no `--job-id`) and, for `local`-executor jobs, `--job-id`
+cancel/suspend/resume all signal the runner or job by PID, which only means
+something on the host that actually runs it; run these commands from that
+host if it differs from wherever `cancel`/`suspend`/`resume` is invoked. See
+the [FAQ](docs/faq.md#client-control-and-job-cancellation) for what happens
+when you can't.
 
 Temporarily suspend and resume running jobs:
 

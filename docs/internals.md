@@ -8,10 +8,9 @@ replace obsolete rules rather than accumulating history.
 ## System model
 
 Rotari is file-backed. A base directory contains projects; each project owns
-one mutable queue and immutable run history. A run snapshots the queue and
-stores execution state, results, and logs by stable job ID. The server
-coordinates execution but is not the source of truth. CLI, server, executors,
-and web UI must share the same persisted semantics.
+one mutable queue and a run history. A run snapshots the queue and stores
+execution state, results, and logs by stable job ID. CLI, server, executors,
+and web UI project the same persisted state model.
 
 The normal state layout is:
 
@@ -35,6 +34,29 @@ The normal state layout is:
 Files may appear incrementally while a run is active. Readers must tolerate
 missing optional or not-yet-written run files without inventing completed
 results.
+
+## Core design contracts
+
+The following rules govern the current CLI, server, web, and executor design.
+An intentional change to one is an architectural change: update this document,
+the user-facing documentation, and the affected tests together.
+
+1. A completed run is historical and immutable. Its persisted snapshot,
+    results, and logs are not rewritten; it remains available until explicitly
+    deleted.
+2. Every retry creates a new run. It may use a prior run as its reference, but
+    never modifies that source run.
+3. Carry-forward writes reused results only into the destination run and never
+    changes the source run.
+4. Carried-forward jobs retain an origin that identifies the source run and
+    job (per task for arrays), so their output remains traceable across runs.
+5. The filesystem is the source of truth. Registries and in-memory state are
+    indexes or coordination aids and must be recoverable from persisted files.
+6. The server coordinates access and execution; it is not persistent
+    authority for project or run state.
+7. Executors implement job execution and scheduler integration, not run
+    semantics. Run planning, dependency handling, carry-forward, and summary
+    finalization belong to rotari's shared execution path.
 
 ## Resolution rules
 
@@ -169,7 +191,7 @@ features (e.g. Slurm's `--dependency`). This keeps dependency semantics
 identical across every executor, including mixes of local and remote ones in
 the same run.
 
-## Execution boundaries
+## Run orchestration and executor responsibilities
 
 `executeMixedRun` (`mixed_run.go`) is the single execution engine for every
 run regardless of executor mix: the synchronous path (`runServerSync` in
@@ -186,7 +208,12 @@ result semantics where supported; scheduler metadata belongs in the job's run
 directory. Polling executors persist their latest normalized scheduler state in
 `scheduler_status.json`; read projections use it without querying schedulers
 directly. Scheduler display names may offer inspection commands but must not be
-the only way to locate state.
+the only way to locate state. `controlQueueJobs` (used by `rotari
+suspend`/`resume` and the `/api/suspend-job`/`/api/resume-job` web routes)
+also writes `scheduler_status.json` itself right after a successful
+`Suspender.Suspend`/`Resume` call, so `suspended`/`running` shows up
+immediately even for executors (like `local`) whose `Wait` loop does not poll
+and update that file on its own.
 
 Task wrappers normalize scheduler-specific task indexes into
 `ROTARI_ARRAY_TASK_ID` and the related `ROTARI_ARRAY_*` variables. Job wrappers
@@ -210,6 +237,8 @@ to mount the run directory. Its native ID is the local SSH process ID, so
 running SSH jobs can only be resumed or cancelled while the supervising rotari
 process remains alive.
 
+## Server and read projections
+
 The server supervises one base directory and may stop when idle, so durable
 behavior belongs in files, not memory. The web UI is a projection of the same
 model, not a separate database. The optional Python interface is also a
@@ -219,6 +248,8 @@ implement queue or execution semantics on its own. `wait --json` emits one
 supplied). `show --json` emits one object with the resolved location, run
 summary when available, and saved commands. These modes are additive; default
 CLI output remains human-facing.
+
+## Shared-state coordination
 
 Shared-base operation across hosts relies on the shared filesystem preserving
 the semantics of exclusive file creation, atomic rename, and advisory `flock`.
@@ -232,6 +263,36 @@ Project state locks and run locks are scoped to each project directory, so
 different projects largely isolate queue and run state even under one shared
 base directory. Base-level server and registry state, along with the shared
 filesystem semantics, remain common dependencies.
+
+`controlQueueJobs` and `cancelJobs` signal `local`-executor jobs by PID, which
+is only meaningful on the host that actually spawned the process.
+`localExecutorHostMismatch` (`job_executor.go`) compares the current host
+against the run's `context.json` `Hostname` before attempting that signal, so
+running the CLI or web UI on a different host than the runner over a shared
+base directory gets an explicit "job runs on host X" error instead of a
+misleading "job is not running" (a false PID-alive check would otherwise
+either fail or, worse, hit an unrelated local process with a reused PID).
+Scheduler executors (Slurm/PBS/LSF) and the SSH executor are exempt: their
+control commands are expected to work from any host with scheduler/SSH
+access. Those scheduler control commands, however, still shell out to that
+scheduler's own CLI (`scontrol`/`qsig`/`bstop`/...), which must actually be
+installed on whichever host runs them; `schedulerCommandHint`
+(`job_executor.go`) rewrites the raw `exec.ErrNotFound` from a missing
+binary into an explicit "not installed on this host" error so it isn't
+mistaken for the job itself not running. The same helper also folds the
+command's captured stdout/stderr into a non-`ErrNotFound` failure, since Go's
+generic "exit status N" otherwise discards the scheduler's own explanation --
+e.g. `scontrol suspend` on a job that is still queued (`PENDING`, not yet
+actually running) is rejected by Slurm itself, and that rejection reason
+would otherwise be lost.
+Whole-run cancel (no `--job-id`) has the analogous PID-locality problem one
+level up: when the caller isn't the process that started the run, it signals
+the runner's process group via the PID recorded in `running.lock`, treating
+`ESRCH` as "already gone". `runningWorkerHostMismatch` (`job_executor.go`)
+checks `LockInfo.Host` first, so cancelling from a different host than the
+runner errors instead of silently reporting success while leaving the real
+runner (on another host) untouched -- the same host-awareness `isRunning`
+already applies before trusting a local PID against `running.lock`.
 Run finalization rechecks that `running.lock` still belongs to the finishing
 run while holding the state lock, so a stale runner cannot clear or finalize a
 newer run after recovery. A new run lock is written completely to a temporary
@@ -255,6 +316,8 @@ the setting for an existing `--basedir` produces a mix of old and new
 permissions on disk. The generated static web export (`generateStaticWeb`)
 is the one intentional, unconditional exception: it is meant to be published
 (e.g. GitHub Pages), so its output always keeps `0755`/`0644`.
+
+## Web and control-plane security
 
 `web` binds `--host`/`--port` (default `127.0.0.1:8787`) via `listenWeb`. When
 `--port` is left at its default, a busy port falls back to scanning upward
@@ -284,7 +347,8 @@ is only owner-only when `ROTARI_PRIVATE_STATE=true`).
 
 The web/API surface has no authentication, so `newWebHandler`'s mutating
 routes (`/api/copy`, `/api/change`, `/api/remove`, `/api/clear-run`,
-`/api/cancel-job`, `/api/cancel-run`) are gated behind an `allowControl bool`
+`/api/cancel-job`, `/api/cancel-run`, `/api/suspend-job`, `/api/resume-job`)
+are gated behind an `allowControl bool`
 parameter, `true` by default (`--allow-control`, env
 `ROTARI_WEB_ALLOW_CONTROL`); pass `--allow-control=false` to reject them with
 `403` via `forbiddenReadOnly` before touching request bodies. `GET` routes
@@ -295,6 +359,8 @@ the live server and `generateStaticWeb`) only ever populates `Set` from
 secrets) never cross the HTTP boundary — `environmentHTML` renders `Set` as
 "set"/"-", not the raw value. `Value` remains populated only for the local
 `rotari env` CLI command, which reads `os.LookupEnv` directly.
+
+## Client connection lifecycle
 
 A synchronous client disconnect, including Ctrl-C, requests cancellation and
 returns to the caller immediately (exit code 130); the server-side run keeps
@@ -312,6 +378,8 @@ A completed run, sync or async, decrements the active-run count immediately
 via `beginRun`/`endRun`; reaching zero stops the server right away rather than
 waiting for the idle timeout, so tests and callers must not assume the server
 stays up after a run finishes.
+
+## CLI presentation
 
 CLI terminal colors are semantic presentation, not part of the machine-readable
 output contract. Colors are emitted only when the relevant output stream is a

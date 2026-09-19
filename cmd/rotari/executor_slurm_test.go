@@ -363,6 +363,89 @@ func TestControlQueueJobsControlsSelectedSlurmJob(t *testing.T) {
 	}
 }
 
+func TestControlQueueJobsReportsMissingScontrolBinary(t *testing.T) {
+	emptyBinDir := t.TempDir()
+	t.Setenv("PATH", emptyBinDir)
+
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.lockFile, LockInfo{PID: os.Getpid(), RunID: "run-1", StartedAt: nowRFC3339()}); err != nil {
+		t.Fatal(err)
+	}
+	jobDir := filepath.Join(paths.runsDir, "run-1", "job-1")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(jobDir, "job.json"), slurmJobMetadata{Executor: "slurm", JobID: "job-1", SlurmJobID: "12345"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = controlQueueJobs(baseDir, "default", []string{"job-1"}, "suspend")
+	if err == nil {
+		t.Fatal("suspend without scontrol on PATH unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "not installed on this host") {
+		t.Fatalf("error = %q, want a hint that scontrol is missing on this host", err)
+	}
+}
+
+func TestControlQueueJobsSurfacesScontrolRejectionForPendingJob(t *testing.T) {
+	binDir := t.TempDir()
+	// A Slurm job that is still queued (PENDING), not yet running, rejects
+	// scontrol suspend with a message on stderr; that explanation must reach
+	// the caller instead of a bare "exit status 1".
+	writeExecutable(t, binDir, "scontrol", "#!/bin/sh\necho 'slurm_suspend error: Job is not running' >&2\nexit 1\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	baseDir := t.TempDir()
+	paths, err := resolvePaths(baseDir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(paths.lockFile, LockInfo{PID: os.Getpid(), RunID: "run-1", StartedAt: nowRFC3339()}); err != nil {
+		t.Fatal(err)
+	}
+	jobDir := filepath.Join(paths.runsDir, "run-1", "job-1")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(jobDir, "job.json"), slurmJobMetadata{Executor: "slurm", JobID: "job-1", SlurmJobID: "12345"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = controlQueueJobs(baseDir, "default", []string{"job-1"}, "suspend")
+	if err == nil {
+		t.Fatal("suspend of a pending job unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "slurm_suspend error: Job is not running") {
+		t.Fatalf("error = %q, want it to include scontrol's own explanation", err)
+	}
+}
+
+func TestCancelJobsReportsMissingScancelBinary(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	runDir := t.TempDir()
+	jobDir := filepath.Join(runDir, "job-1")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(jobDir, "job.json"), slurmJobMetadata{Executor: "slurm", JobID: "job-1", SlurmJobID: "12345"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := cancelJobs(runDir, "default", "run-1", []string{"job-1"})
+	if err == nil {
+		t.Fatal("cancel without scancel on PATH unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "not installed on this host") {
+		t.Fatalf("error = %q, want a hint that scancel is missing on this host", err)
+	}
+}
+
 func TestWaitSlurmJobUsesWrapperStatus(t *testing.T) {
 	runDir := t.TempDir()
 	job := slurmJobMetadata{Executor: "slurm", JobID: "job-1", Command: []string{"echo", "hi"}, SlurmJobID: "12345"}

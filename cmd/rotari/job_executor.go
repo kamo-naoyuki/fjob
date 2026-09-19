@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -89,6 +91,71 @@ func jobOwnerExecutor(jobDir string) (JobExecutor, error) {
 		return executor, nil
 	}
 	return nil, fmt.Errorf("job is not running")
+}
+
+// localExecutorHostMismatch reports the run's recorded hostname when the
+// given job belongs to the "local" executor and this process is running on a
+// different host. The local executor signals jobs by PID, which is only
+// meaningful on the host that actually spawned the process; over a shared
+// base directory, "job is not running" from a failed PID check on the wrong
+// host is misleading, so callers should surface this instead before trying.
+func localExecutorHostMismatch(executor JobExecutor, runDir string) (recordedHost string, mismatch bool) {
+	if executor.Name() != "local" {
+		return "", false
+	}
+	data, err := os.ReadFile(filepath.Join(runDir, "context.json"))
+	if err != nil {
+		return "", false
+	}
+	var context RunContext
+	if json.Unmarshal(data, &context) != nil || context.Hostname == "" {
+		return "", false
+	}
+	host, err := os.Hostname()
+	if err != nil || strings.EqualFold(host, context.Hostname) {
+		return "", false
+	}
+	return context.Hostname, true
+}
+
+// runningWorkerHostMismatch reports the recorded host when a run's
+// running.lock belongs to a different host than this process. Whole-run
+// cancel (no --job-id) signals the runner's process group by the PID stored
+// in that lock; on the wrong host that PID belongs to (at best) nothing, so
+// the signal harmlessly returns ESRCH and callers ignore it -- silently
+// reporting success without actually cancelling anything. This mirrors the
+// host check `isRunning` already applies before trusting a local PID.
+func runningWorkerHostMismatch(lock LockInfo) (recordedHost string, mismatch bool) {
+	if lock.Host == "" {
+		return "", false
+	}
+	host, err := os.Hostname()
+	if err != nil || strings.EqualFold(host, lock.Host) {
+		return "", false
+	}
+	return lock.Host, true
+}
+
+// schedulerCommandHint clarifies two common causes of an opaque scheduler
+// control command failure: the scheduler's client tools (scontrol/qsig/
+// bstop/...) not being installed on this host -- e.g. a web/CLI host outside
+// the cluster that only shares the state directory over NFS, where the raw
+// "executable file not found in $PATH" is easy to mistake for the job itself
+// not running -- and the command running fine but being rejected by the
+// scheduler itself (e.g. suspending a job that is still queued/pending
+// rather than actually running), where Go's generic "exit status 1" hides
+// the scheduler's own explanation unless the command's output is folded in.
+func schedulerCommandHint(binary string, output []byte, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return fmt.Errorf("%q is not installed on this host; run this command from a host with that scheduler's client tools (%w)", binary, err)
+	}
+	if text := strings.TrimSpace(string(output)); text != "" {
+		return fmt.Errorf("%w: %s", err, text)
+	}
+	return err
 }
 
 // executorRegistry is initialized eagerly (rather than in an init func) so
