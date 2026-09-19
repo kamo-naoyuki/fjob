@@ -106,10 +106,21 @@ func TestResolveProjectNameRejectsUnsafeProjectNames(t *testing.T) {
 }
 
 func TestResolvePathsRejectsAbsoluteAndNestedPathVariants(t *testing.T) {
-	for _, projectName := range []string{"/tmp/outside", "///tmp/outside", "nested/../outside", "subdir/.", "subdir/..", "job/with/slash"} {
+	for _, projectName := range []string{"/tmp/outside", "///tmp/outside", "nested/../outside", "subdir/.", "subdir/..", "job/with/slash", "..\\outside", "nested\\project", "C:\\tmp\\outside"} {
 		if _, err := resolvePaths(t.TempDir(), projectName); err == nil {
 			t.Errorf("resolvePaths accepted unsafe project name %q", projectName)
 		}
+	}
+}
+
+func TestValidWebIDRejectsTraversalAndDotSegments(t *testing.T) {
+	for _, value := range []string{"..", ".", "../outside", "nested/project", "nested\\project", "/tmp/outside", "C:\\tmp\\outside"} {
+		if validWebID(value) {
+			t.Fatalf("validWebID accepted unsafe value %q", value)
+		}
+	}
+	if !validWebID("demo") || !validWebID("run-2026") || !validWebID("job-1") {
+		t.Fatal("validWebID rejected a normal identifier")
 	}
 }
 

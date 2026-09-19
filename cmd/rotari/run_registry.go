@@ -135,7 +135,7 @@ func runRegistryDir() (string, error) {
 }
 
 func runLocationPath(dir, runID string) (string, error) {
-	if runID == "" || filepath.Base(runID) != runID {
+	if !isValidPathElement(runID) {
 		return "", fmt.Errorf("invalid run id %q", runID)
 	}
 	return filepath.Join(dir, runID+".json"), nil

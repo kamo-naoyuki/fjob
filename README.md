@@ -6,7 +6,7 @@
 
 ---
 
-[![Go CI](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml/badge.svg)](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml) [![Slurm + PBS CI](https://img.shields.io/github/actions/workflow/status/kamo-naoyuki/rotari/scheduler-integration.yml?branch=main&label=Slurm%20%2B%20PBS%20CI)](https://github.com/kamo-naoyuki/rotari/actions/workflows/scheduler-integration.yml) [![codecov](https://codecov.io/gh/kamo-naoyuki/rotari/graph/badge.svg)](https://codecov.io/gh/kamo-naoyuki/rotari) [![SonarCloud Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=kamo-naoyuki_rotari&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=kamo-naoyuki_rotari) [![web demo](https://img.shields.io/website?url=https%3A%2F%2Fkamo-naoyuki.github.io%2Frotari%2F&label=web%20demo&style=flat)](https://kamo-naoyuki.github.io/rotari/)
+[![Go CI](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml/badge.svg)](https://github.com/kamo-naoyuki/rotari/actions/workflows/ci.yml) [![Slurm + PBS CI](https://img.shields.io/github/actions/workflow/status/kamo-naoyuki/rotari/scheduler-integration.yml?branch=main&label=Slurm%20%2B%20PBS%20CI)](https://github.com/kamo-naoyuki/rotari/actions/workflows/scheduler-integration.yml) [![codecov](https://codecov.io/gh/kamo-naoyuki/rotari/graph/badge.svg)](https://codecov.io/gh/kamo-naoyuki/rotari) [![SonarCloud Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=kamo-naoyuki_rotari&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=kamo-naoyuki_rotari) [![web demo](https://img.shields.io/website?url=https%3A%2F%2Fkamo-naoyuki.github.io%2Frotari%2F&label=web%20demo&style=flat)](https://kamo-naoyuki.github.io/rotari/) [![call graph](https://img.shields.io/badge/architecture-call%20graph-6f42c1)](https://kamo-naoyuki.github.io/rotari/architecture/call-graph.svg) [![GoDoc](https://img.shields.io/badge/docs-GoDoc-00ADD8)](https://kamo-naoyuki.github.io/rotari/architecture/godoc.html)
 
 **Rotari turns trial-and-error into a repeatable loop**: run a batch of jobs, see which failed, fix only their commands, and run it again — without losing the history of what already worked.
 
@@ -32,8 +32,6 @@ Rotari focuses on **managing the iteration of experiments**, rather than executi
 * **[Snakemake](https://github.com/snakemake/snakemake) and [Nextflow](https://github.com/nextflow-io/nextflow)** focus on defining dependencies between tasks and data to build reproducible workflows. Rotari focuses on successive runs of an experiment without requiring the workflow to be defined up front.
 * **[Slurm](https://github.com/SchedMD/slurm), [PBS](https://github.com/openpbs/openpbs), and LSF** focus on scheduling and executing jobs on a cluster. Rotari adds an experiment-oriented layer for tracking, inspecting, retrying, and modifying runs.
 * **Shell scripts** are flexible and easy to start with, but repeated executions and their history are usually managed manually. Rotari makes that iteration history explicit.
-
-These tools can also be used together. A Rotari run can execute a shell script, a Snakemake workflow, a Python program using Dask, or a job submitted to Slurm.
 
 If you've used [Kaldi](https://github.com/kaldi-asr/kaldi)'s or [ESPnet](https://github.com/espnet/espnet)'s `run.pl`/`queue.pl`, the model should feel familiar: commands are dispatched locally or to a cluster, with logs and success/failure tracked consistently across backends. Rotari extends this idea with persistent run history and experiment-oriented iteration.
 
@@ -181,6 +179,15 @@ Frequently used options have short forms:
 | `--job-id` | `-j` |
 | `--executor` | `-e` |
 
+## Example
+
+Build and run the included example:
+
+```sh
+go build -o rotari ./cmd/rotari
+./scripts/example.sh
+```
+
 ## FAQ
 
 See [FAQ](docs/faq.md) for answers to specific "what happens if...?" questions
@@ -190,7 +197,7 @@ about project/run resolution, retries, array jobs, interrupted runs, and locking
 
 See the [web demo](https://kamo-naoyuki.github.io/rotari/) for a read-only UI
 using generated example data.
-The Pages build also publishes the generated [package dependency graph](https://kamo-naoyuki.github.io/rotari/architecture/).
+
 
 Start the local web status UI separately from the job runner:
 
@@ -218,41 +225,12 @@ and the CLI/env docs and rejects the control APIs with `403 Forbidden`.
 The `/api/state` and `/environment/` pages report which environment
 variables are *set*, never their values, so secrets such as API tokens are
 not exposed over HTTP.
-> **NOTE:** `cancel`/`suspend`/`resume` on a `local`-executor job signal it by
-> PID, which only works from the host that actually runs it. If `rotari web`
-> (or the CLI) runs on a different host than the runner over a shared base
-> directory, these operations fail with an error naming the job's actual host
-> instead of silently doing nothing; run the command from that host instead.
-> Slurm/PBS/LSF executors avoid this PID limitation, but their control
-> commands (`scontrol`/`qsig`/`bstop`/...) still need that scheduler's client
-> tools installed and configured on whichever host runs them; if a web/CLI
-> host outside the cluster only shares the state directory over NFS, run
-> `rotari web`/CLI from a host that actually has those client tools (e.g. a
-> login node), or expect a "command not found" error naming the missing
-> binary.
-> **WARNING:** `--host 0.0.0.0` (or any non-loopback address) exposes job
-> commands, logs, and — unless you pass `--allow-control=false` — job-control
-> operations to anyone who can reach that address. There is no
-> authentication or encryption. Only bind to a non-loopback host on a
-> trusted network.
 
-## Example
-
-Build and run the included example:
-
-```sh
-go build -o rotari ./cmd/rotari
-./scripts/example.sh
-```
-
-The example includes local and Slurm jobs in one queue. An array task and a
-plain job fail on their first attempt; `rotari retry` re-executes only what
-failed (just the failing array task, not the whole array) and carries the
-rest forward, so the example ends with a successful run.
-The script begins with `rotari reset --recover`, which discards any queue left
-over from a previous, possibly interrupted, run of the script so its jobs
-never collide with earlier ones; `unlock` is the explicit recovery command for
-when you want to keep a retained queue instead of discarding it.
+If you expose the web UI beyond loopback, treat it as an unauthenticated admin
+surface: job logs and, unless you pass `--allow-control=false`, job-control
+endpoints are available to anyone who can reach it. See [FAQ](docs/faq.md) for
+executor-specific host and scheduler caveats, and [internals](docs/internals.md)
+for the file-backed state model and security assumptions behind the UI.
 
 ## Projects, queues, runs, and state
 

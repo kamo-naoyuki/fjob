@@ -285,6 +285,9 @@ func isTerminal(file *os.File) bool {
 
 func selectRunID(paths pathSet, requested string) (string, error) {
 	if requested != "" {
+		if !isValidPathElement(requested) {
+			return "", fmt.Errorf("run %q not found", requested)
+		}
 		if _, err := os.Stat(filepath.Join(paths.runsDir, requested)); err != nil {
 			return "", fmt.Errorf("run %q not found", requested)
 		}

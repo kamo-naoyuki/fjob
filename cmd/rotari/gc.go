@@ -113,10 +113,8 @@ func orphanRunRegistryEntries(masterDir string) ([]runLocation, []string, error)
 
 func validRunRegistryLocation(location runLocation) bool {
 	return location.BaseDir != "" && filepath.IsAbs(location.BaseDir) &&
-		location.ProjectName != "" && filepath.Base(location.ProjectName) == location.ProjectName &&
-		location.ProjectName != "." && location.ProjectName != ".." &&
-		location.RunID != "" && filepath.Base(location.RunID) == location.RunID &&
-		location.RunID != "." && location.RunID != ".."
+		isValidPathElement(location.ProjectName) &&
+		isValidPathElement(location.RunID)
 }
 
 func runLocationExists(location runLocation) bool {

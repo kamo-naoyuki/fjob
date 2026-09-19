@@ -923,7 +923,7 @@ func buildWebTimeline(summary RunSummary, jobs []webJob) []webTimelinePoint {
 }
 
 func validWebID(value string) bool {
-	return value != "" && filepath.Base(value) == value && !strings.ContainsAny(value, `/\\`)
+	return isValidPathElement(value)
 }
 
 func writeWebJSON(writer http.ResponseWriter, value any) {

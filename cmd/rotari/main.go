@@ -967,8 +967,18 @@ type pathSet struct {
 	runsDir         string
 }
 
+func isValidPathElement(value string) bool {
+	if value == "" || value == "." || value == ".." || filepath.IsAbs(value) {
+		return false
+	}
+	if strings.ContainsAny(value, `/\\`) {
+		return false
+	}
+	return filepath.Base(value) == value
+}
+
 func isValidProjectName(projectName string) bool {
-	return projectName != "" && projectName != "." && projectName != ".." && filepath.Base(projectName) == projectName
+	return isValidPathElement(projectName)
 }
 
 func resolvePaths(cliBaseDir, projectName string) (pathSet, error) {

@@ -103,7 +103,7 @@ func runIDsInDirectory(runsDir string) []string {
 }
 
 func deleteRun(paths pathSet, runID string) error {
-	if filepath.Base(runID) != runID || runID == "." || runID == ".." {
+	if !isValidPathElement(runID) {
 		return fmt.Errorf("run %q not found", runID)
 	}
 	runDir := filepath.Join(paths.runsDir, runID)

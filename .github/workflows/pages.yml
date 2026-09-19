@@ -41,7 +41,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes graphviz
 
-      - name: Generate package dependency documentation
+      - name: Install Go call graph tool
+        run: go install github.com/ofabry/go-callvis@latest
+
+      - name: Generate architecture documentation
         run: |
           scripts/generate-package-dependencies.sh docs/web-demo/architecture
 
