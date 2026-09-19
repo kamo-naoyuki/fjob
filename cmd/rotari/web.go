@@ -123,6 +123,7 @@ func cmdWeb(args []string) int {
 	host := cliString(fs, "host", "127.0.0.1")
 	port := cliInt(fs, "port", webDefaultPort)
 	staticDir := cliString(fs, "static-dir", "")
+	allowControl := cliBool(fs, "allow-control", true)
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -146,7 +147,14 @@ func cmdWeb(args []string) int {
 		}
 		return 0
 	}
-	handler := newWebHandler(baseDir, *queueNameOption)
+	if !isLoopbackWebHost(*host) {
+		controlWarning := "job logs and environment variable names"
+		if *allowControl {
+			controlWarning = "job logs, environment variable names, and job control (cancel/change/remove/copy) operations"
+		}
+		printErrorf("WARNING: --host %s exposes %s over unauthenticated HTTP.", *host, controlWarning)
+	}
+	handler := newWebHandler(baseDir, *queueNameOption, *allowControl)
 	listener, err := listenWeb(*host, *port, !portExplicit)
 	if err != nil {
 		printErrorf("web server failed: %v", err)
@@ -163,6 +171,14 @@ func cmdWeb(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func isLoopbackWebHost(host string) bool {
+	if host == "" || host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func listenWeb(host string, port int, fallback bool) (net.Listener, error) {
@@ -189,7 +205,7 @@ func interruptSignal() <-chan os.Signal {
 	return signals
 }
 
-func newWebHandler(baseDir, queueFilter string) http.Handler {
+func newWebHandler(baseDir, queueFilter string, allowControl bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -280,6 +296,10 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 			methodNotAllowed(writer)
 			return
 		}
+		if !allowControl {
+			forbiddenReadOnly(writer)
+			return
+		}
 		var copyRequest webCopyRequest
 		if err := json.NewDecoder(request.Body).Decode(&copyRequest); err != nil {
 			writeWebError(writer, err)
@@ -312,6 +332,10 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 			methodNotAllowed(writer)
 			return
 		}
+		if !allowControl {
+			forbiddenReadOnly(writer)
+			return
+		}
 		var change webChangeRequest
 		if err := json.NewDecoder(request.Body).Decode(&change); err != nil {
 			writeWebError(writer, err)
@@ -332,6 +356,10 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 	mux.HandleFunc("/api/remove", func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost {
 			methodNotAllowed(writer)
+			return
+		}
+		if !allowControl {
+			forbiddenReadOnly(writer)
 			return
 		}
 		var remove webRemoveRequest
@@ -355,6 +383,10 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 			methodNotAllowed(writer)
 			return
 		}
+		if !allowControl {
+			forbiddenReadOnly(writer)
+			return
+		}
 		var clear webClearRequest
 		if err := json.NewDecoder(request.Body).Decode(&clear); err != nil {
 			writeWebError(writer, err)
@@ -373,6 +405,10 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 	mux.HandleFunc("/api/cancel-job", func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost {
 			methodNotAllowed(writer)
+			return
+		}
+		if !allowControl {
+			forbiddenReadOnly(writer)
 			return
 		}
 		var cancel webCancelRequest
@@ -394,6 +430,10 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 	mux.HandleFunc("/api/cancel-run", func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost {
 			methodNotAllowed(writer)
+			return
+		}
+		if !allowControl {
+			forbiddenReadOnly(writer)
 			return
 		}
 		var cancel webCancelRunRequest
@@ -437,9 +477,8 @@ func newWebHandler(baseDir, queueFilter string) http.Handler {
 func loadWebState(baseDir, queueFilter string) (webState, error) {
 	state := webState{BaseDir: baseDir, Environments: environmentDefinitions(), UpdatedAt: nowRFC3339()}
 	for index := range state.Environments {
-		if value, ok := os.LookupEnv(state.Environments[index].Name); ok {
-			state.Environments[index].Value = value
-		}
+		// Only expose whether the variable is set, never its value: it may hold secrets (API keys, tokens).
+		_, state.Environments[index].Set = os.LookupEnv(state.Environments[index].Name)
 	}
 	queueNames := []string{}
 	if queueFilter != "" {
@@ -853,6 +892,10 @@ func methodNotAllowed(writer http.ResponseWriter) {
 	writer.WriteHeader(http.StatusMethodNotAllowed)
 }
 
+func forbiddenReadOnly(writer http.ResponseWriter) {
+	http.Error(writer, "the web UI is read-only; restart with --allow-control to enable job control", http.StatusForbidden)
+}
+
 func cliDocsHTML(homePath string) string {
 	var builder strings.Builder
 	builder.WriteString(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>rotari CLI documentation</title><style>
@@ -910,11 +953,11 @@ func environmentHTML(homePath string, environments []environmentDefinition) stri
 :root{color-scheme:dark;--bg:#10151b;--panel:#18212b;--line:#2d3a47;--text:#e8eef4;--muted:#94a3b3;--accent:#b8d9f2}*{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#10151b,#182733);color:var(--text);font:15px/1.5 ui-sans-serif,system-ui,sans-serif}main{max-width:1100px;margin:0 auto;padding:36px 22px}header{display:flex;justify-content:space-between;align-items:end;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:24px}h1{margin:0;font-size:32px;letter-spacing:.04em;display:flex;align-items:center;gap:10px}.brand-icon{width:.85em;height:.85em}.meta{color:var(--muted)}a{color:var(--accent)}section{background:rgba(24,33,43,.9);border:1px solid var(--line);padding:18px;margin-bottom:16px}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid var(--line);padding:8px}th{color:var(--muted);font-size:12px;text-transform:uppercase}code{color:var(--accent)}
 </style></head><body><main><header><div><h1>` + brandIcon() + `rotari environment variables</h1><div class="meta">Variables read by the CLI, jobs, and array tasks</div></div><a href="`)
 	builder.WriteString(html.EscapeString(homePath))
-	builder.WriteString(`">Web UI</a></header><section><table><thead><tr><th>Variable</th><th>Value</th><th>CLI</th><th>Job</th><th>Array</th><th>Description</th></tr></thead><tbody>`)
+	builder.WriteString(`">Web UI</a></header><section><table><thead><tr><th>Variable</th><th>Set</th><th>CLI</th><th>Job</th><th>Array</th><th>Description</th></tr></thead><tbody>`)
 	for _, environment := range environments {
-		value := environment.Value
-		if value == "" {
-			value = "-"
+		value := "-"
+		if environment.Set {
+			value = "set"
 		}
 		builder.WriteString(`<tr><td><code>`)
 		builder.WriteString(html.EscapeString(environment.Name))

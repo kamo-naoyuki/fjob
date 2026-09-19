@@ -240,11 +240,12 @@ var cliCommandSpecs = []cliCommandSpec{
 	{
 		Name:        "web",
 		Description: "serve the web status UI",
-		Usage:       "rotari web [--basedir DIR] [--project-name NAME] [--host HOST] [--port PORT] [--static-dir DIR]",
+		Usage:       "rotari web [--basedir DIR] [--project-name NAME] [--host HOST] [--port PORT] [--static-dir DIR] [--allow-control=false]",
 		Flags: append(commonCLIFlags(),
-			cliFlagSpec{Name: "host", Description: "HTTP listen host", ValueName: "HOST"},
+			cliFlagSpec{Name: "host", Description: "HTTP listen host; binding to a non-loopback address exposes job logs, environment names, and job control over unauthenticated HTTP", ValueName: "HOST"},
 			cliFlagSpec{Name: "port", Description: "HTTP listen port", ValueName: "PORT"},
 			cliFlagSpec{Name: "static-dir", Description: "generate a static web UI", ValueName: "DIR"},
+			cliFlagSpec{Name: "allow-control", Description: "enable job control (copy/change/remove/cancel/clear); pass --allow-control=false for a read-only UI"},
 		),
 	},
 	{
@@ -372,6 +373,8 @@ func cliEnvironmentVariable(name string) string {
 		return envWebPort
 	case "static-dir":
 		return envWebStaticDir
+	case "allow-control":
+		return envWebAllowControl
 	default:
 		return ""
 	}

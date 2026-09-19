@@ -159,10 +159,20 @@ is deliberately different from function-oriented frameworks such as
 
 **Does closing/stopping `rotari web` stop my jobs?**
 No. The web UI is a separate, optional process you start explicitly
-(`rotari web`) purely to view status; it is a read-only status viewer (plus a
-confirmation-gated job copy action) and never starts, stops, or otherwise
-controls the runner. It is unrelated to the background supervisor described
-below — closing it has no effect on any run.
+(`rotari web`) and never starts or stops the runner itself — closing it has
+no effect on any run. It is unrelated to the background supervisor described
+below.
+
+**Is `rotari web` safe to expose beyond `127.0.0.1`?**
+Treat it as an unauthenticated admin surface, not a public dashboard. By
+default the `copy`/`change`/`remove`/`cancel`/`clear-run` APIs are enabled
+with no authentication; pass `--allow-control=false` for a read-only UI that
+rejects them with `403`. Environment variable *values* are never returned by
+`/api/state` or `/environment/` (only whether each is set), so secrets in
+your shell environment are not exposed. Binding `--host` to anything other
+than loopback exposes job logs and (unless `--allow-control=false`)
+job-control operations to anyone who can reach that address; only do so on a
+trusted network.
 
 ## Background server (supervisor)
 
@@ -174,6 +184,24 @@ anywhere in their own output, and it stops on its own once the run finishes
 status`/`list`/`shutdown` are for inspection and manual cleanup only — useful
 if you want to confirm the supervisor is still finishing a Ctrl-C'd run, or
 to force it down.
+
+**Who can control my jobs through the server's Unix socket?**
+Anyone who can connect to `<basedir>/server.sock` can `submit`/`cancel`/
+`suspend`/`resume`/`run`/`shutdown` — there's no separate authentication.
+The socket itself is always created `0600` regardless of other settings, and
+on Linux the server additionally checks the connecting peer's UID
+(`SO_PEERCRED`) against its own before accepting. This protects against
+other unprivileged users on a shared machine, not against root or anyone
+who already has your UID's access.
+
+**Can other people on the cluster read my job logs/commands, or is everything locked down now?**
+By default, yes — the state directory (`queue.json`, job `output`, working
+directories, etc.) keeps rotari's traditional `0755`/`0644` permissions, so
+you can still hand a colleague a log path directly, which is common on
+shared HPC/lab filesystems. If you'd rather keep that private, set
+`ROTARI_PRIVATE_STATE=true` to switch newly created state to owner-only
+`0700`/`0600`; it doesn't retroactively change existing directories, and the
+server's control socket is always `0600` either way (see above).
 
 ## Timestamps and environment
 

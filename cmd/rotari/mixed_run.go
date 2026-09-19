@@ -64,7 +64,7 @@ func executeMixedRun(paths pathSet, runID, runName string, localConcurrency, bat
 	}
 
 	runDir := filepath.Join(paths.runsDir, runID)
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
+	if err := os.MkdirAll(runDir, stateDirMode()); err != nil {
 		return 1
 	}
 	if err := writeJSON(filepath.Join(runDir, "commands.json"), queue); err != nil {

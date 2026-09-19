@@ -97,8 +97,10 @@ func (slurmExecutor) scontrol(jobDir, command string) error {
 	return nil
 }
 
-const slurmAccountingWait = 60 * time.Second
 const slurmCommandTimeout = 30 * time.Second
+
+var slurmAccountingWait = 60 * time.Second
+var slurmPollInterval = time.Second
 
 type stringSliceFlag []string
 
@@ -113,14 +115,14 @@ func (flag *stringSliceFlag) Set(value string) error {
 
 func submitSlurmJob(runDir string, job JobSpec, executorOptions []string) (slurmJobMetadata, error) {
 	jobDir := filepath.Join(runDir, job.ID)
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+	if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
 		return slurmJobMetadata{}, err
 	}
 	if err := writeJSON(filepath.Join(jobDir, "command.json"), job); err != nil {
 		return slurmJobMetadata{}, err
 	}
 	wrapperPath := filepath.Join(jobDir, "slurm-wrapper.sh")
-	if err := os.WriteFile(wrapperPath, []byte(statusWrapperScript(job.Command, jobDir, job.Environment, job.WorkingDirectory)), 0o755); err != nil {
+	if err := os.WriteFile(wrapperPath, []byte(statusWrapperScript(job.Command, jobDir, job.Environment, job.WorkingDirectory)), stateScriptMode()); err != nil {
 		return slurmJobMetadata{}, err
 	}
 	outputPath := filepath.Join(jobDir, "output")
@@ -162,7 +164,7 @@ func submitSlurmArray(runDir string, jobs []JobSpec, executorOptions []string) (
 		if job.ArrayTaskID == nil || job.ArrayFirst != first || job.ArrayLast != last || !sameStrings(job.Command, command) {
 			return nil, errors.New("Slurm array tasks must share one command and range")
 		}
-		if err := os.MkdirAll(filepath.Join(runDir, job.ID), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(runDir, job.ID), stateDirMode()); err != nil {
 			return nil, err
 		}
 		if err := writeJSON(filepath.Join(runDir, job.ID, "command.json"), job); err != nil {
@@ -170,7 +172,7 @@ func submitSlurmArray(runDir string, jobs []JobSpec, executorOptions []string) (
 		}
 	}
 	wrapperPath := filepath.Join(runDir, jobs[0].ArrayGroup+"-array-wrapper.sh")
-	if err := os.WriteFile(wrapperPath, []byte(schedulerArrayWrapperScript(jobs, "SLURM_ARRAY_TASK_ID")), 0o755); err != nil {
+	if err := os.WriteFile(wrapperPath, []byte(schedulerArrayWrapperScript(jobs, "SLURM_ARRAY_TASK_ID")), stateScriptMode()); err != nil {
 		return nil, err
 	}
 	expandedOptions, err := expandShellOptions(executorOptions)
@@ -444,7 +446,7 @@ func waitSlurmJob(runDir string, job slurmJobMetadata) JobResult {
 				return JobResult{ID: job.JobID, Command: job.Command, ExitCode: 1, Error: "Slurm accounting result and wrapper status are unavailable"}
 			}
 		}
-		time.Sleep(time.Second)
+		time.Sleep(slurmPollInterval)
 	}
 }
 

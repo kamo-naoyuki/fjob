@@ -97,7 +97,7 @@ func readLSFMetadata(jobDir string) (lsfJobMetadata, error) {
 
 func submitLSFJob(runDir string, job JobSpec, options []string) (lsfJobMetadata, error) {
 	jobDir := filepath.Join(runDir, job.ID)
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+	if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
 		return lsfJobMetadata{}, err
 	}
 	if err := writeJSON(filepath.Join(jobDir, "command.json"), job); err != nil {
@@ -106,7 +106,7 @@ func submitLSFJob(runDir string, job JobSpec, options []string) (lsfJobMetadata,
 	outputPath := filepath.Join(jobDir, "output")
 	wrapperPath := filepath.Join(jobDir, "lsf-wrapper.sh")
 	wrapper := lsfWrapperScript(job.Command, jobDir, outputPath, job.Environment, job.WorkingDirectory)
-	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o755); err != nil {
+	if err := os.WriteFile(wrapperPath, []byte(wrapper), stateScriptMode()); err != nil {
 		return lsfJobMetadata{}, err
 	}
 	expandedOptions, err := expandShellOptions(options)
@@ -144,7 +144,7 @@ func submitLSFArray(runDir string, jobs []JobSpec, executorOptions []string) ([]
 			return nil, errors.New("LSF array tasks must share one command and range")
 		}
 		jobDir := filepath.Join(runDir, job.ID)
-		if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
 			return nil, err
 		}
 		if err := writeJSON(filepath.Join(jobDir, "command.json"), job); err != nil {

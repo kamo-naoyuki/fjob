@@ -42,7 +42,7 @@ func serverRecordPath(masterDir, baseDir string) string {
 }
 
 func registerServer(masterDir string, record serverRecord) error {
-	if err := os.MkdirAll(masterDir, 0o755); err != nil {
+	if err := os.MkdirAll(masterDir, stateDirMode()); err != nil {
 		return err
 	}
 	return writeJSON(serverRecordPath(masterDir, record.BaseDir), record)

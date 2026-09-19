@@ -416,11 +416,11 @@ func cmdServerProcess(args []string) int {
 }
 
 func runServer(baseDir string) int {
-	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+	if err := os.MkdirAll(baseDir, stateDirMode()); err != nil {
 		printErrorf("failed to create state directory: %v", err)
 		return 1
 	}
-	lease, err := os.OpenFile(serverLockPath(baseDir), os.O_CREATE|os.O_RDWR, 0o644)
+	lease, err := os.OpenFile(serverLockPath(baseDir), os.O_CREATE|os.O_RDWR, stateFileMode())
 	if err != nil {
 		printErrorf("failed to open server lock: %v", err)
 		return 1
@@ -438,9 +438,15 @@ func runServer(baseDir string) int {
 		printErrorf("failed to listen on server socket: %v", err)
 		return 1
 	}
+	// net.Listen applies the process umask; enforce owner-only access explicitly
+	// regardless of --shared-state, since this is the control-plane socket.
+	if err := os.Chmod(socketPath, 0o600); err != nil {
+		printErrorf("failed to set server socket permissions: %v", err)
+		return 1
+	}
 	defer os.Remove(socketPath)
 	defer os.Remove(serverPIDPath(baseDir))
-	if err := os.WriteFile(serverPIDPath(baseDir), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(serverPIDPath(baseDir), []byte(strconv.Itoa(os.Getpid())+"\n"), stateFileMode()); err != nil {
 		printErrorf("failed to write server pid: %v", err)
 		return 1
 	}
@@ -474,6 +480,10 @@ func runServer(baseDir string) int {
 			if server.isStopped() {
 				return 0
 			}
+			continue
+		}
+		if err := verifyPeerCredential(conn); err != nil {
+			_ = conn.Close()
 			continue
 		}
 		go server.handle(baseDir, conn)
@@ -1056,10 +1066,10 @@ func cancelJobs(runDir, queueName, runID string, jobIDs []string) (string, error
 		if _, ok := knownJobs[jobID]; !ok {
 			return "", fmt.Errorf("job %q is not found", jobID)
 		}
-		if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
 			return "", fmt.Errorf("prepare cancellation for job %s: %w", jobID, err)
 		}
-		if err := os.WriteFile(filepath.Join(jobDir, "cancelled"), []byte(nowRFC3339()+"\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(jobDir, "cancelled"), []byte(nowRFC3339()+"\n"), stateFileMode()); err != nil {
 			return "", fmt.Errorf("record cancellation for job %s: %w", jobID, err)
 		}
 		cancelled++
@@ -1119,7 +1129,7 @@ func enqueueCommandWithWorkingDirectory(baseDir, queueName string, command []str
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, stateDirMode()); err != nil {
 		return "", err
 	}
 	release, err := acquireStateLock(paths.stateLockFile)
@@ -1184,7 +1194,7 @@ func startServerRun(baseDir, queueName, runName string, localConcurrency, batchM
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, stateDirMode()); err != nil {
 		return "", err
 	}
 	release, err := acquireStateLock(paths.stateLockFile)
@@ -1226,7 +1236,7 @@ func runServerSync(baseDir, queueName, runName string, localConcurrency, batchMa
 	if err != nil {
 		return "", 1, err
 	}
-	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, stateDirMode()); err != nil {
 		return "", 1, err
 	}
 	release, err := acquireStateLock(paths.stateLockFile)

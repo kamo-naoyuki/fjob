@@ -632,14 +632,14 @@ func loadSamplesPath(paths pathSet, runID string) string {
 }
 
 func appendLoadSample(path string, sample LoadSample) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), stateDirMode()); err != nil {
 		return err
 	}
 	data, err := json.Marshal(sample)
 	if err != nil {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, stateFileMode())
 	if err != nil {
 		return err
 	}
@@ -707,7 +707,7 @@ func executeRun(paths pathSet, runID string, numParallel int) int {
 	}
 
 	runDir := filepath.Join(paths.runsDir, runID)
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
+	if err := os.MkdirAll(runDir, stateDirMode()); err != nil {
 		printErrorf("failed to create run directory: %v", err)
 		return 1
 	}
@@ -810,7 +810,7 @@ func failedJobHints(runID string, results []JobResult) string {
 func runOneJob(runDir string, job JobSpec) JobResult {
 	hostname, _ := os.Hostname()
 	jobDir := filepath.Join(runDir, job.ID)
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+	if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
 		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
 
@@ -818,9 +818,9 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
 	if job.Name != "" {
-		_ = os.WriteFile(filepath.Join(jobDir, "name"), []byte(job.Name+"\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(jobDir, "name"), []byte(job.Name+"\n"), stateFileMode())
 	}
-	if err := os.WriteFile(filepath.Join(jobDir, "submitted_at"), []byte(nowRFC3339()+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(jobDir, "submitted_at"), []byte(nowRFC3339()+"\n"), stateFileMode()); err != nil {
 		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
 	if jobCancellationRequested(jobDir) {
@@ -844,13 +844,13 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	if err := cmd.Start(); err != nil {
-		_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte("1\n"), 0o644)
-		_ = os.WriteFile(filepath.Join(jobDir, "finished_at"), []byte(nowRFC3339()+"\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte("1\n"), stateFileMode())
+		_ = os.WriteFile(filepath.Join(jobDir, "finished_at"), []byte(nowRFC3339()+"\n"), stateFileMode())
 		fmt.Printf("fail job=%s command=%s error=%v\n", job.ID, strings.Join(job.Command, " "), err)
 		return JobResult{ID: job.ID, Command: job.Command, ExitCode: 1, Error: err.Error()}
 	}
 
-	_ = os.WriteFile(filepath.Join(jobDir, "pid"), []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(jobDir, "pid"), []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), stateFileMode())
 	fmt.Printf("[%s] submit job=%s pid=%d command=%s\n", nowRFC3339(), job.ID, cmd.Process.Pid, strings.Join(job.Command, " "))
 
 	err = cmd.Wait()
@@ -863,8 +863,8 @@ func runOneJob(runDir string, job JobSpec) JobResult {
 			exitCode = 1
 		}
 	}
-	_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte(strconv.Itoa(exitCode)+"\n"), 0o644)
-	_ = os.WriteFile(filepath.Join(jobDir, "finished_at"), []byte(nowRFC3339()+"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte(strconv.Itoa(exitCode)+"\n"), stateFileMode())
+	_ = os.WriteFile(filepath.Join(jobDir, "finished_at"), []byte(nowRFC3339()+"\n"), stateFileMode())
 
 	if exitCode == 0 {
 		fmt.Printf("%s\n", colorKeyValueMessage(fmt.Sprintf("success job=%s", job.ID), green))
@@ -902,15 +902,15 @@ func jobCancellationRequested(jobDir string) bool {
 
 func recordCancelledJob(jobDir string, job JobSpec) JobResult {
 	message := "cancelled before start"
-	_ = os.MkdirAll(jobDir, 0o755)
+	_ = os.MkdirAll(jobDir, stateDirMode())
 	_ = writeJSON(filepath.Join(jobDir, "command.json"), job)
 	if job.Name != "" {
-		_ = os.WriteFile(filepath.Join(jobDir, "name"), []byte(job.Name+"\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(jobDir, "name"), []byte(job.Name+"\n"), stateFileMode())
 	}
-	_ = os.WriteFile(filepath.Join(jobDir, "submitted_at"), []byte(nowRFC3339()+"\n"), 0o644)
-	_ = os.WriteFile(filepath.Join(jobDir, "output"), []byte(message+"\n"), 0o644)
-	_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte("143\n"), 0o644)
-	_ = os.WriteFile(filepath.Join(jobDir, "finished_at"), []byte(nowRFC3339()+"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(jobDir, "submitted_at"), []byte(nowRFC3339()+"\n"), stateFileMode())
+	_ = os.WriteFile(filepath.Join(jobDir, "output"), []byte(message+"\n"), stateFileMode())
+	_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte("143\n"), stateFileMode())
+	_ = os.WriteFile(filepath.Join(jobDir, "finished_at"), []byte(nowRFC3339()+"\n"), stateFileMode())
 	return JobResult{ID: job.ID, Command: job.Command, ExitCode: 143, Error: message}
 }
 
@@ -998,6 +998,38 @@ func resolveBaseDir(cliBaseDir string) (string, bool, error) {
 	return filepath.Join(home, ".local", "state", "rotari"), false, nil
 }
 
+// privateStateEnabled controls whether the state directory tree (queues,
+// runs, job output, locks) is created owner-only (0700/0600) instead of the
+// default shared (0755/0644) permissions. Shared is the default because
+// rotari is commonly used on shared HPC/lab filesystems where colleagues
+// point each other at a job's log path.
+func privateStateEnabled() bool {
+	value, _ := strconv.ParseBool(os.Getenv(envPrivateState))
+	return value
+}
+
+func stateDirMode() os.FileMode {
+	if privateStateEnabled() {
+		return 0o700
+	}
+	return 0o755
+}
+
+func stateFileMode() os.FileMode {
+	if privateStateEnabled() {
+		return 0o600
+	}
+	return 0o644
+}
+
+// stateScriptMode is for generated wrapper scripts, which must stay executable.
+func stateScriptMode() os.FileMode {
+	if privateStateEnabled() {
+		return 0o700
+	}
+	return 0o755
+}
+
 func resolveProjectName(baseDir string, cliProjectName string) (string, error) {
 	if cliProjectName != "" {
 		return cliProjectName, nil
@@ -1072,7 +1104,7 @@ func writeJSON(path string, v any) error {
 		return err
 	}
 	b = append(b, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), stateDirMode()); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".rotari-tmp-")
@@ -1081,7 +1113,7 @@ func writeJSON(path string, v any) error {
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(stateFileMode()); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -1098,7 +1130,7 @@ func writeJSON(path string, v any) error {
 const stateLockTimeout = 30 * time.Second
 
 func acquireStateLock(lockPath string) (func(), error) {
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, stateFileMode())
 	if err != nil {
 		return nil, err
 	}
@@ -1151,7 +1183,7 @@ func acquireLock(lockPath string, info LockInfo) error {
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(stateFileMode()); err != nil {
 		tmp.Close()
 		return err
 	}

@@ -140,6 +140,30 @@ func TestResolveBaseDirPriority(t *testing.T) {
 	}
 }
 
+func TestStateModeDefaultsToSharedPermissions(t *testing.T) {
+	t.Setenv(envPrivateState, "")
+	if got := stateDirMode(); got != 0o755 {
+		t.Fatalf("stateDirMode() = %o, want 0755 (shared by default)", got)
+	}
+	if got := stateFileMode(); got != 0o644 {
+		t.Fatalf("stateFileMode() = %o, want 0644 (shared by default)", got)
+	}
+	if got := stateScriptMode(); got != 0o755 {
+		t.Fatalf("stateScriptMode() = %o, want 0755 (shared by default)", got)
+	}
+
+	t.Setenv(envPrivateState, "true")
+	if got := stateDirMode(); got != 0o700 {
+		t.Fatalf("stateDirMode() with %s=true = %o, want 0700", envPrivateState, got)
+	}
+	if got := stateFileMode(); got != 0o600 {
+		t.Fatalf("stateFileMode() with %s=true = %o, want 0600", envPrivateState, got)
+	}
+	if got := stateScriptMode(); got != 0o700 {
+		t.Fatalf("stateScriptMode() with %s=true = %o, want 0700", envPrivateState, got)
+	}
+}
+
 func TestCLIStringUsesRotariEnvironmentDefaults(t *testing.T) {
 	t.Setenv("ROTARI_RUN_ID", "run-from-env")
 	t.Setenv("ROTARI_JOB_ID", "job-from-env")

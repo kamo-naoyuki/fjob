@@ -41,7 +41,7 @@ func (sshExecutor) Submit(runDir string, job JobSpec, options []string) (JobHand
 		return JobHandle{}, err
 	}
 	jobDir := filepath.Join(runDir, job.ID)
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+	if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
 		return JobHandle{}, err
 	}
 	if err := writeJSON(filepath.Join(jobDir, "command.json"), job); err != nil {

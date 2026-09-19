@@ -32,7 +32,7 @@ func cmdDelete(args []string) int {
 		printErrorf("failed to resolve paths: %v", err)
 		return 1
 	}
-	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, stateDirMode()); err != nil {
 		printErrorf("failed to create queue directory: %v", err)
 		return 1
 	}

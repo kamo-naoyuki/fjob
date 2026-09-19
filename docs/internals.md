@@ -228,13 +228,63 @@ newer run after recovery. A new run lock is written completely to a temporary
 file and published without replacing an existing lock, so readers do not see
 partially written lock JSON.
 
+The state and server-registry directory trees (everything under `--basedir`
+and `--masterdir`, including `queue.json`, `meta.json`, locks, run/job
+directories, wrapper scripts, and job `output`/status files) default to the
+historical `0755`/`0644` ("shared state") — colleagues on a shared HPC/lab
+cluster routinely point each other at a job's log path directly, so this is
+not opt-out-by-default hardening. `stateDirMode()`/`stateFileMode()`/
+`stateScriptMode()` (main.go, next to `resolveBaseDir`) are the single
+source of truth for these permissions; every `os.MkdirAll`/`os.WriteFile`
+call in the state tree goes through them instead of a literal mode. Setting
+`ROTARI_PRIVATE_STATE=true` (checked by `privateStateEnabled()`, no cached
+state) flips them to owner-only `0700`/`0600`/`0700` respectively. Like any
+`os.MkdirAll`/`os.WriteFile` mode, this only applies to newly created paths
+— pre-existing directories are not retroactively rechmoded, and switching
+the setting for an existing `--basedir` produces a mix of old and new
+permissions on disk. The generated static web export (`generateStaticWeb`)
+is the one intentional, unconditional exception: it is meant to be published
+(e.g. GitHub Pages), so its output always keeps `0755`/`0644`.
+
 `web` binds `--host`/`--port` (default `127.0.0.1:8787`) via `listenWeb`. When
 `--port` is left at its default, a busy port falls back to scanning upward
 (port+1, port+2, ...) until a free one is found or 65535 is reached; an
 explicit `--port` (including `--port 0`, which asks the OS for an ephemeral
 port) never falls back and fails immediately if unavailable. The actually
 bound address is reported after the listener is created, not the requested
-one.
+one. `cmdWeb` prints a stderr warning (via `isLoopbackWebHost`) whenever
+`--host` resolves to something other than `localhost`/a loopback IP, since
+the server has no authentication.
+
+The background server's control surface (`submit`/`cancel`/`suspend`/
+`resume`/`run`/`shutdown` over the `server.sock` Unix socket) is only as safe
+as who can reach the socket, and is treated separately from the
+`ROTARI_PRIVATE_STATE` toggle above since reaching it means controlling that
+server, not just reading its logs. `runServer` unconditionally `chmod`s the
+socket to `0600` after `net.Listen` (the process umask alone is not
+trustworthy, and this does not follow `stateFileMode()`), and on Linux,
+`verifyPeerCredential` (`server_peercred_linux.go`) uses
+`SO_PEERCRED`/`syscall.GetsockoptUcred` to reject any accepted connection
+whose UID doesn't match the server process's UID, closing it before
+`server.handle` ever runs. `server_peercred_other.go` (`!linux` build tag)
+is a no-op on other platforms, where the `0600` socket mode remains the only
+enforcement (the containing directory's mode follows `stateDirMode()`, so it
+is only owner-only when `ROTARI_PRIVATE_STATE=true`).
+
+
+The web/API surface has no authentication, so `newWebHandler`'s mutating
+routes (`/api/copy`, `/api/change`, `/api/remove`, `/api/clear-run`,
+`/api/cancel-job`, `/api/cancel-run`) are gated behind an `allowControl bool`
+parameter, `true` by default (`--allow-control`, env
+`ROTARI_WEB_ALLOW_CONTROL`); pass `--allow-control=false` to reject them with
+`403` via `forbiddenReadOnly` before touching request bodies. `GET` routes
+(`/api/state`, `/api/log`, `/environment/`, `/docs/`) are always available. `environmentDefinition`
+carries a `Set bool` alongside `Value string`; `loadWebState` (used by both
+the live server and `generateStaticWeb`) only ever populates `Set` from
+`os.LookupEnv`, never `Value`, so environment variable values (which may be
+secrets) never cross the HTTP boundary — `environmentHTML` renders `Set` as
+"set"/"-", not the raw value. `Value` remains populated only for the local
+`rotari env` CLI command, which reads `os.LookupEnv` directly.
 
 A synchronous client disconnect, including Ctrl-C, requests cancellation and
 returns to the caller immediately (exit code 130); the server-side run keeps

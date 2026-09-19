@@ -96,14 +96,14 @@ func readPBSMetadata(jobDir string) (pbsJobMetadata, error) {
 
 func submitPBSJob(runDir string, job JobSpec, options []string) (pbsJobMetadata, error) {
 	jobDir := filepath.Join(runDir, job.ID)
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+	if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
 		return pbsJobMetadata{}, err
 	}
 	if err := writeJSON(filepath.Join(jobDir, "command.json"), job); err != nil {
 		return pbsJobMetadata{}, err
 	}
 	wrapperPath := filepath.Join(jobDir, "pbs-wrapper.sh")
-	if err := os.WriteFile(wrapperPath, []byte(statusWrapperScript(job.Command, jobDir, job.Environment, job.WorkingDirectory)), 0o755); err != nil {
+	if err := os.WriteFile(wrapperPath, []byte(statusWrapperScript(job.Command, jobDir, job.Environment, job.WorkingDirectory)), stateScriptMode()); err != nil {
 		return pbsJobMetadata{}, err
 	}
 	outputPath := filepath.Join(jobDir, "output")
@@ -144,7 +144,7 @@ func submitPBSArray(runDir string, jobs []JobSpec, executorOptions []string) ([]
 			return nil, errors.New("PBS array tasks must share one command and range")
 		}
 		jobDir := filepath.Join(runDir, job.ID)
-		if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		if err := os.MkdirAll(jobDir, stateDirMode()); err != nil {
 			return nil, err
 		}
 		if err := writeJSON(filepath.Join(jobDir, "command.json"), job); err != nil {
@@ -155,7 +155,7 @@ func submitPBSArray(runDir string, jobs []JobSpec, executorOptions []string) ([]
 		return nil, err
 	}
 	wrapperPath := filepath.Join(runDir, jobs[0].ArrayGroup+"-pbs-array-wrapper.sh")
-	if err := os.WriteFile(wrapperPath, []byte(schedulerArrayWrapperScript(jobs, "PBS_ARRAY_INDEX")), 0o755); err != nil {
+	if err := os.WriteFile(wrapperPath, []byte(schedulerArrayWrapperScript(jobs, "PBS_ARRAY_INDEX")), stateScriptMode()); err != nil {
 		return nil, err
 	}
 	expandedOptions, err := expandShellOptions(executorOptions)

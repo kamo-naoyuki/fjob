@@ -8,33 +8,35 @@ import (
 )
 
 const (
-	envBaseDir      = "ROTARI_BASEDIR"
-	envProjectName  = "ROTARI_PROJECT_NAME"
-	envMasterDir    = "ROTARI_MASTERDIR"
-	envRunID        = "ROTARI_RUN_ID"
-	envJobID        = "ROTARI_JOB_ID"
-	envJobName      = "ROTARI_JOB_NAME"
-	envExecutor     = "ROTARI_EXECUTOR"
-	envExecutorOpts = "ROTARI_EXECUTOR_OPTIONS"
-	envRunName      = "ROTARI_RUN_NAME"
-	envRunLocalConc = "ROTARI_RUN_LOCAL_CONCURRENCY"
-	envRunBatchConc = "ROTARI_RUN_BATCH_CONCURRENCY"
-	envRunRetry     = "ROTARI_RUN_RETRY"
-	envRunAsync     = "ROTARI_RUN_ASYNC"
-	envArrayRange   = "ROTARI_ARRAY_RANGE"
-	envResetRecover = "ROTARI_RESET_RECOVER"
-	envWaitTimeout  = "ROTARI_WAIT_TIMEOUT"
-	envWebHost      = "ROTARI_WEB_HOST"
-	envWebPort      = "ROTARI_WEB_PORT"
-	envWebStaticDir = "ROTARI_WEB_STATIC_DIR"
-	envBin          = "ROTARI_BIN"
-	envRunDir       = "ROTARI_RUN_DIR"
-	envJobDir       = "ROTARI_JOB_DIR"
-	envCWD          = "ROTARI_CWD"
-	envArrayTaskID  = "ROTARI_ARRAY_TASK_ID"
-	envArrayFirst   = "ROTARI_ARRAY_FIRST"
-	envArrayLast    = "ROTARI_ARRAY_LAST"
-	envArraySize    = "ROTARI_ARRAY_SIZE"
+	envBaseDir         = "ROTARI_BASEDIR"
+	envProjectName     = "ROTARI_PROJECT_NAME"
+	envMasterDir       = "ROTARI_MASTERDIR"
+	envRunID           = "ROTARI_RUN_ID"
+	envJobID           = "ROTARI_JOB_ID"
+	envJobName         = "ROTARI_JOB_NAME"
+	envExecutor        = "ROTARI_EXECUTOR"
+	envExecutorOpts    = "ROTARI_EXECUTOR_OPTIONS"
+	envRunName         = "ROTARI_RUN_NAME"
+	envRunLocalConc    = "ROTARI_RUN_LOCAL_CONCURRENCY"
+	envRunBatchConc    = "ROTARI_RUN_BATCH_CONCURRENCY"
+	envRunRetry        = "ROTARI_RUN_RETRY"
+	envRunAsync        = "ROTARI_RUN_ASYNC"
+	envArrayRange      = "ROTARI_ARRAY_RANGE"
+	envResetRecover    = "ROTARI_RESET_RECOVER"
+	envWaitTimeout     = "ROTARI_WAIT_TIMEOUT"
+	envWebHost         = "ROTARI_WEB_HOST"
+	envWebPort         = "ROTARI_WEB_PORT"
+	envWebStaticDir    = "ROTARI_WEB_STATIC_DIR"
+	envWebAllowControl = "ROTARI_WEB_ALLOW_CONTROL"
+	envPrivateState    = "ROTARI_PRIVATE_STATE"
+	envBin             = "ROTARI_BIN"
+	envRunDir          = "ROTARI_RUN_DIR"
+	envJobDir          = "ROTARI_JOB_DIR"
+	envCWD             = "ROTARI_CWD"
+	envArrayTaskID     = "ROTARI_ARRAY_TASK_ID"
+	envArrayFirst      = "ROTARI_ARRAY_FIRST"
+	envArrayLast       = "ROTARI_ARRAY_LAST"
+	envArraySize       = "ROTARI_ARRAY_SIZE"
 )
 
 var propagatedEnvironmentVariables = []string{
@@ -56,6 +58,7 @@ func validateEnvironment(environment []string) error {
 type environmentDefinition struct {
 	Name        string `json:"name"`
 	Value       string `json:"value,omitempty"`
+	Set         bool   `json:"set,omitempty"`
 	CLIDefault  bool   `json:"cli_default"`
 	Job         bool   `json:"job"`
 	Array       bool   `json:"array"`
@@ -91,6 +94,8 @@ func environmentDefinitions() []environmentDefinition {
 		{Name: envWebHost, CLIDefault: true, Description: "--host default for web."},
 		{Name: envWebPort, CLIDefault: true, Description: "--port default for web."},
 		{Name: envWebStaticDir, CLIDefault: true, Description: "--static-dir default for web."},
+		{Name: envWebAllowControl, CLIDefault: true, Description: "--allow-control default for web."},
+		{Name: envPrivateState, Description: "set to true for 0700/0600 state directory permissions instead of the default 0755/0644 (shared state)."},
 	}
 }
 

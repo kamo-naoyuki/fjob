@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSubmitSlurmJobWithFakeSlurm(t *testing.T) {
@@ -376,6 +377,116 @@ func TestWaitSlurmJobUsesWrapperStatus(t *testing.T) {
 	result := waitSlurmJob(runDir, job)
 	if result.ExitCode != 8 || result.Error != "failed" || len(result.Hosts) != 2 || result.Hosts[1] != "compute-02" {
 		t.Fatalf("result = %+v, want exit 8 and failed", result)
+	}
+}
+
+func TestWaitSlurmJobFailureBoundariesWithFakeSlurm(t *testing.T) {
+	oldAccountingWait := slurmAccountingWait
+	oldPollInterval := slurmPollInterval
+	slurmAccountingWait = 20 * time.Millisecond
+	slurmPollInterval = time.Millisecond
+	t.Cleanup(func() {
+		slurmAccountingWait = oldAccountingWait
+		slurmPollInterval = oldPollInterval
+	})
+
+	for _, testCase := range []struct {
+		name       string
+		statusJSON string
+		squeue     string
+		sacct      string
+		sacctCode  int
+		wantCode   int
+		wantError  string
+	}{
+		{
+			name:      "accounting and wrapper unavailable",
+			squeue:    "",
+			sacctCode: 1,
+			wantCode:  1,
+			wantError: "Slurm accounting result and wrapper status are unavailable",
+		},
+		{
+			name:       "corrupted wrapper status falls back to accounting",
+			statusJSON: "{not-json",
+			squeue:     "",
+			sacct:      "FAILED|7:0\n",
+			wantCode:   7,
+			wantError:  "failed",
+		},
+		{
+			name:       "scheduler gone but wrapper finished",
+			statusJSON: `{"phase":"finished","exit_code":3,"error":"wrapper-failed"}`,
+			squeue:     "",
+			sacctCode:  1,
+			wantCode:   3,
+			wantError:  "wrapper-failed",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			writeExecutable(t, binDir, "squeue", fmt.Sprintf("#!/bin/sh\nprintf '%%s' %q\n", testCase.squeue))
+			if testCase.sacctCode == 0 {
+				writeExecutable(t, binDir, "sacct", fmt.Sprintf("#!/bin/sh\nprintf '%%s' %q\n", testCase.sacct))
+			} else {
+				writeExecutable(t, binDir, "sacct", fmt.Sprintf("#!/bin/sh\nprintf '%%s' %q\nexit %d\n", testCase.sacct, testCase.sacctCode))
+			}
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			runDir := t.TempDir()
+			job := slurmJobMetadata{Executor: "slurm", JobID: "job-1", Command: []string{"echo", "hi"}, SlurmJobID: "12345"}
+			jobDir := filepath.Join(runDir, job.JobID)
+			if err := os.MkdirAll(jobDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if testCase.statusJSON != "" {
+				if err := os.WriteFile(filepath.Join(jobDir, "status.json"), []byte(testCase.statusJSON), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			result := waitSlurmJob(runDir, job)
+			if result.ExitCode != testCase.wantCode || result.Error != testCase.wantError {
+				t.Fatalf("result = %+v, want exit %d error %q", result, testCase.wantCode, testCase.wantError)
+			}
+		})
+	}
+}
+
+func TestWaitSlurmJobUsesWrapperStatusAfterSchedulerStillRunning(t *testing.T) {
+	oldAccountingWait := slurmAccountingWait
+	oldPollInterval := slurmPollInterval
+	slurmAccountingWait = 20 * time.Millisecond
+	slurmPollInterval = time.Millisecond
+	t.Cleanup(func() {
+		slurmAccountingWait = oldAccountingWait
+		slurmPollInterval = oldPollInterval
+	})
+
+	runDir := t.TempDir()
+	job := slurmJobMetadata{Executor: "slurm", JobID: "job-1", Command: []string{"echo", "hi"}, SlurmJobID: "12345"}
+	jobDir := filepath.Join(runDir, job.JobID)
+	if err := os.MkdirAll(jobDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statusPath := filepath.Join(jobDir, "status.json")
+
+	binDir := t.TempDir()
+	writeExecutable(t, binDir, "squeue", fmt.Sprintf(`#!/bin/sh
+printf 'RUNNING\n'
+cat > %q <<'JSON'
+{"phase":"finished","exit_code":4,"error":"wrapper-finished"}
+JSON
+`, statusPath))
+	writeExecutable(t, binDir, "sacct", "#!/bin/sh\nexit 1\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	result := waitSlurmJob(runDir, job)
+	if result.ExitCode != 4 || result.Error != "wrapper-finished" {
+		t.Fatalf("result = %+v, want wrapper status after scheduler running", result)
+	}
+	if state := loadSchedulerStatus(jobDir); state != "running" {
+		t.Fatalf("scheduler status = %q, want running", state)
 	}
 }
 

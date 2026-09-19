@@ -719,3 +719,85 @@ func TestRunServerLifecycle(t *testing.T) {
 		}
 	}
 }
+
+func TestRunServerUsesOwnerOnlyPermissions(t *testing.T) {
+	baseDir, err := os.MkdirTemp("", "rotari-perm-server-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(baseDir)
+	t.Setenv("ROTARI_MASTERDIR", t.TempDir())
+	result := make(chan int, 1)
+	go func() {
+		result <- runServer(baseDir)
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		_, err = sendServerRequest(baseDir, serverRequest{Op: "ping"})
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("server did not become ready: %v", err)
+	}
+
+	info, statErr := os.Stat(serverSocketPath(baseDir))
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		t.Fatalf("server socket permissions = %o, want no group/other access", perm)
+	}
+
+	if _, err := sendServerRequest(baseDir, serverRequest{Op: "shutdown"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-result:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not stop after shutdown")
+	}
+}
+
+func TestVerifyPeerCredentialAcceptsSameUIDConnection(t *testing.T) {
+	baseDir, err := os.MkdirTemp("", "rotari-peercred-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(baseDir)
+	socketPath := filepath.Join(baseDir, "test.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+
+	client, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var serverConn net.Conn
+	select {
+	case serverConn = <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("server did not accept connection")
+	}
+	defer serverConn.Close()
+
+	if err := verifyPeerCredential(serverConn); err != nil {
+		t.Fatalf("verifyPeerCredential rejected same-process connection: %v", err)
+	}
+}

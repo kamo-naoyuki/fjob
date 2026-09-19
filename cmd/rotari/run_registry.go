@@ -29,7 +29,7 @@ func registerRunLocation(location runLocation) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, stateDirMode()); err != nil {
 		return err
 	}
 	path, err := runLocationPath(dir, location.RunID)

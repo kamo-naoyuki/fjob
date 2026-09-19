@@ -26,6 +26,46 @@ Just queue what you want to run. **State lives in plain JSON
 files on disk**, with no server or database to set up — it works the same
 whether you're on your laptop or logged into a remote compute node.
 
+## See the iteration loop
+
+Queue an experiment batch, run it, then fix only the job that failed:
+
+```console
+$ rotari add --job-name train1 ./train.sh --config exp1.yaml
+$ rotari add --job-name train2 ./train.sh --config exp2.yaml
+$ rotari add --job-name train3 ./train.sh --config exp3.yaml
+
+$ rotari run
+
+train1  OK
+train2  FAILED
+train3  OK
+
+$ rotari change --job-name train2 -- ./train.sh --config exp2-fixed.yaml
+$ rotari retry
+
+train1  carried OK
+train2  OK
+train3  carried OK
+```
+
+The retry creates a new run without rerunning jobs that already succeeded.
+Their results and logs remain available alongside the fixed job, so the
+iteration history stays intact.
+
+## What rotari is not
+
+rotari is a **job execution and experiment iteration coordinator**. It is not:
+
+- a DAG workflow engine
+- a distributed scheduler
+- a cluster resource manager or Slurm replacement
+- a reproducibility framework
+- a container orchestrator
+
+It can dispatch jobs through local execution, SSH, Slurm, PBS, and LSF, but
+those backends remain responsible for cluster resources and scheduling policy.
+
 | Plain shell (background jobs) | rotari |
 | --- | --- |
 | ![shell background jobs demo](https://kamo-naoyuki.github.io/rotari/demo-shell.gif) | ![rotari demo](https://kamo-naoyuki.github.io/rotari/demo-rotari.gif) |
@@ -177,6 +217,11 @@ Frequently used options have short forms:
 | `--job-id` | `-j` |
 | `--executor` | `-e` |
 
+## FAQ
+
+See [FAQ](docs/faq.md) for answers to specific "what happens if...?" questions
+about project/run resolution, retries, array jobs, interrupted runs, and locking.
+
 ## Local web UI
 
 See the [web demo](https://kamo-naoyuki.github.io/rotari/) for a read-only UI
@@ -195,9 +240,22 @@ shell completion is available at `http://127.0.0.1:8787/docs/`.
 It reads job state from the state directory and shows the working directory
 and terminal command needed to copy jobs for another run. While a run is
 active, scheduler jobs show their latest Slurm, PBS, or LSF state, such as
-`pending`, `running`, or `suspended`. It can also copy all or failed jobs into
-a queue after confirmation; it does not start or control the runner.
+`pending`, `running`, or `suspended`.
 Stopping the web server does not stop the runner or any jobs.
+
+By default the web UI allows job control: `copy`/`change`/`remove`/`cancel`/
+`clear-run` all work from the UI, with no authentication. Pass
+`--allow-control=false` for a read-only UI that only serves state, logs, and
+the CLI/env docs and rejects the control APIs with `403 Forbidden`.
+The `/api/state` and `/environment/` pages report which environment
+variables are *set*, never their values, so secrets such as API tokens are
+not exposed over HTTP.
+
+> **WARNING:** `--host 0.0.0.0` (or any non-loopback address) exposes job
+> commands, logs, and — unless you pass `--allow-control=false` — job-control
+> operations to anyone who can reach that address. There is no
+> authentication or encryption. Only bind to a non-loopback host on a
+> trusted network.
 
 ## Example
 
@@ -751,11 +809,36 @@ submission framework, see [Submitit](https://github.com/facebookincubator/submit
 Rotari instead exposes the existing CLI and its local, SSH, and scheduler
 backends to Python.
 
+## Security model
 
-## FAQ
+rotari assumes a trusted single-user or HPC/lab environment; it has no
+authentication of its own. Two things gate access instead:
 
-See [FAQ](docs/faq.md) for answers to specific "what happens if...?" questions
-about project/run resolution, retries, array jobs, interrupted runs, and locking.
+- **Filesystem permissions.** By default, the state directory tree
+  (`--basedir`), server registry (`--masterdir`), and everything under them
+  (`queue.json`, `meta.json`, locks, job `output`/status, wrapper scripts)
+  are created with the same permissive `0755`/`0644` rotari has always used
+  — this is the "shared state" default, since colleagues on the same
+  HPC/lab cluster commonly point each other at a job's log path directly.
+  Set `ROTARI_PRIVATE_STATE=true` to switch to owner-only `0700`/`0600`
+  instead if you don't need that sharing and want to keep job commands,
+  working directories, and output readable only to yourself. This only
+  affects newly created paths — existing directories are not
+  retroactively re-chmod'd, and it's an all-or-nothing setting per
+  `--basedir` (mixing it complicates permissions on shared paths).
+- **The background server's Unix socket** (`<basedir>/server.sock`) accepts
+  `submit`/`cancel`/`suspend`/`resume`/`run`/`shutdown` — reaching it means
+  being able to control that server. Unlike the rest of the state
+  directory, it is always created `0600` regardless of `ROTARI_PRIVATE_STATE`,
+  and on Linux the server also verifies each connection's peer UID
+  (`SO_PEERCRED`) matches its own before accepting it.
+- **`rotari web`** (see above) adds an HTTP surface with the same lack of
+  authentication; keep it bound to `127.0.0.1` unless you understand and
+  accept the tradeoffs described there.
+
+None of this defends against another user with access to your own UID
+(e.g. root, or anyone who can read your home directory), only against other
+unprivileged users on a shared machine.
 
 ## Development
 

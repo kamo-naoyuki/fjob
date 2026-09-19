@@ -132,7 +132,7 @@ func TestWebCancelRunRejectsStaleRunID(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodPost, "/api/cancel-run", strings.NewReader(`{"project_name":"default","run_id":"run-old"}`))
 	recorder := httptest.NewRecorder()
-	newWebHandler(baseDir, "").ServeHTTP(recorder, request)
+	newWebHandler(baseDir, "", true).ServeHTTP(recorder, request)
 	if recorder.Code == http.StatusOK {
 		t.Fatalf("status = %d, want stale run rejection", recorder.Code)
 	}
@@ -171,7 +171,7 @@ func TestLoadWebStateIncludesAllQueues(t *testing.T) {
 	var foundRunID bool
 	for _, definition := range state.Environments {
 		if definition.Name == envRunID {
-			foundRunID = definition.Value == "web-run" && definition.Job && definition.Array
+			foundRunID = definition.Set && definition.Value == "" && definition.Job && definition.Array
 			break
 		}
 	}
@@ -198,7 +198,7 @@ func TestCLIDocsPageUsesCommandMetadata(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/docs/", nil)
 	recorder := httptest.NewRecorder()
-	newWebHandler(t.TempDir(), "").ServeHTTP(recorder, request)
+	newWebHandler(t.TempDir(), "", false).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "rotari CLI") {
 		t.Fatalf("docs response = status %d, body %q", recorder.Code, recorder.Body.String())
 	}
@@ -215,7 +215,7 @@ func TestEnvironmentPageUsesDefinitions(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/environment/", nil)
 	recorder := httptest.NewRecorder()
-	newWebHandler(t.TempDir(), "").ServeHTTP(recorder, request)
+	newWebHandler(t.TempDir(), "", false).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "rotari environment variables") {
 		t.Fatalf("environment response = status %d, body %q", recorder.Code, recorder.Body.String())
 	}
@@ -485,6 +485,32 @@ func TestWriteRunContext(t *testing.T) {
 	}
 }
 
+func TestWebAllowControlDefaultsToTrue(t *testing.T) {
+	fs := newFlagSet("web")
+	allowControl := cliBool(fs, "allow-control", true)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	if !*allowControl {
+		t.Fatalf("allow-control default = %v, want true", *allowControl)
+	}
+}
+
+func TestWebControlEndpointsRejectedWhenControlDisabled(t *testing.T) {
+	baseDir := t.TempDir()
+	if _, err := resolvePaths(baseDir, "default"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/copy", "/api/change", "/api/remove", "/api/clear-run", "/api/cancel-job", "/api/cancel-run"} {
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"project_name":"default"}`))
+		recorder := httptest.NewRecorder()
+		newWebHandler(baseDir, "", false).ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("%s status = %d, want %d (rejected with --allow-control=false)", path, recorder.Code, http.StatusForbidden)
+		}
+	}
+}
+
 func TestWebCopyEndpointCopiesWithoutRunner(t *testing.T) {
 	baseDir := t.TempDir()
 	paths, err := resolvePaths(baseDir, "default")
@@ -501,7 +527,7 @@ func TestWebCopyEndpointCopiesWithoutRunner(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodPost, "/api/copy", strings.NewReader(`{"project_name":"default","run_id":"run-1","selection":"failed"}`))
 	recorder := httptest.NewRecorder()
-	newWebHandler(baseDir, "").ServeHTTP(recorder, request)
+	newWebHandler(baseDir, "", true).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -528,7 +554,7 @@ func TestWebChangeEndpointUpdatesQueueJob(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/change", strings.NewReader(`{"project_name":"default","job_id":"job-1","command":["new","arg"],"executor_options":["-p","gpu"]}`))
 	recorder := httptest.NewRecorder()
-	newWebHandler(baseDir, "").ServeHTTP(recorder, request)
+	newWebHandler(baseDir, "", true).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -546,7 +572,7 @@ func TestMethodNotAllowedRejectsNonGetOnAPIState(t *testing.T) {
 	baseDir := t.TempDir()
 	request := httptest.NewRequest(http.MethodPost, "/api/state", nil)
 	recorder := httptest.NewRecorder()
-	newWebHandler(baseDir, "").ServeHTTP(recorder, request)
+	newWebHandler(baseDir, "", false).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusMethodNotAllowed)
 	}

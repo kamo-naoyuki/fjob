@@ -115,7 +115,7 @@ func confirmResetOfInterruptedRun(input io.Reader, output io.Writer, paths pathS
 
 // resetQueueCommands preserves queue defaults and run history.
 func resetQueueCommands(paths pathSet) (int, error) {
-	if err := os.MkdirAll(paths.projectDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.projectDir, stateDirMode()); err != nil {
 		return 0, fmt.Errorf("failed to create project directory: %w", err)
 	}
 	release, err := acquireStateLock(paths.stateLockFile)
